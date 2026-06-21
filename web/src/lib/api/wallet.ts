@@ -28,6 +28,17 @@ export interface HyperliquidAccountSummary {
   updatedAt: number
 }
 
+export interface HyperliquidAgentInfo {
+  name: string
+  address: string
+  validUntil: number // unix milliseconds
+}
+
+export interface HyperliquidAgentResponse {
+  agent: HyperliquidAgentInfo | null // the NOFX-managed agent, null when none approved
+  agents: HyperliquidAgentInfo[] // every approved agent for the wallet
+}
+
 export const walletApi = {
   async generateWallet(): Promise<GeneratedWallet> {
     const res = await fetch(`${API_BASE}/wallet/generate`, { method: 'POST' })
@@ -39,12 +50,29 @@ export const walletApi = {
     return handleJSONResponse<HyperliquidConnectConfig>(res)
   },
 
-  async getHyperliquidAccount(address: string): Promise<HyperliquidAccountSummary> {
-    const res = await fetch(`${API_BASE}/hyperliquid/account?address=${encodeURIComponent(address)}`)
+  async getHyperliquidAccount(
+    address: string
+  ): Promise<HyperliquidAccountSummary> {
+    const res = await fetch(
+      `${API_BASE}/hyperliquid/account?address=${encodeURIComponent(address)}`
+    )
     return handleJSONResponse<HyperliquidAccountSummary>(res)
   },
 
-  async submitHyperliquidApproval(action: Record<string, unknown>, nonce: number, signature: HyperliquidSignature) {
+  async getHyperliquidAgent(
+    address: string
+  ): Promise<HyperliquidAgentResponse> {
+    const res = await fetch(
+      `${API_BASE}/hyperliquid/agent?address=${encodeURIComponent(address)}`
+    )
+    return handleJSONResponse<HyperliquidAgentResponse>(res)
+  },
+
+  async submitHyperliquidApproval(
+    action: Record<string, unknown>,
+    nonce: number,
+    signature: HyperliquidSignature
+  ) {
     const res = await fetch(`${API_BASE}/hyperliquid/submit-exchange`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

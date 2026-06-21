@@ -150,6 +150,7 @@ func (s *Server) setupRoutes() {
 		api.POST("/wallet/generate", s.handleWalletGenerate)
 		s.route(api, "GET", "/hyperliquid/connect-config", "Get NOFX Hyperliquid builder authorization config", s.handleHyperliquidConnectConfig)
 		s.route(api, "GET", "/hyperliquid/account", "Get Hyperliquid account balance summary", s.handleHyperliquidAccount)
+		s.route(api, "GET", "/hyperliquid/agent", "Get Hyperliquid approved agent wallets and authorization expiry", s.handleHyperliquidAgent)
 		s.route(api, "POST", "/hyperliquid/submit-exchange", "Submit a user-signed Hyperliquid approval action", s.handleHyperliquidSubmitExchange)
 
 		// Crypto related endpoints (no authentication required, not exposed to bot).

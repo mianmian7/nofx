@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +22,9 @@ const (
 	defaultHyperliquidBuilderMaxFee = "0.05%"
 	hyperliquidExchangeURL          = "https://api.hyperliquid.xyz/exchange"
 	hyperliquidInfoURL              = "https://api.hyperliquid.xyz/info"
+	// nofxHyperliquidAgentName must match AGENT_NAME used by the frontend
+	// approveAgent flow so we can locate the NOFX-managed agent on-chain.
+	nofxHyperliquidAgentName = "NOFX Agent"
 )
 
 type hyperliquidSubmitRequest struct {
@@ -50,6 +54,19 @@ type hyperliquidAccountSummary struct {
 	UpdatedAt       int64   `json:"updatedAt"`
 }
 
+type hyperliquidAgentInfo struct {
+	Name       string `json:"name"`
+	Address    string `json:"address"`
+	ValidUntil int64  `json:"validUntil"` // unix milliseconds
+}
+
+type hyperliquidAgentResponse struct {
+	// Agent is the NOFX-managed agent ("NOFX Agent"), nil when none is approved.
+	Agent *hyperliquidAgentInfo `json:"agent"`
+	// Agents lists every approved agent for the wallet (for visibility/cleanup).
+	Agents []hyperliquidAgentInfo `json:"agents"`
+}
+
 type hyperliquidClearinghouseState struct {
 	MarginSummary struct {
 		AccountValue    string `json:"accountValue"`
@@ -66,6 +83,15 @@ type hyperliquidClearinghouseState struct {
 			UnrealizedPnl string `json:"unrealizedPnl"`
 		} `json:"position"`
 	} `json:"assetPositions"`
+}
+
+// agentValidUntilSuffix matches the " valid_until <ms>" suffix Hyperliquid uses
+// to encode an agent's expiry inside the agent name. Hyperliquid normally strips
+// it from the stored name, but we strip defensively before matching the slot.
+var agentValidUntilSuffix = regexp.MustCompile(` valid_until \d+$`)
+
+func baseAgentName(name string) string {
+	return strings.TrimSpace(agentValidUntilSuffix.ReplaceAllString(name, ""))
 }
 
 func hyperliquidBuilderAddress() string {
@@ -159,6 +185,64 @@ func (s *Server) handleHyperliquidAccount(c *gin.Context) {
 	})
 }
 
+// handleHyperliquidAgent reports the on-chain approved agents for a wallet,
+// including the NOFX agent's validUntil so the UI can show the expiry date and
+// warn before the 180-day authorization lapses.
+func (s *Server) handleHyperliquidAgent(c *gin.Context) {
+	address := strings.ToLower(strings.TrimSpace(c.Query("address")))
+	if !isEVMAddress(address) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid Hyperliquid wallet address"})
+		return
+	}
+
+	body, err := json.Marshal(map[string]any{"type": "extraAgents", "user": address})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encode Hyperliquid agent request"})
+		return
+	}
+
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, hyperliquidInfoURL, bytes.NewReader(body))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create Hyperliquid agent request"})
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to reach Hyperliquid", "detail": err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Hyperliquid rejected the agent request", "status": resp.StatusCode})
+		return
+	}
+
+	// extraAgents returns null when no agents are approved.
+	agents := []hyperliquidAgentInfo{}
+	if len(respBody) > 0 && string(bytes.TrimSpace(respBody)) != "null" {
+		if err := json.Unmarshal(respBody, &agents); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to parse Hyperliquid agent response"})
+			return
+		}
+	}
+
+	out := hyperliquidAgentResponse{Agents: agents}
+	for i := range agents {
+		if strings.EqualFold(baseAgentName(agents[i].Name), nofxHyperliquidAgentName) {
+			agent := agents[i]
+			out.Agent = &agent
+			break
+		}
+	}
+
+	c.JSON(http.StatusOK, out)
+}
+
 func (s *Server) handleHyperliquidSubmitExchange(c *gin.Context) {
 	var req hyperliquidSubmitRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -223,6 +307,24 @@ func (s *Server) handleHyperliquidSubmitExchange(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "Hyperliquid rejected the action", "status": resp.StatusCode, "response": decoded})
 		return
 	}
+
+	// Hyperliquid returns HTTP 200 even for logical failures, signalling them via
+	// {"status":"err","response":"<message>"}. Without this check a rejected
+	// approval (e.g. valid_until past the cap, or an unchanged agent) is reported
+	// to the user as success while nothing changes on-chain.
+	var hlResp struct {
+		Status   string          `json:"status"`
+		Response json.RawMessage `json:"response"`
+	}
+	if err := json.Unmarshal(respBody, &hlResp); err == nil && strings.EqualFold(hlResp.Status, "err") {
+		msg := strings.TrimSpace(strings.Trim(string(hlResp.Response), `"`))
+		if msg == "" {
+			msg = "Hyperliquid rejected the action"
+		}
+		c.JSON(http.StatusBadGateway, gin.H{"error": msg, "response": decoded})
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{"success": true, "response": decoded})
 }
 
