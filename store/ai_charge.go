@@ -157,7 +157,7 @@ func IsClaw402Config(aiModel string) bool {
 // EstimateRunway estimates how many days the given USDC balance will last
 func EstimateRunway(usdcBalance float64, modelName string, scanIntervalMinutes int) (dailyCost float64, runwayDays float64) {
 	if scanIntervalMinutes <= 0 {
-		scanIntervalMinutes = 3
+		scanIntervalMinutes = 15
 	}
 	callsPerDay := float64(24*60) / float64(scanIntervalMinutes)
 	pricePerCall := GetModelPrice(modelName)

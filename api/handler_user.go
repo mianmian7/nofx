@@ -225,23 +225,17 @@ func (s *Server) createDefaultStrategies(userID string, lang string) error {
 		name, description string
 	}
 	type strategyLocale struct {
-		trend, megaCap, breakout strategyI18n
+		defaultStrategy strategyI18n
 	}
 	locales := map[string]strategyLocale{
 		"zh": {
-			trend:    strategyI18n{"美股趋势策略", "开箱即用的 Hyperliquid 美股 USDC 策略。只扫描流动性更好的美股合约，低杠杆、低频率，适合直接创建 Agent 后运行。"},
-			megaCap:  strategyI18n{"美股大盘稳健策略", "开箱即用的 Hyperliquid 美股 USDC 策略。固定关注 AAPL、MSFT、GOOGL、AMZN、META 等大盘股，强调趋势确认和回撤控制。"},
-			breakout: strategyI18n{"美股突破策略", "开箱即用的 Hyperliquid 美股 USDC 策略。扫描 24h 强势美股，等待突破确认后再开仓，避免频繁追涨。"},
+			defaultStrategy: strategyI18n{"NOFX Claw402 自动策略", "唯一内置策略：每轮读取 Claw402.ai 榜单，逐个拉取 Signal Lab 与成本/清算热力图，再结合原始 K 线决策。"},
 		},
 		"en": {
-			trend:    strategyI18n{"US Stock Trend Strategy", "Ready-to-run Hyperliquid USDC equity strategy. Scans liquid US stock perps with low leverage and low trade frequency, suitable for one-click Agent deployment."},
-			megaCap:  strategyI18n{"US Mega-Cap Steady Strategy", "Ready-to-run Hyperliquid USDC equity strategy. Fixed universe: AAPL, MSFT, GOOGL, AMZN and META, with trend confirmation and drawdown control."},
-			breakout: strategyI18n{"US Stock Breakout Strategy", "Ready-to-run Hyperliquid USDC equity strategy. Scans 24h strong US stocks and waits for breakout confirmation before entering, avoiding impulsive chasing."},
+			defaultStrategy: strategyI18n{"NOFX Claw402 Auto Strategy", "The only built-in strategy: read the Claw402.ai board each cycle, fetch Signal Lab and cost/liquidation heatmap per candidate, then decide with raw candles."},
 		},
 		"id": {
-			trend:    strategyI18n{"Strategi Tren Saham AS", "Strategi saham AS USDC Hyperliquid siap jalan. Memindai perp saham AS likuid dengan leverage rendah dan frekuensi rendah."},
-			megaCap:  strategyI18n{"Strategi Stabil Mega-Cap AS", "Strategi saham AS USDC Hyperliquid siap jalan. Universe tetap: AAPL, MSFT, GOOGL, AMZN, META, dengan konfirmasi tren."},
-			breakout: strategyI18n{"Strategi Breakout Saham AS", "Strategi saham AS USDC Hyperliquid siap jalan. Memindai saham AS kuat 24 jam dan menunggu konfirmasi breakout."},
+			defaultStrategy: strategyI18n{"Strategi Otomatis NOFX Claw402", "Satu strategi bawaan: membaca papan Claw402.ai, mengambil Signal Lab dan heatmap biaya/likuidasi per kandidat, lalu memutuskan dengan candle mentah."},
 		},
 	}
 	locale, ok := locales[lang]
@@ -256,76 +250,42 @@ func (s *Server) createDefaultStrategies(userID string, lang string) error {
 		applyConfig func(*store.StrategyConfig)
 	}
 
-	setStockRank := func(c *store.StrategyConfig, direction string, limit int) {
-		c.CoinSource.SourceType = "hyper_rank"
+	setClaw402Strategy := func(c *store.StrategyConfig) {
+		c.CoinSource.SourceType = "vergex_signal"
 		c.CoinSource.StaticCoins = nil
 		c.CoinSource.UseAI500 = false
 		c.CoinSource.UseOITop = false
 		c.CoinSource.UseOILow = false
 		c.CoinSource.UseHyperAll = false
 		c.CoinSource.UseHyperMain = false
-		c.CoinSource.HyperRankCategory = "stock"
-		c.CoinSource.HyperRankDirection = direction
-		c.CoinSource.HyperRankLimit = limit
-	}
-	setStaticStocks := func(c *store.StrategyConfig, symbols []string) {
-		c.CoinSource.SourceType = "static"
-		c.CoinSource.StaticCoins = symbols
-		c.CoinSource.UseAI500 = false
-		c.CoinSource.UseOITop = false
-		c.CoinSource.UseOILow = false
-		c.CoinSource.UseHyperAll = false
-		c.CoinSource.UseHyperMain = false
-	}
-	setStableRisk := func(c *store.StrategyConfig) {
+		c.CoinSource.HyperRankCategory = "all"
+		c.CoinSource.VergexLimit = 10
+		c.CoinSource.VergexMarketType = "all"
+		c.CoinSource.VergexChain = "hyperliquid"
 		c.RiskControl.MaxPositions = 2
-		c.RiskControl.BTCETHMaxLeverage = 3
-		c.RiskControl.AltcoinMaxLeverage = 3
-		c.RiskControl.BTCETHMaxPositionValueRatio = 2.0
-		c.RiskControl.AltcoinMaxPositionValueRatio = 0.6
-		c.RiskControl.MaxMarginUsage = 0.45
+		c.RiskControl.BTCETHMaxLeverage = 10
+		c.RiskControl.AltcoinMaxLeverage = 10
+		c.RiskControl.BTCETHMaxPositionValueRatio = 1.0
+		c.RiskControl.AltcoinMaxPositionValueRatio = 1.0
+		c.RiskControl.MaxMarginUsage = 0.35
 		c.RiskControl.MinConfidence = 78
 		c.RiskControl.MinRiskRewardRatio = 3.0
 		c.Indicators.Klines.PrimaryTimeframe = "15m"
-		c.Indicators.Klines.LongerTimeframe = "4h"
-		c.Indicators.Klines.SelectedTimeframes = []string{"15m", "1h", "4h"}
-		c.Indicators.EnableEMA = true
-		c.Indicators.EnableMACD = true
-		c.Indicators.EnableRSI = true
-		c.Indicators.EnableATR = true
-		c.Indicators.EnableVolume = true
+		c.Indicators.Klines.PrimaryCount = 30
+		c.Indicators.Klines.LongerTimeframe = ""
+		c.Indicators.Klines.LongerCount = 0
+		c.Indicators.Klines.EnableMultiTimeframe = false
+		c.Indicators.Klines.SelectedTimeframes = []string{"15m"}
+		c.Indicators.EnableRawKlines = true
 	}
 
 	definitions := []strategyDef{
 		{
-			name:        locale.trend.name,
-			description: locale.trend.description,
+			name:        locale.defaultStrategy.name,
+			description: locale.defaultStrategy.description,
 			isActive:    true,
 			applyConfig: func(c *store.StrategyConfig) {
-				setStockRank(c, "volume", 5)
-				setStableRisk(c)
-			},
-		},
-		{
-			name:        locale.megaCap.name,
-			description: locale.megaCap.description,
-			isActive:    false,
-			applyConfig: func(c *store.StrategyConfig) {
-				setStaticStocks(c, []string{"AAPL-USDC", "MSFT-USDC", "GOOGL-USDC", "AMZN-USDC", "META-USDC"})
-				setStableRisk(c)
-				c.RiskControl.MaxPositions = 2
-				c.RiskControl.MinConfidence = 80
-			},
-		},
-		{
-			name:        locale.breakout.name,
-			description: locale.breakout.description,
-			isActive:    false,
-			applyConfig: func(c *store.StrategyConfig) {
-				setStockRank(c, "gainers", 5)
-				setStableRisk(c)
-				c.RiskControl.MinConfidence = 82
-				c.RiskControl.MinRiskRewardRatio = 3.5
+				setClaw402Strategy(c)
 			},
 		},
 	}
@@ -359,8 +319,11 @@ func (s *Server) createDefaultStrategies(userID string, lang string) error {
 
 	legacyDefaultNames := []string{
 		"均衡策略", "稳健策略", "积极策略",
+		"美股趋势策略", "美股稳健策略", "美股突破策略",
 		"Balanced Strategy", "Conservative Strategy", "Aggressive Strategy",
+		"US Stock Trend Strategy", "US Stock Steady Strategy", "US Stock Breakout Strategy",
 		"Strategi Seimbang", "Strategi Konservatif", "Strategi Agresif",
+		"Strategi Tren Saham AS", "Strategi Stabil Saham AS", "Strategi Breakout Saham AS",
 	}
 
 	return s.store.Transaction(func(tx *gorm.DB) error {

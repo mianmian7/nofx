@@ -2,8 +2,10 @@ package trader
 
 import (
 	"fmt"
+	"nofx/kernel"
 	"nofx/logger"
 	"nofx/market"
+	"nofx/store"
 	"strings"
 	"time"
 )
@@ -235,6 +237,46 @@ func (at *AutoTrader) enforcePositionValueRatio(positionSizeUSD float64, equity 
 	}
 
 	return positionSizeUSD, false
+}
+
+func (at *AutoTrader) applyAutopilotFullSizeOpen(decision *kernel.Decision, equity float64) {
+	if at == nil || decision == nil || at.config.StrategyConfig == nil || equity <= 0 {
+		return
+	}
+
+	cfg := at.config.StrategyConfig
+	if cfg.CoinSource.SourceType != "vergex_signal" {
+		return
+	}
+
+	riskControl := cfg.RiskControl
+	leverage := riskControl.AltcoinMaxLeverage
+	positionValueRatio := riskControl.AltcoinMaxPositionValueRatio
+	if isMajorAsset(decision.Symbol) {
+		leverage = riskControl.BTCETHMaxLeverage
+		positionValueRatio = riskControl.BTCETHMaxPositionValueRatio
+	}
+	if leverage < store.MinLeverage {
+		leverage = store.MinLeverage
+	}
+	if leverage > store.MaxAltLeverage {
+		leverage = store.MaxAltLeverage
+	}
+	if positionValueRatio <= 0 {
+		positionValueRatio = 1.0
+	}
+
+	fullPositionSize := equity * positionValueRatio
+	if fullPositionSize <= 0 {
+		return
+	}
+
+	if decision.Leverage != leverage || decision.PositionSizeUSD != fullPositionSize {
+		logger.Infof("  📏 [AUTOPILOT] Full-size open enforced for %s: leverage %dx → %dx, notional %.2f → %.2f USDT",
+			decision.Symbol, decision.Leverage, leverage, decision.PositionSizeUSD, fullPositionSize)
+	}
+	decision.Leverage = leverage
+	decision.PositionSizeUSD = fullPositionSize
 }
 
 // enforceMinPositionSize checks minimum position size (CODE ENFORCED)

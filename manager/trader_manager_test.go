@@ -265,7 +265,7 @@ func TestEnsureHyperliquidNativeStrategy(t *testing.T) {
 	})
 
 	t.Run("native sources are kept as-is", func(t *testing.T) {
-		nativeSources := []string{"hyper_rank", "static", "hyper_all", "hyper_main", " Hyper_Rank "}
+		nativeSources := []string{"hyper_rank", "vergex_signal", "static", "hyper_all", "hyper_main", " Hyper_Rank "}
 		for _, src := range nativeSources {
 			cfg := &store.StrategyConfig{
 				CoinSource: store.CoinSourceConfig{SourceType: src},

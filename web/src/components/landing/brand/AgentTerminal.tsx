@@ -28,7 +28,7 @@ export default function AgentTerminal() {
                     </div>
                     {/* Title */}
                     <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2">
-                        <span className="text-zinc-400 text-xs font-mono">NOFX Agent Terminal</span>
+                        <span className="text-zinc-400 text-xs font-mono">NOFX Trader Terminal</span>
                     </div>
                     {/* Live indicator */}
                     <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-green-500/10 border border-green-500/20">

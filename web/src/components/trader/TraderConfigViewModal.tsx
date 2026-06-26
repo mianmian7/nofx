@@ -33,7 +33,11 @@ export function TraderConfigViewModal({
     <div className="flex justify-between items-start py-2 border-b border-[#2B3139] last:border-b-0">
       <span className="text-sm text-[#848E9C] font-medium">{label}</span>
       <span className="text-sm text-[#EAECEF] font-mono text-right">
-        {typeof value === 'boolean' ? (value ? t('traderConfigView.yes', language) : t('traderConfigView.no', language)) : value}
+        {typeof value === 'boolean'
+          ? value
+            ? t('traderConfigView.yes', language)
+            : t('traderConfigView.no', language)
+          : value}
       </span>
     </div>
   )
@@ -48,14 +52,21 @@ export function TraderConfigViewModal({
         <div className="flex items-center justify-between p-6 border-b border-[#2B3139] bg-gradient-to-r from-[#1E2329] to-[#252B35]">
           <div className="flex items-center gap-3">
             <PunkAvatar
-              seed={getTraderAvatar(traderData.trader_id || '', traderData.trader_name)}
+              seed={getTraderAvatar(
+                traderData.trader_id || '',
+                traderData.trader_name
+              )}
               size={48}
               className="rounded-lg"
             />
             <div>
-              <h2 className="text-xl font-bold text-[#EAECEF]">{t('traderConfigView.traderConfig', language)}</h2>
+              <h2 className="text-xl font-bold text-[#EAECEF]">
+                {t('traderConfigView.traderConfig', language)}
+              </h2>
               <p className="text-sm text-[#848E9C] mt-1">
-                {t('traderConfigView.configInfo', language, { name: traderData.trader_name })}
+                {t('traderConfigView.configInfo', language, {
+                  name: traderData.trader_name,
+                })}
               </p>
             </div>
           </div>
@@ -70,7 +81,9 @@ export function TraderConfigViewModal({
               }
             >
               <span>{traderData.is_running ? '●' : '○'}</span>
-              {traderData.is_running ? t('traderConfigView.running', language) : t('traderConfigView.stopped', language)}
+              {traderData.is_running
+                ? t('traderConfigView.running', language)
+                : t('traderConfigView.stopped', language)}
             </div>
             <button
               onClick={onClose}
@@ -107,11 +120,17 @@ export function TraderConfigViewModal({
               />
               <InfoRow
                 label={t('traderConfigView.marginMode', language)}
-                value={traderData.is_cross_margin ? t('traderConfigView.crossMargin', language) : t('traderConfigView.isolatedMargin', language)}
+                value={
+                  traderData.is_cross_margin
+                    ? t('traderConfigView.crossMargin', language)
+                    : t('traderConfigView.isolatedMargin', language)
+                }
               />
               <InfoRow
                 label={t('traderConfigView.scanIntervalLabel', language)}
-                value={t('traderConfigView.scanInterval', language, { minutes: traderData.scan_interval_minutes || 3 })}
+                value={t('traderConfigView.scanInterval', language, {
+                  minutes: traderData.scan_interval_minutes || 15,
+                })}
               />
             </div>
           </div>

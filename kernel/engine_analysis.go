@@ -85,6 +85,7 @@ func GetFullDecisionWithStrategy(ctx *Context, mcpClient mcp.AIClient, engine *S
 		}
 	}
 	pruneCandidateCoinsWithoutMarketData(ctx)
+	enrichVergexDataWithStrategy(ctx, engine)
 
 	// Ensure OITopDataMap is initialized
 	if ctx.OITopDataMap == nil {
@@ -140,6 +141,30 @@ func GetFullDecisionWithStrategy(ctx *Context, mcpClient mcp.AIClient, engine *S
 	}
 
 	return decision, nil
+}
+
+func enrichVergexDataWithStrategy(ctx *Context, engine *StrategyEngine) {
+	if ctx == nil || engine == nil || ctx.VergexDataMap != nil {
+		return
+	}
+	if engine.GetConfig().CoinSource.SourceType != "vergex_signal" {
+		return
+	}
+	symbolSet := make(map[string]bool)
+	symbols := make([]string, 0, len(ctx.CandidateCoins)+len(ctx.Positions))
+	for _, coin := range ctx.CandidateCoins {
+		if !symbolSet[coin.Symbol] {
+			symbolSet[coin.Symbol] = true
+			symbols = append(symbols, coin.Symbol)
+		}
+	}
+	for _, pos := range ctx.Positions {
+		if !symbolSet[pos.Symbol] {
+			symbolSet[pos.Symbol] = true
+			symbols = append(symbols, pos.Symbol)
+		}
+	}
+	ctx.VergexDataMap = engine.FetchVergexDataBatch(nil, symbols)
 }
 
 // ============================================================================

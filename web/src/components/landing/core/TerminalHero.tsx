@@ -224,7 +224,7 @@ export default function TerminalHero() {
                     <div className="w-full max-w-lg h-12 bg-black/50 border border-zinc-800 rounded flex items-center px-4 mb-10 font-mono text-sm shadow-2xl backdrop-blur-sm group hover:border-nofx-gold/50 transition-colors cursor-text" onClick={() => document.getElementById('market-scanner')?.scrollIntoView({ behavior: 'smooth' })}>
                         <span className="text-nofx-success mr-2">➜</span>
                         <span className="text-nofx-accent mr-2">~</span>
-                        <span className="text-zinc-500">create US stock agent --idea="breakouts"</span>
+                        <span className="text-zinc-500">create US stock trader --idea="breakouts"</span>
                         <span className="w-2 h-4 bg-nofx-gold ml-1 animate-pulse"></span>
                     </div>
 
@@ -236,7 +236,7 @@ export default function TerminalHero() {
                             style={{ clipPath: 'polygon(10% 0, 100% 0, 100% 70%, 90% 100%, 0 100%, 0 30%)' }}
                         >
                             <span className="relative z-10 flex items-center gap-2">
-                                CREATE STOCK AGENT <ArrowRight className="w-4 h-4" />
+                                CREATE STOCK TRADER <ArrowRight className="w-4 h-4" />
                             </span>
                             <div className="absolute inset-0 bg-white/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
                         </button>
@@ -248,7 +248,7 @@ export default function TerminalHero() {
                 </div>
             </div>
 
-            {/* RIGHT COLUMN: Agent Terminal - Desktop Only */}
+            {/* RIGHT COLUMN: Trader Terminal - Desktop Only */}
             <div className="absolute top-0 right-0 h-full w-[50vw] hidden lg:flex flex-col items-end justify-end pr-8 pb-20 z-10">
                 {/* Subtle gradient orb */}
                 <div className="absolute top-1/2 right-[10%] -translate-y-1/2 w-[400px] h-[400px] rounded-full bg-gradient-to-br from-nofx-gold/10 via-nofx-gold/5 to-transparent blur-[100px] pointer-events-none"></div>
@@ -264,7 +264,7 @@ export default function TerminalHero() {
                     }}
                 ></div>
 
-                {/* Agent Terminal Panel */}
+                {/* Trader Terminal Panel */}
                 <div className="relative z-20 pointer-events-auto">
                     <AgentTerminal />
                 </div>

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -636,6 +637,7 @@ func (s *Server) handleStrategyTestRun(c *gin.Context) {
 		symbols = append(symbols, c.Symbol)
 	}
 	quantDataMap := engine.FetchQuantDataBatch(symbols)
+	vergexDataMap := engine.FetchVergexDataBatch(context.Background(), symbols)
 
 	// Fetch OI ranking data (market-wide position changes)
 	oiRankingData := engine.FetchOIRankingData()
@@ -666,6 +668,7 @@ func (s *Server) handleStrategyTestRun(c *gin.Context) {
 		PromptVariant:      req.PromptVariant,
 		MarketDataMap:      marketDataMap,
 		QuantDataMap:       quantDataMap,
+		VergexDataMap:      vergexDataMap,
 		OIRankingData:      oiRankingData,
 		NetFlowRankingData: netFlowRankingData,
 		PriceRankingData:   priceRankingData,

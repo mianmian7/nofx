@@ -417,7 +417,7 @@ func ensureHyperliquidNativeStrategy(traderName, exchangeType string, cfg *store
 	}
 
 	source := strings.ToLower(strings.TrimSpace(cfg.CoinSource.SourceType))
-	if source == "hyper_rank" || source == "static" || source == "hyper_all" || source == "hyper_main" {
+	if source == "hyper_rank" || source == "vergex_signal" || source == "static" || source == "hyper_all" || source == "hyper_main" {
 		return
 	}
 
@@ -645,16 +645,19 @@ func (tm *TraderManager) addTraderFromStore(traderCfg *store.Trader, aiModelCfg 
 
 	// Load strategy config (must have strategy)
 	var strategyConfig *store.StrategyConfig
+	strategyConfigRaw := ""
 	if traderCfg.StrategyID != "" {
 		strategy, err := st.Strategy().Get(traderCfg.UserID, traderCfg.StrategyID)
 		if err != nil {
 			return fmt.Errorf("failed to load strategy %s for trader %s: %w", traderCfg.StrategyID, traderCfg.Name, err)
 		}
+		strategyConfigRaw = strategy.Config
 		// Parse JSON config
 		strategyConfig, err = strategy.ParseConfig()
 		if err != nil {
 			return fmt.Errorf("failed to parse strategy config for trader %s: %w", traderCfg.Name, err)
 		}
+		strategyConfig.ClampLimits()
 		logger.Infof("✓ Trader %s loaded strategy config: %s", traderCfg.Name, strategy.Name)
 		ensureHyperliquidNativeStrategy(traderCfg.Name, exchangeCfg.ExchangeType, strategyConfig)
 	} else {
@@ -669,6 +672,7 @@ func (tm *TraderManager) addTraderFromStore(traderCfg *store.Trader, aiModelCfg 
 	traderConfig := trader.AutoTraderConfig{
 		ID:                    traderCfg.ID,
 		Name:                  traderCfg.Name,
+		StrategyID:            traderCfg.StrategyID,
 		AIModel:               aiModelCfg.Provider,
 		Exchange:              exchangeCfg.ExchangeType, // Exchange type: binance/bybit/okx/etc
 		ExchangeID:            exchangeCfg.ID,           // Exchange account UUID (for multi-account)
@@ -686,6 +690,7 @@ func (tm *TraderManager) addTraderFromStore(traderCfg *store.Trader, aiModelCfg 
 		IsCrossMargin:         traderCfg.IsCrossMargin,
 		ShowInCompetition:     traderCfg.ShowInCompetition,
 		StrategyConfig:        strategyConfig,
+		StrategyConfigRaw:     strategyConfigRaw,
 	}
 
 	logger.Infof("📊 Loading trader %s: ScanIntervalMinutes=%d (from DB), ScanInterval=%v",

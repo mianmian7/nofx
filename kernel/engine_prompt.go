@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"nofx/market"
 	"nofx/provider/nofxos"
+	"nofx/provider/vergex"
 	"nofx/store"
 	"strings"
 	"time"
@@ -18,20 +19,15 @@ func (e *StrategyEngine) BuildSystemPrompt(accountEquity float64, variant string
 	var sb strings.Builder
 	riskControl := e.config.RiskControl
 	promptSections := e.config.PromptSections
-	lang := e.GetLanguage()
-	zh := lang == LangChinese
+	// System prompts are intentionally English-only. UI copy can be localized,
+	// but the model contract should stay language-stable for an international
+	// open-source project and for reproducible trading behavior.
+	lang := LangEnglish
+	zh := false
 	singleSymbol, primarySymbol := e.singleSymbolInfo()
 
-	// XYZ-only override: when the strategy trades a single Hyperliquid XYZ
-	// asset (US stocks, commodities, forex), force the entire prompt to
-	// English regardless of the strategy's stored language. Mixing Chinese
-	// reasoning with US-equity analysis confuses the LLM (its US-stock
-	// training is overwhelmingly English) and the user prompt sections
-	// ended up looking incoherent because some sections respect the
-	// language flag while legacy stored sections were always English.
-	if singleSymbol && market.IsXyzDexAsset(primarySymbol) {
-		zh = false
-		lang = LangEnglish
+	if e.usesVergexSignalPrompt() {
+		return e.buildVergexSystemPrompt(accountEquity, variant, lang, zh, singleSymbol, primarySymbol)
 	}
 
 	// 0. Data Dictionary & Schema (ensure AI understands all fields)
@@ -41,8 +37,9 @@ func (e *StrategyEngine) BuildSystemPrompt(accountEquity float64, variant string
 
 	// 1. Role definition (editable; falls back to a generic intro in the
 	//    correct language so we don't mix EN headings with ZH custom text).
-	if promptSections.RoleDefinition != "" {
-		sb.WriteString(promptSections.RoleDefinition)
+	roleDefinition := englishOnlyPromptSection(promptSections.RoleDefinition)
+	if roleDefinition != "" {
+		sb.WriteString(roleDefinition)
 		sb.WriteString("\n\n")
 	} else if zh {
 		sb.WriteString("# 你是一名专业的 Hyperliquid USDC 多资产交易 AI\n\n")
@@ -73,26 +70,28 @@ func (e *StrategyEngine) BuildSystemPrompt(accountEquity float64, variant string
 	writeHardConstraints(&sb, accountEquity, riskControl, btcEthPosValueRatio, altcoinPosValueRatio, singleSymbol, primarySymbol, zh)
 
 	// 4. Trading frequency (editable)
-	if promptSections.TradingFrequency != "" {
-		sb.WriteString(promptSections.TradingFrequency)
+	tradingFrequency := englishOnlyPromptSection(promptSections.TradingFrequency)
+	if tradingFrequency != "" {
+		sb.WriteString(tradingFrequency)
 		sb.WriteString("\n\n")
 	} else if zh {
 		sb.WriteString("# ⏱️ 交易频率提醒\n\n")
 		sb.WriteString("- 优秀交易员: 每日 2-4 单 ≈ 每小时 0.1-0.2 单\n")
 		sb.WriteString("- 每小时 > 2 单 = 过度交易\n")
-		sb.WriteString("- 单笔持仓时长 ≥ 30-60 分钟\n")
-		sb.WriteString("如果你发现自己每个周期都在交易 → 入场标准过低; 如果不到 30 分钟就平仓 → 太冲动。\n\n")
+		sb.WriteString("- 单笔持仓时长 ≥ 45-90 分钟\n")
+		sb.WriteString("如果你发现自己每个周期都在交易 → 入场标准过低; 如果不到 45 分钟就平仓 → 太冲动。\n\n")
 	} else {
 		sb.WriteString("# ⏱️ Trading Frequency Awareness\n\n")
 		sb.WriteString("- Excellent traders: 2-4 trades/day ≈ 0.1-0.2 trades/hour\n")
 		sb.WriteString("- >2 trades/hour = overtrading\n")
-		sb.WriteString("- Single position hold time ≥ 30-60 minutes\n")
-		sb.WriteString("If you find yourself trading every cycle → standards too low; if closing positions < 30 minutes → too impulsive.\n\n")
+		sb.WriteString("- Single position hold time ≥ 45-90 minutes\n")
+		sb.WriteString("If you find yourself trading every cycle → standards too low; if closing positions < 45 minutes → too impulsive.\n\n")
 	}
 
 	// 5. Entry standards (editable)
-	if promptSections.EntryStandards != "" {
-		sb.WriteString(promptSections.EntryStandards)
+	entryStandards := englishOnlyPromptSection(promptSections.EntryStandards)
+	if entryStandards != "" {
+		sb.WriteString(entryStandards)
 		if zh {
 			sb.WriteString("\n\n你拥有以下指标数据:\n")
 		} else {
@@ -117,8 +116,9 @@ func (e *StrategyEngine) BuildSystemPrompt(accountEquity float64, variant string
 	}
 
 	// 6. Decision process (editable)
-	if promptSections.DecisionProcess != "" {
-		sb.WriteString(promptSections.DecisionProcess)
+	decisionProcess := englishOnlyPromptSection(promptSections.DecisionProcess)
+	if decisionProcess != "" {
+		sb.WriteString(decisionProcess)
 		sb.WriteString("\n\n")
 	} else if zh {
 		sb.WriteString("# 📋 决策流程\n\n")
@@ -146,7 +146,7 @@ func (e *StrategyEngine) BuildSystemPrompt(accountEquity float64, variant string
 	//      incoherent mixed-language final prompt that confused the LLM.
 	//   2. It guarantees a stock-specific, US-equity-tuned briefing
 	//      regardless of when the strategy was first created.
-	customPrompt := e.config.CustomPrompt
+	customPrompt := englishOnlyPromptSection(e.config.CustomPrompt)
 	if singleSymbol && market.IsXyzDexAsset(primarySymbol) {
 		customPrompt = buildXYZStockCustomPrompt(primarySymbol)
 	}
@@ -169,43 +169,259 @@ func (e *StrategyEngine) BuildSystemPrompt(accountEquity float64, variant string
 	return sb.String()
 }
 
-// buildXYZStockCustomPrompt returns the canonical English long-only stock
+func (e *StrategyEngine) usesVergexSignalPrompt() bool {
+	if e == nil || e.config == nil {
+		return false
+	}
+	coinSource := e.config.CoinSource
+	sourceType := strings.ToLower(strings.TrimSpace(coinSource.SourceType))
+	return sourceType == "vergex_signal" ||
+		sourceType == "claw402" ||
+		sourceType == "claw402_vergex" ||
+		coinSource.VergexMarketType != "" ||
+		coinSource.VergexChain != "" ||
+		coinSource.VergexLimit > 0
+}
+
+func (e *StrategyEngine) buildVergexSystemPrompt(accountEquity float64, variant string, lang Language, zh bool, singleSymbol bool, primarySymbol string) string {
+	var sb strings.Builder
+	riskControl := e.config.RiskControl
+
+	writeVergexSchemaPrompt(&sb, zh)
+	sb.WriteString("\n\n---\n\n")
+
+	if zh {
+		sb.WriteString("# 你是 NOFX Claw402 自动交易员\n\n")
+		sb.WriteString("你的任务是交易 Claw402.ai/Vergex 本轮榜单返回的 Hyperliquid 可交易标的。只允许交易本轮候选标的和已有持仓，不要自行发明代码或切换到榜单外标的。\n\n")
+		sb.WriteString("# 决策数据优先级\n\n")
+		sb.WriteString("1. Claw402.ai Signal Ranking: 决定本轮候选池、排名、方向和类别。\n")
+		sb.WriteString("2. Claw402.ai Signal Lab: 用于确认趋势、动量、事件或模型信号；这是开仓前的核心确认数据。\n")
+		sb.WriteString("3. Claw402.ai Cost/Liquidation Heatmap: 用于识别清算密集区、成本区、止损位置和止盈目标。\n")
+		sb.WriteString("4. 原始 OHLCV K 线: 用于验证入场时机、趋势结构、波动和风险回报。\n\n")
+		sb.WriteString("# 交易原则\n\n")
+		sb.WriteString("- 先管理已有持仓，再考虑新开仓。\n")
+		sb.WriteString("- 开仓需要 Signal Lab、热力图和 K 线方向大体一致；任一关键数据缺失或互相冲突时，默认等待。\n")
+		sb.WriteString("- 不要把 Claw402 排名当作唯一买入理由；排名只是候选池，开仓必须经过详情数据和 K 线确认。\n")
+		sb.WriteString("- 本轮 Candidate Coins 中的标的都是允许交易的候选；如果某个标的详情缺失，只能降低置信度或等待，不能说它不属于可交易范围。\n")
+		sb.WriteString("- 如果 Signal Lab 或热力图没有出现在该标的的 Vergex Claw402 Signals 里，必须在 reasoning 中说明缺失；如果已经出现，则不能声称该标的缺少该数据。\n")
+		sb.WriteString("- 防止频繁开平仓：非止损或强止盈情况下，开仓后至少持有 45 分钟；小亏小赚的噪音区优先持有到 90 分钟；平仓后同一标的 90 分钟内不重新进场；每小时最多 1 次新开仓。\n")
+		sb.WriteString("- 止损必须放在无效点之外；止盈优先放在热力图阻力/清算区域或满足风险回报的位置。\n\n")
+	} else {
+		sb.WriteString("# You are the NOFX Claw402 auto-trader\n\n")
+		sb.WriteString("Trade only Hyperliquid instruments returned by this cycle's Claw402.ai/Vergex board. You may trade only the current candidate symbols and existing positions; never invent tickers or rotate outside the provided universe.\n\n")
+		sb.WriteString("# Decision Data Priority\n\n")
+		sb.WriteString("1. Claw402.ai Signal Ranking: candidate pool, rank, direction and category.\n")
+		sb.WriteString("2. Claw402.ai Signal Lab: trend, momentum, event/model confirmation; this is the core pre-entry confirmation source.\n")
+		sb.WriteString("3. Claw402.ai Cost/Liquidation Heatmap: crowded liquidation/cost zones, stop placement and target zones.\n")
+		sb.WriteString("4. Raw OHLCV candles: entry timing, trend structure, volatility and risk/reward validation.\n\n")
+		sb.WriteString("# Trading Rules\n\n")
+		sb.WriteString("- Manage existing positions before opening new ones.\n")
+		sb.WriteString("- Open only when Signal Lab, heatmap and raw candles broadly agree; wait when key data is missing or contradictory.\n")
+		sb.WriteString("- Ranking alone is not an entry reason; it only defines the candidate pool.\n")
+		sb.WriteString("- Every symbol in Candidate Coins is part of the allowed trading universe; missing detail can lower confidence or trigger waiting, but does not make the symbol non-tradable.\n")
+		sb.WriteString("- If Signal Lab or heatmap is absent from that symbol's Vergex Claw402 Signals, state it in reasoning; if it is present, never claim the symbol lacks that data.\n")
+		sb.WriteString("- Avoid churn: unless stopping out or taking a strong profit, hold new positions for at least 45 minutes; avoid flat/noise closes until roughly 90 minutes; after closing a symbol, wait 90 minutes before re-entry; open at most 1 new position per hour.\n")
+		sb.WriteString("- Stops must sit beyond invalidation; targets should prefer heatmap resistance/liquidation zones or valid risk/reward levels.\n\n")
+	}
+
+	writeModeVariant(&sb, variant, zh)
+
+	altcoinPosValueRatio := riskControl.AltcoinMaxPositionValueRatio
+	if altcoinPosValueRatio <= 0 {
+		altcoinPosValueRatio = 1.0
+	}
+	writeVergexHardConstraints(&sb, accountEquity, riskControl, altcoinPosValueRatio, zh)
+	writeVergexOutputFormat(&sb, accountEquity, riskControl, altcoinPosValueRatio, singleSymbol, primarySymbol, zh)
+
+	customPrompt := englishOnlyPromptSection(e.config.CustomPrompt)
+	if customPrompt != "" {
+		sb.WriteString("# User Preference\n\n")
+		sb.WriteString(customPrompt)
+		sb.WriteString("\n\n")
+	}
+
+	return sb.String()
+}
+
+func englishOnlyPromptSection(section string) string {
+	trimmed := strings.TrimSpace(section)
+	if trimmed == "" {
+		return ""
+	}
+	if detectLanguage(trimmed) == LangChinese {
+		return ""
+	}
+	return trimmed
+}
+
+func writeVergexSchemaPrompt(sb *strings.Builder, zh bool) {
+	if zh {
+		sb.WriteString("# Claw402.ai TradeFi 数据说明\n\n")
+		sb.WriteString("- Equity: 账户总权益，包含浮动盈亏，单位 USDT。\n")
+		sb.WriteString("- Balance: 可用余额，用于判断还能否开新仓，单位 USDT。\n")
+		sb.WriteString("- Margin: 当前保证金使用率，越高风险越大。\n")
+		sb.WriteString("- Position: 当前持仓，包含方向、进场价、杠杆、未实现盈亏、强平价。\n")
+		sb.WriteString("- Claw402 Ranking: 本轮可交易候选池、排名、方向和类别。\n")
+		sb.WriteString("- Signal Lab: Claw402 对单个标的的深度信号，用于确认趋势和质量。\n")
+		sb.WriteString("- Cost/Liquidation Heatmap: 成本区与清算密集区，用于止损、止盈和拥挤风险判断。\n")
+		sb.WriteString("- Raw OHLCV Kline: 原始 K 线，用于确认趋势结构、入场位置和风险回报。\n")
+	} else {
+		sb.WriteString("# Claw402.ai TradeFi Data Guide\n\n")
+		sb.WriteString("- Equity: total account value including unrealized PnL, in USDT.\n")
+		sb.WriteString("- Balance: available balance for new positions, in USDT.\n")
+		sb.WriteString("- Margin: current margin usage; higher means more risk.\n")
+		sb.WriteString("- Position: current holdings with side, entry, leverage, unrealized PnL and liquidation price.\n")
+		sb.WriteString("- Claw402 Ranking: tradable candidate pool, rank, direction and category for this cycle.\n")
+		sb.WriteString("- Signal Lab: per-symbol Claw402 deep signal used to confirm trend and quality.\n")
+		sb.WriteString("- Cost/Liquidation Heatmap: cost and liquidation clusters used for stops, targets and crowding risk.\n")
+		sb.WriteString("- Raw OHLCV Kline: raw candles used for trend structure, entry timing and risk/reward.\n")
+	}
+}
+
+func writeVergexHardConstraints(sb *strings.Builder, accountEquity float64, riskControl store.RiskControlConfig, tradeFiPositionValueRatio float64, zh bool) {
+	maxPositionValue := accountEquity * tradeFiPositionValueRatio
+	if zh {
+		sb.WriteString("# 风控硬约束\n\n")
+		sb.WriteString("## 后端强制\n")
+		sb.WriteString(fmt.Sprintf("- 最大持仓数: 同时 %d 个 Claw402 候选标的\n", riskControl.MaxPositions))
+		sb.WriteString(fmt.Sprintf("- 单仓最大名义价值: %.0f USDT (= 权益 %.0f × %.1fx)\n", maxPositionValue, accountEquity, tradeFiPositionValueRatio))
+		sb.WriteString(fmt.Sprintf("- 最大保证金占用: ≤%.0f%%\n", riskControl.MaxMarginUsage*100))
+		sb.WriteString(fmt.Sprintf("- 最小下单金额: ≥%.0f USDT\n\n", riskControl.MinPositionSize))
+		sb.WriteString("## AI 建议\n")
+		sb.WriteString(fmt.Sprintf("- 交易杠杆: Claw402 候选标的最高 %dx\n", riskControl.AltcoinMaxLeverage))
+		sb.WriteString(fmt.Sprintf("- 风险回报比: ≥1:%.1f\n", riskControl.MinRiskRewardRatio))
+		sb.WriteString(fmt.Sprintf("- 最小置信度: ≥%d 才能开仓\n\n", riskControl.MinConfidence))
+		sb.WriteString("# 仓位大小\n\n")
+		sb.WriteString("根据置信度和单仓最大名义价值填写 `position_size_usd`:\n")
+		sb.WriteString("- 高置信 (≥85): 使用上限的 80-100%\n")
+		sb.WriteString("- 中置信 (70-84): 使用上限的 50-80%\n")
+		sb.WriteString("- 低置信 (60-69): 使用上限的 30-50%\n")
+		sb.WriteString("- 不要直接把 available_balance 当作 position_size_usd。\n\n")
+	} else {
+		sb.WriteString("# Hard Risk Constraints\n\n")
+		sb.WriteString("## Backend enforced\n")
+		sb.WriteString(fmt.Sprintf("- Max positions: %d Claw402 candidate instruments at the same time\n", riskControl.MaxPositions))
+		sb.WriteString(fmt.Sprintf("- Max notional per position: %.0f USDT (= equity %.0f × %.1fx)\n", maxPositionValue, accountEquity, tradeFiPositionValueRatio))
+		sb.WriteString(fmt.Sprintf("- Max margin usage: ≤%.0f%%\n", riskControl.MaxMarginUsage*100))
+		sb.WriteString(fmt.Sprintf("- Min order size: ≥%.0f USDT\n\n", riskControl.MinPositionSize))
+		sb.WriteString("## AI guided\n")
+		sb.WriteString(fmt.Sprintf("- Leverage: every open position must use exactly %dx\n", riskControl.AltcoinMaxLeverage))
+		sb.WriteString(fmt.Sprintf("- Risk/reward: ≥1:%.1f\n", riskControl.MinRiskRewardRatio))
+		sb.WriteString(fmt.Sprintf("- Min confidence to open: ≥%d\n\n", riskControl.MinConfidence))
+		sb.WriteString("# Position Sizing\n\n")
+		sb.WriteString("For every `open_long` or `open_short`, use the full max notional per position.\n")
+		sb.WriteString("- Do not scale position_size_usd down by confidence.\n")
+		sb.WriteString("- Do not open small probe positions.\n")
+		sb.WriteString("- If the setup is not strong enough for full size, output `wait`.\n")
+		sb.WriteString("- Do not use available_balance directly as position_size_usd.\n\n")
+	}
+}
+
+func writeVergexOutputFormat(sb *strings.Builder, accountEquity float64, riskControl store.RiskControlConfig, tradeFiPositionValueRatio float64, singleSymbol bool, primarySymbol string, zh bool) {
+	exampleSymbol := "xyz:NVDA"
+	secondSymbol := "xyz:AAPL"
+	if singleSymbol && strings.TrimSpace(primarySymbol) != "" {
+		exampleSymbol = primarySymbol
+		secondSymbol = primarySymbol
+	}
+	positionSize := accountEquity * tradeFiPositionValueRatio
+	leverage := riskControl.AltcoinMaxLeverage
+	if leverage <= 0 {
+		leverage = 1
+	}
+
+	sb.WriteString("# Output Format (Strictly Follow)\n\n")
+	if zh {
+		sb.WriteString("必须使用 XML 标签 <reasoning> 和 <decision> 分隔简明分析和决策 JSON。\n\n")
+		sb.WriteString("方向必须由数据决定：上涨结构确认时可以 `open_long`，下跌结构确认时可以 `open_short`；不要默认只做多或只做空。\n\n")
+	} else {
+		sb.WriteString("Use XML tags <reasoning> and <decision> to separate concise analysis from the decision JSON.\n\n")
+		sb.WriteString("Direction must be data-driven: use `open_long` for confirmed upside structures and `open_short` for confirmed downside structures; never default to long-only or short-only behavior.\n\n")
+	}
+	sb.WriteString("<reasoning>\n")
+	if zh {
+		sb.WriteString("简明说明: Claw402 排名、Signal Lab、热力图、K 线是否一致；如果缺数据或冲突，说明为什么等待。\n")
+	} else {
+		sb.WriteString("Briefly state whether Claw402 ranking, Signal Lab, heatmap and candles agree; if data is missing or conflicting, explain why you wait.\n")
+	}
+	sb.WriteString("</reasoning>\n\n")
+	sb.WriteString("<decision>\n")
+	sb.WriteString("```json\n[\n")
+	if singleSymbol {
+		sb.WriteString(fmt.Sprintf("  {\"symbol\": \"%s\", \"action\": \"open_short\", \"leverage\": %d, \"position_size_usd\": %.0f, \"stop_loss\": 0, \"take_profit\": 0, \"confidence\": 85, \"risk_usd\": 0}\n", exampleSymbol, leverage, positionSize))
+	} else {
+		sb.WriteString(fmt.Sprintf("  {\"symbol\": \"%s\", \"action\": \"open_long\", \"leverage\": %d, \"position_size_usd\": %.0f, \"stop_loss\": 0, \"take_profit\": 0, \"confidence\": 85, \"risk_usd\": 0},\n", exampleSymbol, leverage, positionSize))
+		sb.WriteString(fmt.Sprintf("  {\"symbol\": \"%s\", \"action\": \"open_short\", \"leverage\": %d, \"position_size_usd\": %.0f, \"stop_loss\": 0, \"take_profit\": 0, \"confidence\": 85, \"risk_usd\": 0}\n", secondSymbol, leverage, positionSize))
+	}
+	sb.WriteString("]\n```\n")
+	sb.WriteString("</decision>\n\n")
+
+	if zh {
+		sb.WriteString("## 字段要求\n\n")
+		sb.WriteString("- `action`: open_long | open_short | close_long | close_short | hold | wait\n")
+		sb.WriteString(fmt.Sprintf("- `confidence`: 0-100，开仓建议 ≥ %d\n", riskControl.MinConfidence))
+		sb.WriteString("- 开仓时必填: leverage, position_size_usd, stop_loss, take_profit, confidence, risk_usd\n")
+		sb.WriteString("- 所有数值必须是算好的数字，不能写公式。\n")
+		if singleSymbol {
+			sb.WriteString(fmt.Sprintf("- 本策略只交易 `%s`，JSON 的 symbol 必须完全等于它。\n", exampleSymbol))
+		} else {
+			sb.WriteString("- JSON 的 symbol 必须完全来自本轮候选标的或已有持仓；`xyz:` 标的保留前缀，core crypto 标的不要添加 `xyz:` 或 `USDT` 后缀。\n")
+		}
+		sb.WriteString("\n")
+	} else {
+		sb.WriteString("## Field Requirements\n\n")
+		sb.WriteString("- `action`: open_long | open_short | close_long | close_short | hold | wait\n")
+		sb.WriteString(fmt.Sprintf("- `confidence`: 0-100; recommended ≥ %d to open\n", riskControl.MinConfidence))
+		sb.WriteString("- Required when opening: leverage, position_size_usd, stop_loss, take_profit, confidence, risk_usd\n")
+		sb.WriteString("- All numeric values must be calculated numbers, not formulas.\n")
+		if singleSymbol {
+			sb.WriteString(fmt.Sprintf("- This strategy trades only `%s`; JSON symbol must match it exactly.\n", exampleSymbol))
+		} else {
+			sb.WriteString("- JSON symbols must exactly match current candidates or existing positions; keep `xyz:` on XYZ instruments, and do not add `xyz:` or `USDT` to core crypto symbols.\n")
+		}
+		sb.WriteString("\n")
+	}
+}
+
+// buildXYZStockCustomPrompt returns the canonical English directional stock
 // briefing the agent uses for single-symbol Hyperliquid USDC perpetuals on
-// the XYZ board. This is the quick-trade flow's stance: when the user clicks
-// the lightning button they want exposure NOW, not a watch-and-wait analyst.
-// We bias the AI toward opening a probing long on every flat cycle, with
-// risk guardrails to keep the size sane. Symbol is inlined for LLM grounding
-// so it never confuses the trading instrument.
+// the XYZ board. Symbol is inlined for LLM grounding so it never confuses the
+// trading instrument.
 func buildXYZStockCustomPrompt(symbol string) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Trade ONLY the Hyperliquid USDC perpetual %s (US equity / xyz board).\n\n", symbol))
-	sb.WriteString("Core stance: LONG-ONLY, ACTIVE. Do not short. Do not sit on the sidelines.\n\n")
+	sb.WriteString("Core stance: DIRECTIONAL, SIGNAL-DRIVEN. You may open long or short; never force a trade when Signal Lab, liquidation structure and candles disagree.\n\n")
 
-	sb.WriteString("## ⚡ Flat-Account Rule (HIGHEST PRIORITY)\n")
-	sb.WriteString("If `Current Positions` is None / empty AND no open exposure on this symbol, you MUST open a long position THIS cycle.\n")
-	sb.WriteString("- The user is paying for the quick-trade flow specifically to be in the market — your default is OPEN, not WAIT.\n")
-	sb.WriteString("- `wait` / `hold` are only acceptable when you ALREADY have an open position (then it's a hold decision).\n")
-	sb.WriteString("- If you cannot find a clear breakout setup, take a probing entry at market with reduced size (40-60% of max position value) and a tight 2% stop. Probing > waiting.\n")
-	sb.WriteString("- Set `confidence` >= 75 so backend risk control accepts the order. Justify the 75 in reasoning even if the technical picture is mixed — the strategic decision to be exposed IS the edge for this flow.\n\n")
+	sb.WriteString("## Flat-Account Rule\n")
+	sb.WriteString("If `Current Positions` is None / empty, evaluate both directions from scratch.\n")
+	sb.WriteString("- Use `open_long` only when upside continuation or bullish reversal is confirmed.\n")
+	sb.WriteString("- Use `open_short` only when downside continuation or bearish reversal is confirmed.\n")
+	sb.WriteString("- Use `wait` when neither side meets the minimum confidence and risk/reward threshold.\n")
+	sb.WriteString("- Do not raise confidence just to force an order; confidence must reflect the evidence.\n\n")
 
-	sb.WriteString("## Preferred Entry Conditions (use to size up, not to gate the entry)\n")
-	sb.WriteString("Size up toward the 80-100% bracket when you see ANY of:\n")
+	sb.WriteString("## Long Entry Conditions\n")
 	sb.WriteString("- Break of the prior session/intraday high on rising volume.\n")
 	sb.WriteString("- Pullback to a clearly held intraday support (prior swing low, VWAP, EMA20/50) with a bullish reaction bar.\n")
 	sb.WriteString("- Sector tape strength (broad US-equity bid, sympathy with peers in the same theme).\n")
 	sb.WriteString("- Confirmed catalyst: earnings beat, guide up, sector rotation, macro tailwind.\n\n")
+
+	sb.WriteString("## Short Entry Conditions\n")
+	sb.WriteString("- Breakdown below intraday support or value area with expanding volume.\n")
+	sb.WriteString("- Failed breakout, lower high, or bearish rejection at resistance.\n")
+	sb.WriteString("- Signal Lab / liquidation structure shows downside fuel, trapped longs, or weak support below.\n")
+	sb.WriteString("- Negative catalyst: earnings miss, guide down, sector weakness, macro headwind.\n\n")
 
 	sb.WriteString("## Risk Guardrails (non-negotiable)\n")
 	sb.WriteString("- Per-trade stop-loss: 1.5-3% from entry. ALWAYS set a numeric `stop_loss`.\n")
 	sb.WriteString("- Take-profit: target at least R/R 2:1; set a numeric `take_profit`.\n")
 	sb.WriteString("- Per-trade notional: <= 25% of account equity (probing 10-15%, full 20-25%).\n")
 	sb.WriteString("- Leverage: 2-3x default, never above 5x. Never go all-in.\n")
-	sb.WriteString("- Once long, do NOT short the same cycle. Manage the open position first.\n\n")
+	sb.WriteString("- Do not flip directly from long to short or short to long in the same cycle. Manage or close the open position first.\n\n")
 
-	sb.WriteString("## Position Management (when already long)\n")
+	sb.WriteString("## Position Management\n")
 	sb.WriteString("- Trail stop to breakeven once +1R, take partial profits at +2R if momentum stalls.\n")
 	sb.WriteString("- Cut quickly if price breaks the stop or the catalyst thesis fails.\n")
-	sb.WriteString("- Holding past 30 minutes is fine; flipping in/out every cycle is not.\n\n")
+	sb.WriteString("- Holding past 45 minutes is fine; flipping in/out every cycle is not.\n\n")
 
 	sb.WriteString("## Discipline\n")
 	sb.WriteString(fmt.Sprintf("- Single-symbol mandate: never rotate into another ticker. The decision JSON `symbol` MUST be exactly \"%s\".\n", symbol))
@@ -220,7 +436,7 @@ func buildXYZStockCustomPrompt(symbol string) string {
 // to put the actual trading symbol into the JSON example.
 func (e *StrategyEngine) singleSymbolInfo() (bool, string) {
 	coinSource := e.config.CoinSource
-	if coinSource.SourceType == "static" && len(coinSource.StaticCoins) == 1 {
+	if (coinSource.SourceType == "static" || coinSource.SourceType == "vergex_signal") && len(coinSource.StaticCoins) == 1 {
 		return true, strings.ToUpper(strings.TrimSpace(coinSource.StaticCoins[0]))
 	}
 	return false, ""
@@ -637,6 +853,11 @@ func (e *StrategyEngine) BuildUserPrompt(ctx *Context) string {
 				sb.WriteString(e.formatQuantData(quantData))
 			}
 		}
+		if ctx.VergexDataMap != nil {
+			if vergexData, hasVergex := ctx.VergexDataMap[coin.Symbol]; hasVergex {
+				sb.WriteString(e.formatVergexData(vergexData))
+			}
+		}
 		sb.WriteString("\n")
 	}
 	sb.WriteString("\n")
@@ -663,7 +884,7 @@ func (e *StrategyEngine) BuildUserPrompt(ctx *Context) string {
 	}
 
 	sb.WriteString("---\n\n")
-	sb.WriteString("Now please analyze and output your decision (Chain of Thought + JSON)\n")
+	sb.WriteString("Now please analyze briefly and output the decision JSON.\n")
 
 	return sb.String()
 }
@@ -700,6 +921,11 @@ func (e *StrategyEngine) formatPositionInfo(index int, pos PositionInfo, ctx *Co
 		if ctx.QuantDataMap != nil {
 			if quantData, hasQuant := ctx.QuantDataMap[pos.Symbol]; hasQuant {
 				sb.WriteString(e.formatQuantData(quantData))
+			}
+		}
+		if ctx.VergexDataMap != nil {
+			if vergexData, hasVergex := ctx.VergexDataMap[pos.Symbol]; hasVergex {
+				sb.WriteString(e.formatVergexData(vergexData))
 			}
 		}
 		sb.WriteString("\n")
@@ -760,9 +986,24 @@ func (e *StrategyEngine) formatCoinSourceTag(sources []string) string {
 			return " (Hyperliquid All)"
 		case "hyper_main":
 			return " (Hyperliquid Top20)"
+		case "vergex_signal":
+			return " (Vergex Signal)"
+		}
+		if strings.HasPrefix(sources[0], "hyper_rank") {
+			return " (Hyperliquid Dynamic Rank)"
 		}
 	}
 	return ""
+}
+
+func (e *StrategyEngine) formatVergexData(data *vergex.MarketAnalysis) string {
+	if data == nil {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("\nVergex Claw402 Signals:\n")
+	sb.WriteString(vergex.FormatAnalysisForAI(data))
+	return sb.String()
 }
 
 // ============================================================================

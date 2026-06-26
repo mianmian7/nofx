@@ -1,0 +1,134 @@
+import { Link } from 'react-router-dom'
+import {
+  ArrowRight,
+  CheckCircle2,
+  CircleDollarSign,
+  KeyRound,
+  ShieldCheck,
+  Wallet,
+  Zap,
+} from 'lucide-react'
+import { ROUTES } from '../../router/paths'
+
+const setupSteps = [
+  {
+    title: 'Create your NOFX account',
+    detail:
+      'Your account keeps the Autopilot configuration, wallet authorization state, and trading dashboard in one place.',
+    icon: KeyRound,
+  },
+  {
+    title: 'Fund the AI fee wallet',
+    detail:
+      'NOFX prepares a Base USDC wallet for Claw402.ai data and model calls. This wallet is separate from trading collateral.',
+    icon: CircleDollarSign,
+  },
+  {
+    title: 'Authorize Hyperliquid',
+    detail:
+      'Connect your trading wallet, approve the NOFX Agent, and approve the builder fee. Funds remain in your Hyperliquid account.',
+    icon: Wallet,
+  },
+  {
+    title: 'Deposit trading USDC',
+    detail:
+      'Add USDC on Hyperliquid, then start NOFX Autopilot. The strategy is created and launched automatically.',
+    icon: Zap,
+  },
+]
+
+const pipeline = [
+  'Read the live Claw402.ai board, with US stocks prioritized before crypto.',
+  'Fetch Signal Lab and cost/liquidation heatmap details for each candidate.',
+  'Confirm with raw OHLCV candles, then trade full-size 10x only when the setup is strong enough.',
+]
+
+export function TraderLaunchGuestPage() {
+  return (
+    <div className="min-h-[calc(100vh-4rem)] overflow-hidden bg-[#06080B] px-4 py-10 md:px-8">
+      <div className="mx-auto flex w-full max-w-7xl flex-col gap-8">
+        <section className="grid gap-8 rounded-2xl border border-white/10 bg-[linear-gradient(135deg,rgba(16,18,25,0.94),rgba(7,10,14,0.92)_52%,rgba(18,15,3,0.78))] p-6 shadow-[0_24px_100px_rgba(0,0,0,0.45)] md:p-8 xl:grid-cols-[1.02fr_0.98fr]">
+          <div className="flex flex-col justify-center">
+            <div className="mb-5 inline-flex w-fit items-center gap-2 rounded-full border border-nofx-gold/25 bg-nofx-gold/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-nofx-gold">
+              <ShieldCheck className="h-3.5 w-3.5" />
+              NOFX Autopilot
+            </div>
+            <h1 className="max-w-3xl text-4xl font-bold tracking-tight text-white md:text-5xl">
+              One strategy. Four setup steps. Then it trades.
+            </h1>
+            <p className="mt-5 max-w-2xl text-base leading-7 text-zinc-400">
+              NOFX runs a single Claw402-driven strategy: board, per-market
+              details, liquidation structure, candles, execution. No strategy
+              picker, no manual symbol picking required.
+            </p>
+            <div className="mt-7 flex flex-col gap-3 sm:flex-row">
+              <Link
+                to={ROUTES.login}
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-nofx-gold px-5 py-3 text-sm font-bold text-black transition hover:bg-yellow-400"
+              >
+                Start setup
+                <ArrowRight className="h-4 w-4" />
+              </Link>
+              <Link
+                to={ROUTES.register}
+                className="inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] px-5 py-3 text-sm font-semibold text-zinc-200 transition hover:border-white/20 hover:bg-white/[0.07]"
+              >
+                Create account
+              </Link>
+            </div>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            {setupSteps.map((step, index) => {
+              const Icon = step.icon
+              return (
+                <div
+                  key={step.title}
+                  className="rounded-xl border border-white/10 bg-black/24 p-4"
+                >
+                  <div className="mb-4 flex items-center justify-between">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-nofx-gold/20 bg-nofx-gold/10 text-nofx-gold">
+                      <Icon className="h-4 w-4" />
+                    </div>
+                    <span className="font-mono text-xs text-zinc-600">
+                      0{index + 1}
+                    </span>
+                  </div>
+                  <h2 className="text-base font-semibold text-white">
+                    {step.title}
+                  </h2>
+                  <p className="mt-2 text-sm leading-6 text-zinc-500">
+                    {step.detail}
+                  </p>
+                </div>
+              )
+            })}
+          </div>
+        </section>
+
+        <section className="grid gap-4 rounded-2xl border border-white/10 bg-[#0A0D12] p-5 md:grid-cols-[0.72fr_1.28fr] md:p-6">
+          <div>
+            <div className="text-sm font-semibold uppercase tracking-[0.18em] text-nofx-gold">
+              What runs after launch
+            </div>
+            <p className="mt-3 text-sm leading-6 text-zinc-500">
+              The same production path runs every cycle. The interface only asks
+              you to fund, authorize, and start.
+            </p>
+          </div>
+          <div className="grid gap-3 lg:grid-cols-3">
+            {pipeline.map((item) => (
+              <div
+                key={item}
+                className="flex gap-3 rounded-xl border border-white/8 bg-white/[0.03] p-4"
+              >
+                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-300" />
+                <p className="text-sm leading-6 text-zinc-300">{item}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
+    </div>
+  )
+}

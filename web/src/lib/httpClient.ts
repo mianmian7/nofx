@@ -108,23 +108,31 @@ export class HttpClient {
    */
   private async handleError(error: AxiosError): Promise<any> {
     const isSilent = (error.config as any)?.silentError === true
-    const errorData = error.response?.data as {
-      error?: string
-      message?: string
-      error_key?: string
-      error_params?: Record<string, string>
-    } | undefined
+    const errorData = error.response?.data as
+      | {
+          error?: string
+          message?: string
+          error_key?: string
+          error_params?: Record<string, string>
+        }
+      | undefined
     const serverMessage = errorData?.error || errorData?.message
 
     // Network error (no response from server)
     if (!error.response) {
+      const isTimeout = error.code === 'ECONNABORTED'
+      const message = isTimeout
+        ? 'Request timed out'
+        : error.message || 'Network error'
       if (!isSilent) {
-        toast.error('Network error - Please check your connection', {
+        toast.error(isTimeout ? 'Request timed out' : 'Network error', {
           id: 'network-error',
-          description: 'Unable to reach the server',
+          description: isTimeout
+            ? 'The upstream service took too long to respond'
+            : 'Unable to reach the server',
         })
       }
-      throw new Error('Network error')
+      throw new Error(message)
     }
 
     const status = error.response?.status ?? 0
@@ -215,6 +223,7 @@ export class HttpClient {
       params?: any
       headers?: Record<string, string>
       silent?: boolean
+      timeout?: number
     } = {}
   ): Promise<ApiResponse<T>> {
     try {
@@ -224,6 +233,7 @@ export class HttpClient {
         data: options.data,
         params: options.params,
         headers: options.headers,
+        timeout: options.timeout,
         ...(options.silent && { silentError: true }),
       })
 

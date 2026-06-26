@@ -29,18 +29,144 @@ export interface SymbolListResponse {
   count: number
 }
 
-export interface AI500Coin {
-  pair: string
-  score: number
-  max_score?: number
-  increase_percent?: number
-  start_price?: number
-  start_time?: number
+export interface VergexSignalItem {
+  rank?: number
+  symbol: string
+  market_type?: string
+  bias?: string
+  confidence?: number
+  score?: number
+  category?: string
 }
 
-export interface AI500ListResponse {
-  coins: AI500Coin[]
-  count: number
+export interface VergexSignalRankingResponse {
+  items: VergexSignalItem[]
+  raw?: unknown
+}
+
+export interface VergexDetailRequest {
+  marketType: string
+  symbol: string
+  chain?: string
+  liqBand?: string
+}
+
+export interface VergexSignalDimension {
+  key?: string
+  family?: string
+  label?: string
+  what?: string
+  kind?: string
+  direction?: string
+  strength?: string
+  percentile?: number
+  detail?: string
+}
+
+export interface VergexSignalLevels {
+  markPrice?: number
+  poc?: number
+  pocDistPct?: number
+  magnet?: number
+  magnetDistPct?: number
+  resistance?: number
+  resistanceDistPct?: number
+  support?: number
+  supportDistPct?: number
+  valueAreaHigh?: number
+  valueAreaLow?: number
+}
+
+export interface VergexSignalMetrics {
+  shortLiqAbove?: number
+  longLiqBelow?: number
+  longOverhangPnl?: number
+  shortOverhangPnl?: number
+  gLong?: number
+  gShort?: number
+  cascadeVulnPct?: number
+  top10Pct?: number
+  convexity?: number
+  includedPositions?: number
+  state?: string
+}
+
+export interface VergexSignalLabData {
+  market?: {
+    chain?: string
+    marketType?: string
+    marketId?: string
+    symbol?: string
+    displayName?: string
+    isActive?: boolean
+  }
+  band?: string
+  bias?: string
+  structureRead?: string
+  confidence?: string
+  dimensions?: VergexSignalDimension[]
+  levels?: VergexSignalLevels
+  metrics?: VergexSignalMetrics
+  compositeZ?: number
+  rank?: number
+  universeSize?: number
+}
+
+export interface VergexSignalLabResponse {
+  data?: VergexSignalLabData
+  meta?: unknown
+}
+
+export interface VergexHeatmapBin {
+  px?: number
+  bucketStartPrice?: number
+  bucketEndPrice?: number
+  longCost?: number
+  shortCost?: number
+  longLiq?: number
+  shortLiq?: number
+}
+
+export interface VergexHeatmapData {
+  market?: {
+    chain?: string
+    marketType?: string
+    marketId?: string
+    symbol?: string
+    displayName?: string
+    isActive?: boolean
+  }
+  markPrice?: number
+  binStep?: number
+  costAddrs?: number
+  liqAddrs?: number
+  bins?: VergexHeatmapBin[]
+  cost?: {
+    state?: string
+    reason?: string
+    totalPositions?: number
+    includedPositions?: number
+    excludedPositions?: number
+    weightSource?: string
+  }
+  liquidation?: {
+    state?: string
+    reason?: string
+  }
+}
+
+export interface VergexHeatmapResponse {
+  data?: VergexHeatmapData
+  meta?: unknown
+}
+
+function vergexDetailQuery(params: VergexDetailRequest) {
+  const query = new URLSearchParams()
+  query.set('marketType', params.marketType)
+  query.set('symbol', params.symbol)
+  query.set('chain', params.chain || 'mainnet')
+  query.set('liqBand', params.liqBand || '15')
+  return query.toString()
 }
 
 export const dataApi = {
@@ -52,10 +178,41 @@ export const dataApi = {
     return result.data || { exchange, symbols: [], count: 0 }
   },
 
-  async getAI500List(limit = 20): Promise<AI500ListResponse> {
-    const result = await httpClient.get<AI500ListResponse>(`${API_BASE}/ai500?limit=${limit}`)
-    if (!result.success) throw new Error('Failed to fetch AI500 list')
-    return result.data || { coins: [], count: 0 }
+  async getVergexSignalRanking(
+    limit = 30
+  ): Promise<VergexSignalRankingResponse> {
+    const result = await httpClient.get<VergexSignalRankingResponse>(
+      `${API_BASE}/vergex/signal-ranking?marketType=all&limit=${limit}`
+    )
+    if (!result.success)
+      throw new Error('Failed to fetch Claw402/Vergex signal ranking')
+    return result.data || { items: [] }
+  },
+
+  async getVergexSignalLab(
+    params: VergexDetailRequest
+  ): Promise<VergexSignalLabResponse> {
+    const result = await httpClient.request<VergexSignalLabResponse>(
+      `${API_BASE}/vergex/signal-lab?${vergexDetailQuery(params)}`,
+      { timeout: 90000 }
+    )
+    if (!result.success)
+      throw new Error(result.message || 'Failed to fetch Signal Lab')
+    return result.data || {}
+  },
+
+  async getVergexCostLiquidationHeatmap(
+    params: VergexDetailRequest
+  ): Promise<VergexHeatmapResponse> {
+    const result = await httpClient.request<VergexHeatmapResponse>(
+      `${API_BASE}/vergex/cost-liquidation-heatmap?${vergexDetailQuery(params)}`,
+      { timeout: 90000 }
+    )
+    if (!result.success)
+      throw new Error(
+        result.message || 'Failed to fetch cost/liquidation heatmap'
+      )
+    return result.data || {}
   },
 
   async getStatus(traderId?: string, silent?: boolean): Promise<SystemStatus> {
@@ -76,10 +233,7 @@ export const dataApi = {
     return result.data!
   },
 
-  async getPositions(
-    traderId?: string,
-    silent?: boolean
-  ): Promise<Position[]> {
+  async getPositions(traderId?: string, silent?: boolean): Promise<Position[]> {
     const url = traderId
       ? `${API_BASE}/positions?trader_id=${traderId}`
       : `${API_BASE}/positions`
@@ -128,10 +282,7 @@ export const dataApi = {
     return result.data!
   },
 
-  async getEquityHistory(
-    traderId?: string,
-    silent?: boolean
-  ): Promise<any[]> {
+  async getEquityHistory(traderId?: string, silent?: boolean): Promise<any[]> {
     const url = traderId
       ? `${API_BASE}/equity-history?trader_id=${traderId}`
       : `${API_BASE}/equity-history`
@@ -140,7 +291,10 @@ export const dataApi = {
     return result.data!
   },
 
-  async getEquityHistoryBatch(traderIds: string[], hours?: number): Promise<any> {
+  async getEquityHistoryBatch(
+    traderIds: string[],
+    hours?: number
+  ): Promise<any> {
     const result = await httpClient.post<any>(
       `${API_BASE}/equity-history-batch`,
       { trader_ids: traderIds, hours: hours || 0 }

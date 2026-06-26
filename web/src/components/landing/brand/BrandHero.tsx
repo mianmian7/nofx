@@ -76,7 +76,7 @@ export default function BrandHero() {
                     </motion.div>
                 </div>
 
-                {/* Right Visual - Agent Terminal */}
+                {/* Right Visual - Trader Terminal */}
                 <div className="flex-1 relative overflow-visible flex items-center justify-center py-8 lg:py-0 min-h-[600px]">
                     {/* Background gradient orbs */}
                     <div className="absolute top-1/2 right-[15%] -translate-y-1/2 w-[450px] h-[450px] rounded-full bg-gradient-to-br from-nofx-gold/20 via-nofx-gold/5 to-transparent blur-[80px]" />

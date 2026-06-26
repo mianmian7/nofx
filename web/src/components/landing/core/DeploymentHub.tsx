@@ -32,7 +32,7 @@ export default function DeploymentHub() {
 
                         <p className="text-zinc-400 text-lg leading-relaxed font-light">
                             Initialize your own high-frequency trading node in seconds.
-                            Our optimized installer handles all dependencies, bringing your autonomous agent online with a single command.
+                            Our optimized installer handles all dependencies, bringing the trading system online with a single command.
                         </p>
 
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4">

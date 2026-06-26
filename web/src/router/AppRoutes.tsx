@@ -18,13 +18,12 @@ import { ResetPasswordPage } from '../components/auth/ResetPasswordPage'
 import { SetupPage } from '../components/modals/SetupPage'
 import { CompetitionPage } from '../components/trader/CompetitionPage'
 import { AITradersPage } from '../components/trader/AITradersPage'
+import { TraderLaunchGuestPage } from '../components/trader/TraderLaunchGuestPage'
 import { FAQPage } from '../pages/FAQPage'
 import { LandingPage } from '../pages/LandingPage'
 import { BeginnerOnboardingPage } from '../pages/BeginnerOnboardingPage'
 import { DataPage } from '../pages/DataPage'
-import { AgentChatPage } from '../pages/AgentChatPage'
 import { SettingsPage } from '../pages/SettingsPage'
-import { StrategyMarketPage } from '../pages/StrategyMarketPage'
 import { StrategyStudioPage } from '../pages/StrategyStudioPage'
 import { TraderDashboardPage } from '../pages/TraderDashboardPage'
 import { useAuth } from '../contexts/AuthContext'
@@ -458,14 +457,6 @@ export function AppRoutes() {
           }
         />
         <Route
-          path={ROUTES.agent}
-          element={
-            <AppChrome currentPage="agent" showFooter={false}>
-              <AgentChatPage />
-            </AppChrome>
-          }
-        />
-        <Route
           path={ROUTES.data}
           element={
             <AppChrome currentPage="data" showFooter={false}>
@@ -515,9 +506,7 @@ export function AppRoutes() {
           path={ROUTES.strategyMarket}
           element={
             isAuthenticated ? (
-              <AppChrome currentPage="strategy-market" animateContent>
-                <StrategyMarketPage />
-              </AppChrome>
+              <Navigate to={ROUTES.strategy} replace />
             ) : (
               <LandingPage />
             )
@@ -525,7 +514,19 @@ export function AppRoutes() {
         />
         <Route
           path={ROUTES.traders}
-          element={isAuthenticated ? <TradersRoute /> : <LandingPage />}
+          element={
+            isAuthenticated ? (
+              <TradersRoute />
+            ) : (
+              <AppChrome
+                currentPage="traders"
+                showFooter={false}
+                animateContent
+              >
+                <TraderLaunchGuestPage />
+              </AppChrome>
+            )
+          }
         />
         <Route
           path={ROUTES.dashboard}

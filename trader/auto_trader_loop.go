@@ -30,6 +30,10 @@ func (at *AutoTrader) runCycle() error {
 		return nil
 	}
 
+	if err := at.reloadStrategyConfigIfChanged(); err != nil {
+		at.logWarnf("⚠️ Strategy refresh failed, using current in-memory config: %v", err)
+	}
+
 	// Check USDC balance periodically for claw402 users (every 10 cycles)
 	if at.callCount%10 == 0 && store.IsClaw402Config(at.config.AIModel) {
 		at.checkClaw402Balance()
@@ -250,7 +254,9 @@ func (at *AutoTrader) runCycle() error {
 		}
 	}
 
-	// Execute decisions and record results
+	// Execute decisions and record results. Trade throttle is applied here,
+	// immediately before order placement, so AI churn cannot become live orders.
+	opensAllowedThisCycle := 0
 	for _, d := range sortedDecisions {
 		// Check if trader is stopped before each decision (allow immediate stop during execution)
 		at.isRunningMutex.RLock()
@@ -273,6 +279,17 @@ func (at *AutoTrader) runCycle() error {
 			Reasoning:  d.Reasoning,
 			Timestamp:  time.Now().UTC(),
 			Success:    false,
+		}
+
+		if reason := at.tradeThrottleReason(d, ctx, opensAllowedThisCycle); reason != "" {
+			at.logWarnf("🧊 %s %s blocked: %s", d.Symbol, d.Action, reason)
+			actionRecord.Error = reason
+			record.ExecutionLog = append(record.ExecutionLog, fmt.Sprintf("🧊 %s %s blocked: %s", d.Symbol, d.Action, reason))
+			record.Decisions = append(record.Decisions, actionRecord)
+			continue
+		}
+		if isOpenAction(d.Action) {
+			opensAllowedThisCycle++
 		}
 
 		if err := at.executeDecisionWithRecord(&d, &actionRecord); err != nil {
@@ -740,7 +757,7 @@ func sortDecisionsByPriority(decisions []kernel.Decision) []kernel.Decision {
 func (at *AutoTrader) checkClaw402Balance() {
 	scanMinutes := int(at.config.ScanInterval.Minutes())
 	if scanMinutes <= 0 {
-		scanMinutes = 3
+		scanMinutes = 15
 	}
 	dailyCost, _ := store.EstimateRunway(1.0, at.config.CustomModelName, scanMinutes)
 	logger.Infof("💰 [%s] Estimated daily AI cost: ~$%.2f (model: %s, interval: %dm)",

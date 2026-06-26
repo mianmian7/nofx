@@ -202,9 +202,6 @@ func (s *Server) setupRoutes() {
 			s.route(protected, "POST", "/logout", "Logout (blacklist token)", s.handleLogout)
 			s.route(protected, "POST", "/onboarding/beginner", "Prepare beginner claw402 wallet and default model", s.handleBeginnerOnboarding)
 			s.route(protected, "GET", "/onboarding/beginner/current", "Get current beginner claw402 wallet", s.handleCurrentBeginnerWallet)
-			s.route(protected, "GET", "/agent/preferences", "Get persistent agent preferences", s.handleGetAgentPreferences)
-			s.route(protected, "POST", "/agent/preferences", "Create persistent agent preference", s.handleCreateAgentPreference)
-			s.route(protected, "DELETE", "/agent/preferences/:id", "Delete persistent agent preference", s.handleDeleteAgentPreference)
 
 			// User account management
 			s.routeWithSchema(protected, "PUT", "/user/password", "Change current user password",
@@ -214,8 +211,9 @@ func (s *Server) setupRoutes() {
 			// Server IP query (requires authentication, for whitelist configuration)
 			s.route(protected, "GET", "/server-ip", "Get server public IP (for exchange whitelist)", s.handleGetServerIP)
 
-			// AI500 index board (cached; routed through claw402 when configured)
-			s.route(protected, "GET", "/ai500", "AI500 index board (?limit=20)", s.handleAI500List)
+			s.route(protected, "GET", "/vergex/signal-ranking", "Vergex signal ranking via claw402 (?marketType=all&limit=30)", s.handleVergexSignalRanking)
+			s.route(protected, "GET", "/vergex/signal-lab", "Vergex signal lab via claw402 (?marketType=hip3_perp&symbol=AAPL)", s.handleVergexSignalLab)
+			s.route(protected, "GET", "/vergex/cost-liquidation-heatmap", "Vergex cost/liquidation heatmap via claw402 (?marketType=hip3_perp&symbol=AAPL)", s.handleVergexCostLiquidationHeatmap)
 
 			// AI trader management
 			s.routeWithSchema(protected, "GET", "/my-traders", "List user's traders with status",
@@ -226,7 +224,7 @@ NOTE: The id field is "trader_id" (NOT "id"). Always read trader_id from this en
 				`:id = trader_id from GET /api/my-traders`,
 				s.handleGetTraderConfig)
 			s.routeWithSchema(protected, "POST", "/traders", "Create a new AI trader",
-				`Body: {"name":"<string, required>","ai_model_id":"<EXACT id field from GET /api/models — e.g. 'abc123_deepseek', NOT the provider name 'deepseek'>","exchange_id":"<EXACT id field from GET /api/exchanges — e.g. '05785d3b-841e-...', NOT the type name>","strategy_id":"<EXACT id field from GET /api/strategies>","scan_interval_minutes":<int, default 3, minimum 3>}
+				`Body: {"name":"<string, required>","ai_model_id":"<EXACT id field from GET /api/models — e.g. 'abc123_deepseek', NOT the provider name 'deepseek'>","exchange_id":"<EXACT id field from GET /api/exchanges — e.g. '05785d3b-841e-...', NOT the type name>","strategy_id":"<EXACT id field from GET /api/strategies>","scan_interval_minutes":<int, default 15, minimum 3>}
 IMPORTANT: ai_model_id and exchange_id must be the full "id" value from the Account State, not the provider/type name.`,
 				s.handleCreateTrader)
 			s.routeWithSchema(protected, "PUT", "/traders/:id", "Update trader configuration",
@@ -337,10 +335,10 @@ CRITICAL: Always use the "id" field for strategy_id.`,
 IMPORTANT: For most use cases just POST {"name":"<name>"} — the backend fills everything in. Only include "config" when the user explicitly requests custom settings (specific coins, custom leverage, custom timeframes).
 
 StrategyConfig fields:
-  coin_source.source_type: "static"(fixed coin list) | "ai500"(AI top500 ranking) | "oi_top"(OI increasing, suited for long) | "oi_low"(OI decreasing, suited for short)
-  coin_source.static_coins: ["BTCUSDT","ETHUSDT"] — only when source_type="static"
-  coin_source.use_ai500, ai500_limit: number of coins from AI500 pool (default 10)
-  coin_source.use_oi_top/use_oi_low, oi_top_limit/oi_low_limit: OI-based coin selection
+  coin_source.source_type: "vergex_signal" (Claw402/Vergex signal-ranking; default and recommended)
+  coin_source.vergex_limit: number of Claw402 candidates enriched with detail data (default 10, max 10)
+  coin_source.vergex_market_type: "all" for the full Claw402 board; detail calls use each ranking item's market_type
+  coin_source.vergex_chain: "hyperliquid"
   indicators.klines.primary_timeframe: "1m"|"3m"|"5m"|"15m"|"1h"|"4h" — scalping→"5m", trend/swing→"1h"/"4h"
   indicators.klines.primary_count: number of candles (20-100)
   indicators.klines.enable_multi_timeframe: true for trend/swing analysis

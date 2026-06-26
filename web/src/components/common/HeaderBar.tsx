@@ -113,13 +113,6 @@ export default function HeaderBar({
                 hidden?: boolean
               }[] = [
                 {
-                  page: 'agent',
-                  path: ROUTES.agent,
-                  label: 'Agent',
-                  badge: 'Beta',
-                  requiresAuth: false,
-                },
-                {
                   page: 'data',
                   path: ROUTES.data,
                   label:
@@ -140,6 +133,7 @@ export default function HeaderBar({
                         ? 'Pasar'
                         : 'Market',
                   requiresAuth: true,
+                  hidden: true,
                 },
                 {
                   page: 'traders',
@@ -186,30 +180,35 @@ export default function HeaderBar({
                 navigateInApp(tab.path)
               }
 
-              return navTabs.filter((tab) => !tab.hidden).map((tab) => (
-                <button
-                  key={tab.page}
-                  onClick={() => handleNavClick(tab)}
-                  className={`text-sm font-bold transition-all duration-300 relative focus:outline-2 focus:outline-yellow-500 px-3 py-2 rounded-lg
+              return navTabs
+                .filter((tab) => !tab.hidden)
+                .map((tab) => (
+                  <button
+                    key={tab.page}
+                    onClick={() => handleNavClick(tab)}
+                    className={`text-sm font-bold transition-all duration-300 relative focus:outline-2 focus:outline-yellow-500 px-3 py-2 rounded-lg
                     ${resolvedCurrentPage === tab.page ? 'text-nofx-gold' : 'text-nofx-text-muted hover:text-nofx-gold'}`}
-                >
-                  {resolvedCurrentPage === tab.page && (
-                    <span className="absolute inset-0 rounded-lg bg-nofx-gold/15 -z-10" />
-                  )}
-                  {tab.label}
-                  {tab.badge && (
-                    <span className="ml-1 text-[10px] px-1.5 py-0.5 rounded-full bg-nofx-gold/20 text-nofx-gold font-semibold uppercase align-top relative -top-1">
-                      {tab.badge}
-                    </span>
-                  )}
-                </button>
-              ))
+                  >
+                    {resolvedCurrentPage === tab.page && (
+                      <span className="absolute inset-0 rounded-lg bg-nofx-gold/15 -z-10" />
+                    )}
+                    {tab.label}
+                    {tab.badge && (
+                      <span className="ml-1 text-[10px] px-1.5 py-0.5 rounded-full bg-nofx-gold/20 text-nofx-gold font-semibold uppercase align-top relative -top-1">
+                        {tab.badge}
+                      </span>
+                    )}
+                  </button>
+                ))
             })()}
           </div>
 
           {/* Right Side - Social Links and User Actions */}
           <div className="flex items-center gap-4">
-            <HyperliquidWalletConnect language={language} isLoggedIn={isLoggedIn} />
+            <HyperliquidWalletConnect
+              language={language}
+              isLoggedIn={isLoggedIn}
+            />
             {/* Social Links - Always visible */}
             <div className="flex items-center gap-1">
               {/* GitHub */}
@@ -450,12 +449,6 @@ export default function HeaderBar({
                     hidden?: boolean
                   }[] = [
                     {
-                      page: 'agent',
-                      path: ROUTES.agent,
-                      label: 'Agent',
-                      requiresAuth: false,
-                    },
-                    {
                       page: 'data',
                       path: ROUTES.data,
                       label:
@@ -476,6 +469,7 @@ export default function HeaderBar({
                             ? 'Pasar'
                             : 'Market',
                       requiresAuth: true,
+                      hidden: true,
                     },
                     {
                       page: 'traders',
@@ -522,35 +516,37 @@ export default function HeaderBar({
                     setMobileMenuOpen(false)
                   }
 
-                  return navTabs.filter((tab) => !tab.hidden).map((tab, i) => (
-                    <motion.button
-                      key={tab.page}
-                      initial={{ x: -20, opacity: 0 }}
-                      animate={{ x: 0, opacity: 1 }}
-                      transition={{ delay: 0.1 + i * 0.05 }}
-                      onClick={() => handleMobileNavClick(tab)}
-                      className={`text-2xl font-black tracking-tight text-left flex items-center gap-3
+                  return navTabs
+                    .filter((tab) => !tab.hidden)
+                    .map((tab, i) => (
+                      <motion.button
+                        key={tab.page}
+                        initial={{ x: -20, opacity: 0 }}
+                        animate={{ x: 0, opacity: 1 }}
+                        transition={{ delay: 0.1 + i * 0.05 }}
+                        onClick={() => handleMobileNavClick(tab)}
+                        className={`text-2xl font-black tracking-tight text-left flex items-center gap-3
                         ${resolvedCurrentPage === tab.page ? 'text-nofx-gold' : 'text-zinc-500'}`}
-                    >
-                      {resolvedCurrentPage === tab.page && (
-                        <motion.div
-                          layoutId="active-indicator"
-                          className="w-1.5 h-1.5 rounded-full bg-nofx-gold"
-                        />
-                      )}
-                      {tab.label}
-                      {tab.badge && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-nofx-gold/20 text-nofx-gold font-semibold uppercase align-middle relative -top-1">
-                          {tab.badge}
-                        </span>
-                      )}
-                      {tab.requiresAuth && !isLoggedIn && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded border border-zinc-800 text-zinc-500 font-normal tracking-wide uppercase align-middle relative -top-1">
-                          LOGIN_REQ
-                        </span>
-                      )}
-                    </motion.button>
-                  ))
+                      >
+                        {resolvedCurrentPage === tab.page && (
+                          <motion.div
+                            layoutId="active-indicator"
+                            className="w-1.5 h-1.5 rounded-full bg-nofx-gold"
+                          />
+                        )}
+                        {tab.label}
+                        {tab.badge && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-nofx-gold/20 text-nofx-gold font-semibold uppercase align-middle relative -top-1">
+                            {tab.badge}
+                          </span>
+                        )}
+                        {tab.requiresAuth && !isLoggedIn && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded border border-zinc-800 text-zinc-500 font-normal tracking-wide uppercase align-middle relative -top-1">
+                            LOGIN_REQ
+                          </span>
+                        )}
+                      </motion.button>
+                    ))
                 })()}
 
                 {/* Original Page Links */}

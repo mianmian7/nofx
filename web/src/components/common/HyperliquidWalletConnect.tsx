@@ -49,6 +49,7 @@ interface HyperliquidWalletConnectProps {
   language: Language
   isLoggedIn: boolean
   variant?: 'dropdown' | 'inline'
+  onSaved?: () => void | Promise<void>
 }
 
 interface FlowState {
@@ -222,6 +223,7 @@ export function HyperliquidWalletConnect({
   language,
   isLoggedIn,
   variant = 'dropdown',
+  onSaved,
 }: HyperliquidWalletConnectProps) {
   const inline = variant === 'inline'
   const [open, setOpen] = useState(inline)
@@ -679,6 +681,7 @@ export function HyperliquidWalletConnect({
             secret_key: '',
             passphrase: '',
             hyperliquid_wallet_addr: state.mainWallet,
+            hyperliquid_unified_account: true,
             hyperliquid_builder_approved: existingBuilderApproved,
             testnet: false,
           },
@@ -740,11 +743,13 @@ export function HyperliquidWalletConnect({
               secret_key: '',
               passphrase: '',
               hyperliquid_wallet_addr: state.mainWallet,
+              hyperliquid_unified_account: true,
               hyperliquid_builder_approved: true,
               testnet: false,
             },
           },
         })
+        await onSaved?.()
       }
       setState((prev) => ({
         ...prev,
@@ -797,6 +802,7 @@ export function HyperliquidWalletConnect({
               secret_key: '',
               passphrase: '',
               hyperliquid_wallet_addr: state.mainWallet,
+              hyperliquid_unified_account: true,
               hyperliquid_builder_approved: true,
               testnet: false,
             },
@@ -814,6 +820,7 @@ export function HyperliquidWalletConnect({
             ? 'Hyperliquid account updated in NOFX'
             : 'Existing Hyperliquid account authorization updated'
         )
+        await onSaved?.()
         return
       }
       if (!state.agentPrivateKey) {
@@ -827,9 +834,11 @@ export function HyperliquidWalletConnect({
         enabled: true,
         api_key: state.agentPrivateKey,
         hyperliquid_wallet_addr: state.mainWallet,
+        hyperliquid_unified_account: true,
         hyperliquid_builder_approved: true,
         testnet: false,
       })
+      await onSaved?.()
       setState((prev) => ({
         ...prev,
         agentPrivateKey: undefined,

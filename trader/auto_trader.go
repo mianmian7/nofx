@@ -52,9 +52,10 @@ func (at *AutoTrader) logErrorf(format string, args ...interface{}) {
 // AutoTraderConfig auto trading configuration (simplified version - AI makes all decisions)
 type AutoTraderConfig struct {
 	// Trader identification
-	ID      string // Trader unique identifier (for log directory, etc.)
-	Name    string // Trader display name
-	AIModel string // AI model: "qwen" or "deepseek"
+	ID         string // Trader unique identifier (for log directory, etc.)
+	Name       string // Trader display name
+	StrategyID string // Associated strategy ID used to refresh live strategy config
+	AIModel    string // AI model: "qwen" or "deepseek"
 
 	// Trading platform selection
 	Exchange   string // Exchange type: "binance", "bybit", "okx", "bitget", "gate", "hyperliquid", "aster" or "lighter"
@@ -121,7 +122,7 @@ type AutoTraderConfig struct {
 	Claw402WalletKey string
 
 	// Scan configuration
-	ScanInterval time.Duration // Scan interval (recommended 3 minutes)
+	ScanInterval time.Duration // Scan interval (recommended 15 minutes)
 
 	// Account configuration
 	InitialBalance float64 // Initial balance (for P&L calculation, must be set manually)
@@ -138,7 +139,8 @@ type AutoTraderConfig struct {
 	ShowInCompetition bool // Whether to show in competition page
 
 	// Strategy configuration (use complete strategy config)
-	StrategyConfig *store.StrategyConfig // Strategy configuration (includes coin sources, indicators, risk control, prompts, etc.)
+	StrategyConfig    *store.StrategyConfig // Strategy configuration (includes coin sources, indicators, risk control, prompts, etc.)
+	StrategyConfigRaw string                // Raw strategy config JSON from DB, used to detect live edits
 }
 
 // AutoTrader automatic trader
@@ -394,6 +396,38 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 		lastBalanceSyncTime:   time.Now(),
 		userID:                userID,
 	}, nil
+}
+
+func (at *AutoTrader) reloadStrategyConfigIfChanged() error {
+	if at == nil || at.store == nil || at.config.StrategyID == "" {
+		return nil
+	}
+
+	strategy, err := at.store.Strategy().Get(at.userID, at.config.StrategyID)
+	if err != nil {
+		return fmt.Errorf("failed to load strategy %s: %w", at.config.StrategyID, err)
+	}
+
+	if at.strategyEngine != nil && strategy.Config == at.config.StrategyConfigRaw {
+		return nil
+	}
+
+	strategyConfig, err := strategy.ParseConfig()
+	if err != nil {
+		return fmt.Errorf("failed to parse strategy %s: %w", strategy.Name, err)
+	}
+	strategyConfig.ClampLimits()
+
+	claw402Key := at.config.Claw402WalletKey
+	if claw402Key == "" && at.config.AIModel == "claw402" && at.config.CustomAPIKey != "" {
+		claw402Key = at.config.CustomAPIKey
+	}
+
+	at.config.StrategyConfig = strategyConfig
+	at.config.StrategyConfigRaw = strategy.Config
+	at.strategyEngine = kernel.NewStrategyEngine(strategyConfig, claw402Key)
+	at.logInfof("🔄 Strategy config refreshed from DB: %s", strategy.Name)
+	return nil
 }
 
 // Run runs the automatic trading main loop

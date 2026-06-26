@@ -434,8 +434,10 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 
 	// Set scan interval default value
 	scanIntervalMinutes := req.ScanIntervalMinutes
-	if scanIntervalMinutes < 3 {
-		scanIntervalMinutes = 3 // Default 3 minutes, not allowed to be less than 3
+	if scanIntervalMinutes <= 0 {
+		scanIntervalMinutes = 15
+	} else if scanIntervalMinutes < 3 {
+		scanIntervalMinutes = 3 // Explicit values below 3 minutes are clamped to the minimum.
 	}
 
 	// Query exchange actual balance, override user input

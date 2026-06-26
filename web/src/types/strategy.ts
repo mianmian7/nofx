@@ -105,7 +105,7 @@ export interface GridStrategyConfig {
 }
 
 export interface CoinSourceConfig {
-  source_type: 'static' | 'ai500' | 'oi_top' | 'oi_low' | 'hyper_all' | 'hyper_main' | 'hyper_rank';
+  source_type: 'static' | 'ai500' | 'oi_top' | 'oi_low' | 'hyper_all' | 'hyper_main' | 'hyper_rank' | 'vergex_signal';
   static_coins?: string[];
   excluded_coins?: string[];   // 排除的币种列表
   use_ai500: boolean;
@@ -120,6 +120,10 @@ export interface CoinSourceConfig {
   hyper_rank_category?: 'stock' | 'commodity' | 'index' | 'forex' | 'pre_ipo' | 'crypto' | 'all';
   hyper_rank_direction?: 'gainers' | 'losers' | 'volume';
   hyper_rank_limit?: number;
+  vergex_limit?: number;
+  vergex_market_type?: string;
+  vergex_chain?: string;
+  vergex_liq_band?: string;
   // Note: API URLs are now built automatically using nofxos_api_key from IndicatorConfig
 }
 

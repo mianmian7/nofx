@@ -56,6 +56,74 @@ func x402Sleep(ctx context.Context, d time.Duration) error {
 	}
 }
 
+func doInitialX402Request(
+	ctx context.Context,
+	httpClient *http.Client,
+	buildReqFn func() (*http.Request, error),
+	providerTag string,
+	logger mcp.Logger,
+) (*http.Response, error) {
+	var lastBody []byte
+	var lastErr error
+	var lastStatus int
+
+	for attempt := 1; attempt <= X402MaxPaymentRetries; attempt++ {
+		req, err := buildReqFn()
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+		req = req.WithContext(ctx)
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			lastErr = err
+			if attempt < X402MaxPaymentRetries {
+				wait := X402RetryBaseWait * time.Duration(attempt)
+				logger.Warnf("⚠️  [%s] Initial request failed: %v, retrying in %v (%d/%d)...",
+					providerTag, err, wait, attempt+1, X402MaxPaymentRetries)
+				if err := x402Sleep(ctx, wait); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			return nil, fmt.Errorf("failed to send request: %w", err)
+		}
+
+		if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusPaymentRequired {
+			return resp, nil
+		}
+
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("failed to read response: %w", readErr)
+		}
+		lastBody = body
+		lastStatus = resp.StatusCode
+
+		if isRetryableInitialX402Status(resp.StatusCode) && attempt < X402MaxPaymentRetries {
+			wait := X402RetryBaseWait * time.Duration(attempt)
+			logger.Warnf("⚠️  [%s] Initial server error (status %d), retrying in %v (%d/%d)...",
+				providerTag, resp.StatusCode, wait, attempt+1, X402MaxPaymentRetries)
+			if err := x402Sleep(ctx, wait); err != nil {
+				return nil, err
+			}
+			continue
+		}
+
+		return nil, fmt.Errorf("%s API error (status %d): %s", providerTag, resp.StatusCode, string(body))
+	}
+
+	if lastErr != nil {
+		return nil, fmt.Errorf("failed to send request after %d retries: %w", X402MaxPaymentRetries, lastErr)
+	}
+	return nil, fmt.Errorf("%s API error after %d retries (status %d): %s", providerTag, X402MaxPaymentRetries, lastStatus, string(lastBody))
+}
+
+func isRetryableInitialX402Status(status int) bool {
+	return status == http.StatusTooManyRequests || status >= 500
+}
+
 // ── Shared x402 types ────────────────────────────────────────────────────────
 
 // X402v2PaymentRequired is the structure of the Payment-Required header (x402 v2).
@@ -145,15 +213,10 @@ func DoX402Request(
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	req, err := buildReqFn()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req = req.WithContext(ctx)
 
-	resp, err := httpClient.Do(req)
+	resp, err := doInitialX402Request(ctx, httpClient, buildReqFn, providerTag, logger)
 	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 
@@ -290,26 +353,14 @@ func DoX402RequestStream(
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	// Initial request also inherits ctx so stage timeouts cancel the 402 handshake.
-	req, err := buildReqFn()
+	resp, err := doInitialX402Request(ctx, httpClient, buildReqFn, providerTag, logger)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req = req.WithContext(ctx)
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
+		return nil, err
 	}
 
 	// Non-402 initial response
 	if resp.StatusCode != http.StatusPaymentRequired {
-		if resp.StatusCode == http.StatusOK {
-			return resp, nil
-		}
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		return nil, fmt.Errorf("%s API error (status %d): %s", providerTag, resp.StatusCode, string(body))
+		return resp, nil
 	}
 
 	// 402 — extract payment header and sign

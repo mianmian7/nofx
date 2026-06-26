@@ -271,7 +271,7 @@ export function BeginnerOnboardingPage() {
                       }`}
                     >
                       <span>
-                        {isZh ? '我已保存，进入下一步' : 'I saved it, continue'}
+                        {isZh ? '进入交易页' : 'Go to Traders'}
                       </span>
                       <ArrowRight className="h-5 w-5" />
                     </button>
