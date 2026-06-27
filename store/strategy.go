@@ -1017,9 +1017,9 @@ func GetDefaultStrategyConfig(lang string) StrategyConfig {
 			MaxPositions:                 2,    // Max 2 instruments simultaneously (CODE ENFORCED)
 			BTCETHMaxLeverage:            10,   // BTC/ETH exchange leverage (AI guided)
 			AltcoinMaxLeverage:           10,   // TradeFi exchange leverage (AI guided)
-			BTCETHMaxPositionValueRatio:  1.0,  // Claw402 default: same cap across assets
-			AltcoinMaxPositionValueRatio: 1.0,  // Claw402 default: same cap across assets
-			MaxMarginUsage:               0.35, // Max 35% margin usage (CODE ENFORCED)
+			BTCETHMaxPositionValueRatio:  10.0, // Claw402 full-size 10x notional: equity × 10
+			AltcoinMaxPositionValueRatio: 10.0, // Claw402 full-size 10x notional: equity × 10
+			MaxMarginUsage:               1.0,  // Claw402 Autopilot intentionally uses full margin when opening
 			MinPositionSize:              12,   // Min 12 USDT per position (CODE ENFORCED)
 			MinRiskRewardRatio:           3.0,  // Min 3:1 profit/loss ratio (AI guided)
 			MinConfidence:                78,   // Min 78% confidence (AI guided)

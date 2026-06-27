@@ -100,6 +100,20 @@ func TestLeverageFallback(t *testing.T) {
 	}
 }
 
+func TestClaw402XyzAllowsFullTenXNotional(t *testing.T) {
+	decision := Decision{
+		Symbol:          "xyz:SP500",
+		Action:          "open_long",
+		Leverage:        10,
+		PositionSizeUSD: 306.8,
+		StopLoss:        95,
+		TakeProfit:      120,
+	}
+
+	if err := validateDecision(&decision, 30.68, 10, 10, 10.0, 10.0); err != nil {
+		t.Fatalf("xyz TradeFi Claw402 full 10x notional should pass validation: %v", err)
+	}
+}
 
 // contains checks if string contains substring (helper function)
 func contains(s, substr string) bool {

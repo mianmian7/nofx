@@ -3,6 +3,8 @@ import {
   ArrowRight,
   CheckCircle2,
   CircleDollarSign,
+  Download,
+  ExternalLink,
   KeyRound,
   ShieldCheck,
   Wallet,
@@ -103,6 +105,59 @@ export function TraderLaunchGuestPage() {
                 </div>
               )
             })}
+          </div>
+        </section>
+
+        <section className="grid gap-5 rounded-2xl border border-white/10 bg-[#0A0D12] p-5 md:grid-cols-[0.78fr_1.22fr] md:p-6">
+          <div>
+            <div className="text-sm font-semibold uppercase tracking-[0.18em] text-nofx-gold">
+              No trading wallet yet?
+            </div>
+            <p className="mt-3 text-sm leading-6 text-zinc-500">
+              NOFX does not need your main-wallet private key. Install or unlock
+              an EVM wallet, fund Hyperliquid with USDC, then authorize the NOFX
+              Agent after sign-in.
+            </p>
+          </div>
+          <div className="grid gap-3 lg:grid-cols-3">
+            <a
+              href="https://rabby.io/"
+              target="_blank"
+              rel="noreferrer"
+              className="group rounded-xl border border-white/10 bg-white/[0.03] p-4 transition hover:border-nofx-gold/30 hover:bg-nofx-gold/[0.04]"
+            >
+              <Download className="mb-3 h-4 w-4 text-nofx-gold" />
+              <div className="font-semibold text-white">Install Rabby</div>
+              <p className="mt-2 text-sm leading-6 text-zinc-500">
+                Create or import an EVM wallet before connecting to Hyperliquid.
+              </p>
+            </a>
+            <a
+              href="https://metamask.io/download/"
+              target="_blank"
+              rel="noreferrer"
+              className="group rounded-xl border border-white/10 bg-white/[0.03] p-4 transition hover:border-nofx-gold/30 hover:bg-nofx-gold/[0.04]"
+            >
+              <ExternalLink className="mb-3 h-4 w-4 text-nofx-gold" />
+              <div className="font-semibold text-white">MetaMask</div>
+              <p className="mt-2 text-sm leading-6 text-zinc-500">
+                Already use MetaMask? Unlock it, then continue setup inside
+                NOFX.
+              </p>
+            </a>
+            <a
+              href="https://app.hyperliquid.xyz/"
+              target="_blank"
+              rel="noreferrer"
+              className="group rounded-xl border border-nofx-gold/20 bg-nofx-gold/10 p-4 transition hover:bg-nofx-gold/15"
+            >
+              <ExternalLink className="mb-3 h-4 w-4 text-nofx-gold" />
+              <div className="font-semibold text-white">Open Hyperliquid</div>
+              <p className="mt-2 text-sm leading-6 text-zinc-400">
+                Deposit USDC there. Trading funds stay in your Hyperliquid
+                account.
+              </p>
+            </a>
           </div>
         </section>
 

@@ -58,13 +58,14 @@ func (t *HyperliquidTrader) OpenLong(symbol string, quantity float64, leverage i
 	// Check if this is an xyz dex asset
 	isXyz := strings.HasPrefix(coin, "xyz:")
 
-	// Set leverage (skip for xyz dex as it may not support leverage adjustment)
-	if !isXyz {
-		if err := t.SetLeverage(symbol, leverage); err != nil {
+	// Set leverage before order placement. Hyperliquid supports leverage
+	// updates for HIP-3/XYZ perps as well; skipping this left reused accounts
+	// at whatever leverage they had previously selected (for example 20x).
+	if err := t.SetLeverage(symbol, leverage); err != nil {
+		if !isXyz {
 			return nil, err
 		}
-	} else {
-		logger.Infof("  ℹ xyz dex asset %s - using default leverage", coin)
+		logger.Warnf("  ⚠ Failed to set leverage for xyz dex asset %s: %v", coin, err)
 	}
 
 	// Get current price (for market order)
@@ -130,13 +131,14 @@ func (t *HyperliquidTrader) OpenShort(symbol string, quantity float64, leverage 
 	// Check if this is an xyz dex asset
 	isXyz := strings.HasPrefix(coin, "xyz:")
 
-	// Set leverage (skip for xyz dex)
-	if !isXyz {
-		if err := t.SetLeverage(symbol, leverage); err != nil {
+	// Set leverage before order placement. Hyperliquid supports leverage
+	// updates for HIP-3/XYZ perps as well; skipping this left reused accounts
+	// at whatever leverage they had previously selected (for example 20x).
+	if err := t.SetLeverage(symbol, leverage); err != nil {
+		if !isXyz {
 			return nil, err
 		}
-	} else {
-		logger.Infof("  ℹ xyz dex asset %s - using default leverage", coin)
+		logger.Warnf("  ⚠ Failed to set leverage for xyz dex asset %s: %v", coin, err)
 	}
 
 	// Get current price
@@ -1029,11 +1031,15 @@ func (t *HyperliquidTrader) SetTakeProfit(symbol string, positionSide string, qu
 func (t *HyperliquidTrader) PlaceLimitOrder(req *types.LimitOrderRequest) (*types.LimitOrderResult, error) {
 	coin := convertSymbolToHyperliquid(req.Symbol)
 
-	// Set leverage if specified and not xyz dex
+	// Set leverage if specified.
 	isXyz := strings.HasPrefix(coin, "xyz:")
-	if req.Leverage > 0 && !isXyz {
+	if req.Leverage > 0 {
 		if err := t.SetLeverage(req.Symbol, req.Leverage); err != nil {
-			logger.Warnf("[Hyperliquid] Failed to set leverage: %v", err)
+			if !isXyz {
+				logger.Warnf("[Hyperliquid] Failed to set leverage: %v", err)
+			} else {
+				logger.Warnf("[Hyperliquid] Failed to set xyz leverage for %s: %v", coin, err)
+			}
 		}
 	}
 

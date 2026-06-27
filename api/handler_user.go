@@ -265,9 +265,9 @@ func (s *Server) createDefaultStrategies(userID string, lang string) error {
 		c.RiskControl.MaxPositions = 2
 		c.RiskControl.BTCETHMaxLeverage = 10
 		c.RiskControl.AltcoinMaxLeverage = 10
-		c.RiskControl.BTCETHMaxPositionValueRatio = 1.0
-		c.RiskControl.AltcoinMaxPositionValueRatio = 1.0
-		c.RiskControl.MaxMarginUsage = 0.35
+		c.RiskControl.BTCETHMaxPositionValueRatio = 10.0
+		c.RiskControl.AltcoinMaxPositionValueRatio = 10.0
+		c.RiskControl.MaxMarginUsage = 1.0
 		c.RiskControl.MinConfidence = 78
 		c.RiskControl.MinRiskRewardRatio = 3.0
 		c.Indicators.Klines.PrimaryTimeframe = "15m"

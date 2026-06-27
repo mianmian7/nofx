@@ -3,9 +3,12 @@ import { useNavigate } from 'react-router-dom'
 import {
   AlertCircle,
   ArrowRight,
+  CircleDollarSign,
+  Download,
   CheckCircle2,
   Copy,
   ExternalLink,
+  KeyRound,
   Loader2,
   RefreshCw,
   ShieldCheck,
@@ -67,6 +70,114 @@ async function copyText(value: string, label: string) {
   }
 }
 
+function BeginnerHyperliquidGuide({
+  hasInjectedWallet,
+}: {
+  hasInjectedWallet: boolean
+}) {
+  const steps = [
+    {
+      title: 'Prepare an EVM wallet',
+      detail: hasInjectedWallet
+        ? 'Wallet extension detected. Unlock it, then connect below.'
+        : 'Install Rabby or MetaMask, create or import a wallet, then return here.',
+      icon: Wallet,
+    },
+    {
+      title: 'Open Hyperliquid',
+      detail:
+        'Use the same wallet on Hyperliquid. Deposit USDC there as trading collateral.',
+      icon: CircleDollarSign,
+    },
+    {
+      title: 'Authorize NOFX',
+      detail:
+        'Back in NOFX, approve the Agent and builder fee. NOFX stores the Agent key, not your main wallet key.',
+      icon: KeyRound,
+    },
+  ]
+
+  return (
+    <div className="rounded-xl border border-nofx-gold/20 bg-[linear-gradient(180deg,rgba(240,185,11,0.1),rgba(0,0,0,0.16))] p-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <div className="text-sm font-semibold text-white">
+            New to Hyperliquid?
+          </div>
+          <p className="mt-1 text-xs leading-5 text-nofx-text-muted">
+            Start here if you do not have a trading wallet or have never used
+            Hyperliquid before.
+          </p>
+        </div>
+        <div
+          className={`w-fit rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+            hasInjectedWallet
+              ? 'bg-emerald-500/10 text-emerald-300'
+              : 'bg-nofx-gold/10 text-nofx-gold'
+          }`}
+        >
+          {hasInjectedWallet ? 'Wallet detected' : 'Wallet needed'}
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-3">
+        {steps.map((step, index) => {
+          const Icon = step.icon
+          return (
+            <div key={step.title} className="flex gap-3">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-black/25 text-nofx-gold">
+                <Icon className="h-3.5 w-3.5" />
+              </div>
+              <div>
+                <div className="text-sm font-semibold text-zinc-100">
+                  {index + 1}. {step.title}
+                </div>
+                <p className="mt-0.5 text-xs leading-5 text-nofx-text-muted">
+                  {step.detail}
+                </p>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        {!hasInjectedWallet ? (
+          <>
+            <a
+              href="https://rabby.io/"
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-semibold text-zinc-200 hover:border-white/20 hover:bg-white/[0.07]"
+            >
+              <Download className="h-3.5 w-3.5" />
+              Install Rabby
+            </a>
+            <a
+              href="https://metamask.io/download/"
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-semibold text-zinc-200 hover:border-white/20 hover:bg-white/[0.07]"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+              MetaMask
+            </a>
+          </>
+        ) : null}
+        <a
+          href="https://app.hyperliquid.xyz/"
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-2 rounded-lg bg-nofx-gold px-3 py-2 text-xs font-bold text-black hover:bg-yellow-400"
+        >
+          Open Hyperliquid
+          <ExternalLink className="h-3.5 w-3.5" />
+        </a>
+      </div>
+    </div>
+  )
+}
+
 export function AutopilotLaunchPanel({
   models,
   exchanges,
@@ -83,7 +194,15 @@ export function AutopilotLaunchPanel({
   const [walletLoading, setWalletLoading] = useState(false)
   const [launching, setLaunching] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [hasInjectedWallet, setHasInjectedWallet] = useState(false)
   const isZh = language === 'zh'
+
+  useEffect(() => {
+    setHasInjectedWallet(
+      typeof window !== 'undefined' &&
+        Boolean((window as Window & { ethereum?: unknown }).ethereum)
+    )
+  }, [])
 
   const claw402Model = useMemo(
     () =>
@@ -470,13 +589,16 @@ export function AutopilotLaunchPanel({
               </p>
             </div>
           ) : (
-            <div id="hyperliquid-quick-connect">
-              <HyperliquidWalletConnect
-                language={isZh ? 'zh' : 'en'}
-                isLoggedIn={isLoggedIn}
-                variant="inline"
-                onSaved={refreshEverything}
-              />
+            <div className="space-y-4">
+              <BeginnerHyperliquidGuide hasInjectedWallet={hasInjectedWallet} />
+              <div id="hyperliquid-quick-connect">
+                <HyperliquidWalletConnect
+                  language={isZh ? 'zh' : 'en'}
+                  isLoggedIn={isLoggedIn}
+                  variant="inline"
+                  onSaved={refreshEverything}
+                />
+              </div>
             </div>
           )}
         </aside>

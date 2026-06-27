@@ -3,6 +3,7 @@ import {
   Check,
   ChevronDown,
   Copy,
+  Download,
   ExternalLink,
   Loader2,
   RefreshCw,
@@ -237,6 +238,7 @@ export function HyperliquidWalletConnect({
   const [balanceError, setBalanceError] = useState('')
   const [agentInfo, setAgentInfo] = useState<HyperliquidAgentInfo | null>(null)
   const [agentInfoLoading, setAgentInfoLoading] = useState(false)
+  const [hasWalletProvider, setHasWalletProvider] = useState(false)
   const text = useMemo(
     () => ({
       title: language === 'zh' ? 'Hyperliquid 钱包' : 'Hyperliquid Wallet',
@@ -278,9 +280,21 @@ export function HyperliquidWalletConnect({
         language === 'zh'
           ? 'Hyperliquid 不允许重复使用同一个 Agent，续期会生成一个新的 Agent 并以 180 天有效期授权，然后自动更新 NOFX 保存的私钥（需登录）。'
           : 'Hyperliquid forbids reusing an agent, so renewal creates a new agent approved for 180 days, then updates the stored key in NOFX (sign-in required).',
+      noWalletTitle:
+        language === 'zh' ? '未检测到 EVM 钱包' : 'No EVM wallet detected',
+      noWalletDetail:
+        language === 'zh'
+          ? '先安装 Rabby 或 MetaMask，创建或导入钱包，然后回到这里连接 Hyperliquid。'
+          : 'Install Rabby or MetaMask, create or import a wallet, then return here to connect Hyperliquid.',
+      installRabby: language === 'zh' ? '安装 Rabby' : 'Install Rabby',
+      installMetaMask: language === 'zh' ? '安装 MetaMask' : 'Install MetaMask',
     }),
     [language]
   )
+
+  useEffect(() => {
+    setHasWalletProvider(Boolean(getPreferredWalletProvider()))
+  }, [])
 
   useEffect(() => {
     saveState(state)
@@ -957,6 +971,37 @@ export function HyperliquidWalletConnect({
             {error && (
               <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-300">
                 {error}
+              </div>
+            )}
+
+            {!state.mainWallet && !hasWalletProvider && (
+              <div className="rounded-xl border border-nofx-gold/20 bg-nofx-gold/5 p-3">
+                <div className="text-sm font-semibold text-zinc-100">
+                  {text.noWalletTitle}
+                </div>
+                <p className="mt-1 text-xs leading-5 text-nofx-text-muted">
+                  {text.noWalletDetail}
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <a
+                    href="https://rabby.io/"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-semibold text-zinc-200 hover:border-white/20 hover:bg-white/[0.07]"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                    {text.installRabby}
+                  </a>
+                  <a
+                    href="https://metamask.io/download/"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-semibold text-zinc-200 hover:border-white/20 hover:bg-white/[0.07]"
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    {text.installMetaMask}
+                  </a>
+                </div>
               </div>
             )}
 

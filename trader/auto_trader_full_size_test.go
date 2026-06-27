@@ -11,8 +11,8 @@ func TestApplyAutopilotFullSizeOpenForClaw402(t *testing.T) {
 	cfg.CoinSource.SourceType = "vergex_signal"
 	cfg.RiskControl.BTCETHMaxLeverage = 10
 	cfg.RiskControl.AltcoinMaxLeverage = 10
-	cfg.RiskControl.BTCETHMaxPositionValueRatio = 1
-	cfg.RiskControl.AltcoinMaxPositionValueRatio = 1
+	cfg.RiskControl.BTCETHMaxPositionValueRatio = 10
+	cfg.RiskControl.AltcoinMaxPositionValueRatio = 10
 
 	at := &AutoTrader{config: AutoTraderConfig{StrategyConfig: &cfg}}
 	decision := &kernel.Decision{
@@ -27,8 +27,8 @@ func TestApplyAutopilotFullSizeOpenForClaw402(t *testing.T) {
 	if decision.Leverage != 10 {
 		t.Fatalf("expected leverage to be forced to 10x, got %dx", decision.Leverage)
 	}
-	if decision.PositionSizeUSD != 29.8 {
-		t.Fatalf("expected position size to use full notional 29.8, got %.2f", decision.PositionSizeUSD)
+	if decision.PositionSizeUSD != 298 {
+		t.Fatalf("expected position size to use full 10x notional 298, got %.2f", decision.PositionSizeUSD)
 	}
 }
 

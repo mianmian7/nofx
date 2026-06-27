@@ -151,7 +151,7 @@ const profileOptions: Array<{
     topN: 5,
     timeframe: '1h',
     bars: 30,
-    margin: 0.25,
+    margin: 1.0,
     promptZh:
       '稳健模式：只有 Claw402 榜单方向、Signal Lab、成本/清算热力图和原始 K 线同时支持时才开仓；信号冲突时等待。',
     promptEn:
@@ -169,7 +169,7 @@ const profileOptions: Array<{
     topN: 5,
     timeframe: '15m',
     bars: 30,
-    margin: 0.35,
+    margin: 1.0,
     promptZh:
       '均衡模式：优先交易 Claw402 排名靠前且 Signal Lab 与 K 线同向的标的；用清算热力图确定止损和止盈区域。',
     promptEn:
@@ -187,7 +187,7 @@ const profileOptions: Array<{
     topN: 8,
     timeframe: '5m',
     bars: 50,
-    margin: 0.5,
+    margin: 1.0,
     promptZh:
       '进取模式：可以更快跟随 Claw402 强信号，但必须用 Signal Lab 二次确认，用热力图区避开拥挤清算位，止损必须明确。',
     promptEn:
@@ -287,10 +287,10 @@ function defaultRisk(risk?: Partial<RiskControlConfig>): RiskControlConfig {
     btc_eth_max_leverage: leverage,
     altcoin_max_leverage: leverage,
     btc_eth_max_position_value_ratio:
-      risk?.btc_eth_max_position_value_ratio || 1,
+      risk?.btc_eth_max_position_value_ratio || 10,
     altcoin_max_position_value_ratio:
-      risk?.altcoin_max_position_value_ratio || 1,
-    max_margin_usage: risk?.max_margin_usage || 0.35,
+      risk?.altcoin_max_position_value_ratio || 10,
+    max_margin_usage: risk?.max_margin_usage || 1.0,
     min_position_size: risk?.min_position_size || 12,
     min_risk_reward_ratio: risk?.min_risk_reward_ratio || 3,
     min_confidence: risk?.min_confidence || 78,
@@ -1320,9 +1320,9 @@ export function StrategyStudioPage() {
           max_positions: 2,
           btc_eth_max_leverage: 10,
           altcoin_max_leverage: 10,
-          btc_eth_max_position_value_ratio: 1,
-          altcoin_max_position_value_ratio: 1,
-          max_margin_usage: 0.35,
+          btc_eth_max_position_value_ratio: 10,
+          altcoin_max_position_value_ratio: 10,
+          max_margin_usage: 1.0,
           min_confidence: 78,
           min_risk_reward_ratio: 3,
         }),
@@ -1428,9 +1428,9 @@ export function StrategyStudioPage() {
         max_positions: 2,
         btc_eth_max_leverage: 10,
         altcoin_max_leverage: 10,
-        btc_eth_max_position_value_ratio: 1,
-        altcoin_max_position_value_ratio: 1,
-        max_margin_usage: 0.35,
+        btc_eth_max_position_value_ratio: 10,
+        altcoin_max_position_value_ratio: 10,
+        max_margin_usage: 1.0,
         min_confidence: 78,
         min_risk_reward_ratio: 3,
       }),
