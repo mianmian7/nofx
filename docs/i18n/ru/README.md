@@ -63,14 +63,10 @@ curl -fsSL https://raw.githubusercontent.com/NoFxAiOS/nofx/main/install.sh | bas
 
 ## Короткая демонстрация
 
-<p align="center">
-  <a href="https://drive.google.com/file/d/1frzw-HDZ3viQvLOQKsAJGc9bT0dXs68D/view">
-    <img src="../../../screenshots/demo-cover.png" alt="NOFX quick demo video" width="900"/>
-  </a>
-</p>
+https://github.com/user-attachments/assets/5e2f7bab-88ce-4c30-882a-0db3b9afd20f
 
 <p align="center">
-  Нажмите на обложку, чтобы посмотреть демо.
+  <em>Демонстрационное видео смоделировано — это не реальные торговые результаты.</em>
 </p>
 
 ---
