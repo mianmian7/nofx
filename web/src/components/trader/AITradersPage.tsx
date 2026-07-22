@@ -265,6 +265,9 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
         scan_interval_minutes: data.scan_interval_minutes,
         is_cross_margin: data.is_cross_margin,
         show_in_competition: data.show_in_competition,
+        execution_mode: data.execution_mode,
+        initial_balance: data.initial_balance,
+        reset_paper_account: data.reset_paper_account,
       }
 
       await api.updateTrader(editingTrader.trader_id, request)

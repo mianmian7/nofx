@@ -49,6 +49,7 @@ type UpdateTraderRequest struct {
 	StrategyID          string  `json:"strategy_id"` // Strategy ID (new version)
 	ExecutionMode       string  `json:"execution_mode"`
 	InitialBalance      float64 `json:"initial_balance"`
+	ResetPaperAccount   bool    `json:"reset_paper_account"`
 	ScanIntervalMinutes int     `json:"scan_interval_minutes"`
 	IsCrossMargin       *bool   `json:"is_cross_margin"`
 	ShowInCompetition   *bool   `json:"show_in_competition"`
@@ -747,6 +748,20 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 	if resetInitialBalance {
 		initialBalance = 0
 	}
+	initialBalanceChanged := req.InitialBalance > 0 && req.InitialBalance != existingTrader.InitialBalance
+	if req.ResetPaperAccount {
+		if executionMode != "paper" || existingTrader.ExecutionMode != "paper" {
+			SafeBadRequestWithDetails(c, "Only an existing Paper trader can reset its paper account", "trader.update.paper_reset_not_allowed", nil)
+			return
+		}
+		if !initialBalanceChanged {
+			SafeBadRequestWithDetails(c, "A new positive initial balance is required to reset the Paper account", "trader.update.paper_reset_balance_unchanged", nil)
+			return
+		}
+	} else if initialBalanceChanged && executionMode == "paper" && existingTrader.ExecutionMode == "paper" {
+		SafeBadRequestWithDetails(c, "Changing a Paper trader's initial balance requires explicit reset confirmation", "trader.update.paper_reset_confirmation_required", nil)
+		return
+	}
 
 	// Update trader configuration
 	traderRecord := &store.Trader{
@@ -779,6 +794,11 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 			logger.Infof("🔄 Trader %s was running, will restart with new config after update", traderID)
 		}
 	}
+	if req.ResetPaperAccount {
+		// Stop the runtime before clearing its persistent ledger so it cannot
+		// repopulate stale state while the reset transaction is running.
+		s.traderManager.RemoveTrader(traderID)
+	}
 
 	// Update database
 	logger.Infof("🔄 Updating trader: ID=%s, Name=%s, AIModelID=%s, StrategyID=%s, ScanInterval=%d min",
@@ -793,6 +813,12 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 		logger.Infof("🔄 Exchange changed for trader %s, resetting stale initial_balance to 0", traderID)
 		if err := s.store.Trader().UpdateInitialBalance(userID, traderID, 0); err != nil {
 			SafeInternalError(c, "Failed to reset trader initial balance", err)
+			return
+		}
+	}
+	if req.ResetPaperAccount {
+		if err := s.store.Paper().ResetTraderAccount(userID, traderID); err != nil {
+			SafeInternalError(c, "Failed to reset Paper account", err)
 			return
 		}
 	}

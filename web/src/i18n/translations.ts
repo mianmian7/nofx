@@ -192,6 +192,13 @@ export const translations = {
     hiddenInCompetition:
       'This trader will not be shown in the competition page when hidden',
     initialBalanceLabel: 'Initial Balance ($)',
+    paperInitialBalanceLabel: 'Paper Initial Balance (USDT)',
+    paperInitialBalanceCreateHint:
+      'The paper account starts with this virtual balance.',
+    paperInitialBalanceEditHint:
+      'Changing this value clears this trader’s paper positions and history, then restarts the account.',
+    confirmResetPaperBalance:
+      'Changing the initial balance will permanently clear this trader’s paper positions, orders, fills, equity curve, and decision history. Continue?',
     fetching: 'Fetching...',
     fetchCurrentBalance: 'Fetch Current Balance',
     balanceUpdateHint:
@@ -1545,6 +1552,12 @@ export const translations = {
     hide: '隐藏',
     hiddenInCompetition: '隐藏后将不在竞技场页面显示此交易员',
     initialBalanceLabel: '初始余额 ($)',
+    paperInitialBalanceLabel: '模拟仓初始余额（USDT）',
+    paperInitialBalanceCreateHint: '模拟账户将以此虚拟余额开始运行。',
+    paperInitialBalanceEditHint:
+      '修改后将清空该交易员的模拟持仓和历史记录，并按新余额重新开始。',
+    confirmResetPaperBalance:
+      '修改初始余额会永久清空该交易员的模拟持仓、订单、成交、净值曲线和决策历史。是否继续？',
     fetching: '获取中...',
     fetchCurrentBalance: '获取当前余额',
     balanceUpdateHint: '用于手动更新初始余额基准（例如充值/提现后）',
@@ -2825,6 +2838,13 @@ export const translations = {
     hiddenInCompetition:
       'Trader ini tidak akan ditampilkan di halaman kompetisi saat disembunyikan',
     initialBalanceLabel: 'Saldo Awal ($)',
+    paperInitialBalanceLabel: 'Saldo Awal Paper (USDT)',
+    paperInitialBalanceCreateHint:
+      'Akun paper dimulai dengan saldo virtual ini.',
+    paperInitialBalanceEditHint:
+      'Mengubah nilai ini akan menghapus posisi dan riwayat paper trader ini, lalu memulai ulang akun.',
+    confirmResetPaperBalance:
+      'Mengubah saldo awal akan menghapus permanen posisi, order, fill, kurva ekuitas, dan riwayat keputusan paper trader ini. Lanjutkan?',
     fetching: 'Mengambil...',
     fetchCurrentBalance: 'Ambil Saldo Saat Ini',
     balanceUpdateHint:

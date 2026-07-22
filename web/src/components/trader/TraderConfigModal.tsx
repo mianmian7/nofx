@@ -71,8 +71,9 @@ interface FormState {
   strategy_id: string
   is_cross_margin: boolean
   show_in_competition: boolean
-	scan_interval_minutes: number
-	execution_mode: 'paper' | 'live'
+  scan_interval_minutes: number
+  execution_mode: 'paper' | 'live'
+  initial_balance: number
 }
 
 interface TraderConfigModalProps {
@@ -102,8 +103,9 @@ export function TraderConfigModal({
     strategy_id: '',
     is_cross_margin: true,
     show_in_competition: true,
-	scan_interval_minutes: 15,
-	execution_mode: 'paper',
+    scan_interval_minutes: 15,
+    execution_mode: 'paper',
+    initial_balance: 10000,
   })
   const [isSaving, setIsSaving] = useState(false)
   const [strategies, setStrategies] = useState<Strategy[]>([])
@@ -147,8 +149,9 @@ export function TraderConfigModal({
     if (traderData) {
       setFormData({
         ...traderData,
-		strategy_id: traderData.strategy_id || '',
-		execution_mode: traderData.execution_mode || 'paper',
+        strategy_id: traderData.strategy_id || '',
+        execution_mode: traderData.execution_mode || 'paper',
+        initial_balance: traderData.initial_balance || 10000,
       })
     } else if (!isEditMode) {
       setFormData({
@@ -158,8 +161,9 @@ export function TraderConfigModal({
         strategy_id: '',
         is_cross_margin: true,
         show_in_competition: true,
-		scan_interval_minutes: 15,
-		execution_mode: 'paper',
+        scan_interval_minutes: 15,
+        execution_mode: 'paper',
+        initial_balance: 10000,
       })
     }
   }, [traderData, isEditMode, availableModels, availableExchanges])
@@ -177,6 +181,17 @@ export function TraderConfigModal({
   const handleSave = async () => {
     if (!onSave) return
 
+    const originalBalance = traderData?.initial_balance || 10000
+    const resetsPaperAccount =
+      Boolean(isEditMode && formData.execution_mode === 'paper') &&
+      formData.initial_balance !== originalBalance
+    if (
+      resetsPaperAccount &&
+      !window.confirm(t('confirmResetPaperBalance', language))
+    ) {
+      return
+    }
+
     setIsSaving(true)
     try {
       const saveData: CreateTraderRequest = {
@@ -186,8 +201,13 @@ export function TraderConfigModal({
         strategy_id: formData.strategy_id,
         is_cross_margin: formData.is_cross_margin,
         show_in_competition: formData.show_in_competition,
-		scan_interval_minutes: formData.scan_interval_minutes,
-		execution_mode: formData.execution_mode,
+        scan_interval_minutes: formData.scan_interval_minutes,
+        execution_mode: formData.execution_mode,
+        initial_balance:
+          formData.execution_mode === 'paper'
+            ? formData.initial_balance
+            : undefined,
+        reset_paper_account: resetsPaperAccount,
       }
 
       await onSave(saveData)
@@ -202,7 +222,7 @@ export function TraderConfigModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm p-4 overflow-y-auto">
-		<div
+      <div
         className="bg-nofx-bg-lighter border border-nofx-gold/20 rounded-xl shadow-2xl max-w-2xl w-full my-8"
         style={{ maxHeight: 'calc(100vh - 4rem)' }}
         onClick={(e) => e.stopPropagation()}
@@ -242,13 +262,41 @@ export function TraderConfigModal({
         <div
           className="p-6 space-y-6 overflow-y-auto"
           style={{ maxHeight: 'calc(100vh - 16rem)' }}
-		>
-			<ExecutionModeSelector
-				value={formData.execution_mode}
-				onChange={(value) => handleInputChange('execution_mode', value)}
-				language={language}
-			/>
-			{/* Basic Info */}
+        >
+          <ExecutionModeSelector
+            value={formData.execution_mode}
+            onChange={(value) => handleInputChange('execution_mode', value)}
+            language={language}
+          />
+          {formData.execution_mode === 'paper' && (
+            <div className="bg-nofx-bg border border-nofx-gold/20 rounded-lg p-5">
+              <label className="text-sm text-nofx-text block mb-2">
+                {t('paperInitialBalanceLabel', language)}
+              </label>
+              <input
+                type="number"
+                value={formData.initial_balance}
+                onChange={(e) =>
+                  handleInputChange(
+                    'initial_balance',
+                    Math.max(1, Number(e.target.value) || 1)
+                  )
+                }
+                min="1"
+                step="100"
+                className="w-full px-3 py-2 bg-nofx-bg-lighter border border-nofx-gold/20 rounded text-nofx-text focus:border-nofx-gold focus:outline-none"
+              />
+              <p className="text-xs text-nofx-text-muted mt-1">
+                {t(
+                  isEditMode
+                    ? 'paperInitialBalanceEditHint'
+                    : 'paperInitialBalanceCreateHint',
+                  language
+                )}
+              </p>
+            </div>
+          )}
+          {/* Basic Info */}
           <div className="bg-nofx-bg border border-nofx-gold/20 rounded-lg p-5">
             <h3 className="text-lg font-semibold text-nofx-text mb-5 flex items-center gap-2">
               <span className="text-nofx-gold">1</span>{' '}
