@@ -64,7 +64,7 @@ Before reporting a bug, please check:
      "altcoin_leverage": 5
    }
    ```
-3. Or use main account (supports up to 50x BTC/ETH, 20x altcoins)
+3. Or use the main account (the strategy maximum can be configured up to 50x, while the exchange's per-symbol bracket still applies)
 
 ---
 

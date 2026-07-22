@@ -97,7 +97,37 @@ describe('StrategyStudioPage initial data policy', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('renders every advanced setting label in Chinese', async () => {
+  it('shows modified preset parameters as custom and labels the leverage cap', async () => {
+    apiMocks.getStrategies.mockResolvedValue([
+      {
+        id: 'strategy-1',
+        name: 'Balanced with one extra slot',
+        description: '',
+        is_active: true,
+        is_default: false,
+        is_public: false,
+        config_visible: true,
+        created_at: '',
+        updated_at: '',
+        config: {
+          strategy_type: 'ai_trading',
+          ai_config: {
+            coin_source: { source_type: 'binance_dynamic' },
+            indicators: {
+              klines: { primary_timeframe: '15m', primary_count: 30 },
+            },
+            risk_control: {
+              max_positions: 3,
+              btc_eth_max_leverage: 3,
+              altcoin_max_leverage: 3,
+              max_margin_usage: 0.5,
+              min_confidence: 75,
+            },
+          },
+        },
+      },
+    ])
+
     render(
       <MemoryRouter>
         <StrategyStudioPage />
@@ -106,12 +136,14 @@ describe('StrategyStudioPage initial data policy', () => {
 
     fireEvent.click(await screen.findByText('高级设置'))
 
+    expect(screen.getByText('自定义')).toBeVisible()
+    expect(screen.getByText('最大杠杆')).toBeVisible()
+    expect(screen.getByRole('option', { name: '50x' })).toBeInTheDocument()
     expect(screen.getByText('原始 K 线')).toBeVisible()
     expect(screen.getByText('时间周期')).toBeVisible()
     expect(screen.getByText('K 线数量')).toBeVisible()
     expect(screen.getByText('交易参数')).toBeVisible()
     expect(screen.getByText('最大持仓数')).toBeVisible()
-    expect(screen.getByText('杠杆')).toBeVisible()
     expect(screen.getByText('入场置信度')).toBeVisible()
     expect(screen.getByText('策略备注')).toBeVisible()
     expect(
@@ -121,6 +153,9 @@ describe('StrategyStudioPage initial data policy', () => {
     ).toBeVisible()
     expect(screen.queryByText('Raw candles')).not.toBeInTheDocument()
     expect(screen.queryByText('Trading parameters')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '平衡' }))
+    expect(screen.queryByText('自定义')).not.toBeInTheDocument()
   })
 
   it('labels deterministic replay work as processed candles instead of AI calls', async () => {

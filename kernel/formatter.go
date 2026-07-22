@@ -325,10 +325,10 @@ func formatKlineDataZH(symbol string, tfData map[string]*market.TimeframeSeriesD
 			sb.WriteString("```\n")
 			sb.WriteString("Time(UTC)      Open      High      Low       Close     Volume\n")
 
-			// Only show the latest 30 klines
+			// Strategy limits cap this series at 50 bars.
 			startIdx := 0
-			if len(data.Klines) > 30 {
-				startIdx = len(data.Klines) - 30
+			if len(data.Klines) > 50 {
+				startIdx = len(data.Klines) - 50
 			}
 
 			for i := startIdx; i < len(data.Klines); i++ {
@@ -592,8 +592,8 @@ func formatKlineDataEN(symbol string, tfData map[string]*market.TimeframeSeriesD
 			sb.WriteString("Time(UTC)      Open      High      Low       Close     Volume\n")
 
 			startIdx := 0
-			if len(data.Klines) > 30 {
-				startIdx = len(data.Klines) - 30
+			if len(data.Klines) > 50 {
+				startIdx = len(data.Klines) - 50
 			}
 
 			for i := startIdx; i < len(data.Klines); i++ {

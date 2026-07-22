@@ -82,10 +82,10 @@ const maxWatchlistCandidateAssets = 20
 const text = (language: string, zh: string, en: string) =>
   language === 'zh' ? zh : en
 
-type Profile = 'careful' | 'balanced' | 'active'
+type Profile = 'careful' | 'balanced' | 'active' | 'custom'
 
 const profileOptions: Array<{
-  value: Profile
+  value: Exclude<Profile, 'custom'>
   zh: string
   en: string
   zhNote: string
@@ -352,11 +352,39 @@ function categoryLabel(category: string | undefined, language: string) {
   return text(language, option.zh, option.en)
 }
 
-function profileFromRisk(risk: RiskControlConfig | null | undefined): Profile {
-  if (!risk) return 'balanced'
-  if (risk.min_confidence >= 80 || risk.max_positions <= 1) return 'careful'
-  if (risk.altcoin_max_leverage >= 5 || risk.max_positions >= 3) return 'active'
-  return 'balanced'
+function profileFromConfig(
+  config: AIStrategyConfig | null | undefined
+): Profile {
+  if (!config) return 'custom'
+  const risk = config.risk_control
+  const klines = config.indicators?.klines
+  if (!risk || !klines) return 'custom'
+
+  const matched = profileOptions.find((profile) => {
+    const selectedTimeframes = klines.selected_timeframes || [
+      klines.primary_timeframe,
+    ]
+    const sourceMatches =
+      config.coin_source?.source_type !== 'vergex_signal' ||
+      config.coin_source.vergex_limit === profile.topN
+    return (
+      risk.max_positions === profile.maxPositions &&
+      risk.btc_eth_max_leverage === profile.leverage &&
+      risk.altcoin_max_leverage === profile.leverage &&
+      risk.min_confidence === profile.confidence &&
+      risk.max_margin_usage === profile.margin &&
+      klines.primary_timeframe === profile.timeframe &&
+      klines.primary_count === profile.bars &&
+      klines.enable_multi_timeframe !== true &&
+      selectedTimeframes.length === 1 &&
+      selectedTimeframes[0] === profile.timeframe &&
+      config.indicators.enable_raw_klines !== false &&
+      sourceMatches &&
+      (config.custom_prompt === profile.promptZh ||
+        config.custom_prompt === profile.promptEn)
+    )
+  })
+  return matched?.value || 'custom'
 }
 
 function formatChange(value?: number) {
@@ -1104,7 +1132,7 @@ export function StrategyStudioPage() {
   const selectedSymbols = coinSource?.static_coins || []
   const watchlist = coinSource?.watchlist || []
   const watchlistCandidateMode = coinSource?.use_watchlist === true
-  const activeProfile = profileFromRisk(risk)
+  const activeProfile = profileFromConfig(aiConfig)
 
   const signalMap = useMemo(() => {
     const map = new Map<string, VergexSignalItem>()
@@ -2800,6 +2828,11 @@ export function StrategyStudioPage() {
                         {text(language, profile.zh, profile.en)}
                       </button>
                     ))}
+                    {activeProfile === 'custom' ? (
+                      <span className="rounded-lg border border-nofx-gold/40 bg-nofx-gold/10 px-3 py-2 text-sm text-nofx-gold">
+                        {text(language, '自定义', 'Custom')}
+                      </span>
+                    ) : null}
                   </div>
                 </div>
                 <div className="mt-4 grid gap-4 lg:grid-cols-2">
@@ -2858,11 +2891,7 @@ export function StrategyStudioPage() {
                   <div className="rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-lighter p-4">
                     <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-nofx-text">
                       <Shield className="h-4 w-4 text-nofx-success" />
-                      {text(
-                        language,
-                        '交易参数',
-                        'Trading parameters'
-                      )}
+                      {text(language, '交易参数', 'Trading parameters')}
                     </div>
                     <div className="grid gap-4 sm:grid-cols-3">
                       <label className="space-y-2">
@@ -2887,7 +2916,7 @@ export function StrategyStudioPage() {
                       </label>
                       <label className="space-y-2">
                         <span className="text-xs text-nofx-text-muted">
-                          {text(language, '杠杆', 'Leverage')}
+                          {text(language, '最大杠杆', 'Maximum leverage')}
                         </span>
                         <select
                           value={risk.altcoin_max_leverage}
@@ -2896,7 +2925,7 @@ export function StrategyStudioPage() {
                           }
                           className="w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
                         >
-                          {[1, 2, 3, 5, 8, 10].map((value) => (
+                          {[1, 2, 3, 5, 8, 10, 15, 20, 30, 50].map((value) => (
                             <option key={value} value={value}>
                               {value}x
                             </option>
@@ -2905,11 +2934,7 @@ export function StrategyStudioPage() {
                       </label>
                       <label className="space-y-2">
                         <span className="text-xs text-nofx-text-muted">
-                          {text(
-                            language,
-                            '入场置信度',
-                            'Entry confidence'
-                          )}
+                          {text(language, '入场置信度', 'Entry confidence')}
                         </span>
                         <select
                           value={risk.min_confidence}

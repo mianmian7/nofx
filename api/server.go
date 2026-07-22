@@ -349,7 +349,7 @@ StrategyConfig fields:
   coin_source.binance_dynamic_limit: number of liquid Binance perpetual candidates (default 10, max 10)
   coin_source.static_coins: explicit symbols such as ["BTCUSDT","ETHUSDT"] when source_type="static"
   indicators.klines.primary_timeframe: "1m"|"3m"|"5m"|"15m"|"1h"|"4h" — scalping→"5m", trend/swing→"1h"/"4h"
-  indicators.klines.primary_count: number of candles (20-100)
+  indicators.klines.primary_count: number of candles (10-50)
   indicators.klines.enable_multi_timeframe: true for trend/swing analysis
   indicators.klines.selected_timeframes: e.g. ["5m","15m","1h","4h"]
   indicators.enable_raw_klines: ALWAYS true (raw OHLCV required)

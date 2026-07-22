@@ -247,6 +247,16 @@ func NewBinanceFuturesTestSuite(t *testing.T) *BinanceFuturesTestSuite {
 			}
 
 		// Mock SetLeverage - /fapi/v1/leverage
+		case path == "/fapi/v1/leverageBracket":
+			symbol := r.URL.Query().Get("symbol")
+			respBody = map[string]interface{}{
+				"symbol": symbol,
+				"brackets": []map[string]interface{}{
+					{"bracket": 1, "initialLeverage": 20, "notionalCap": 1000000, "notionalFloor": 0, "maintMarginRatio": 0.025, "cum": 0},
+				},
+			}
+
+		// Mock SetLeverage - /fapi/v1/leverage
 		case path == "/fapi/v1/leverage":
 			leverageSymbols = append(leverageSymbols, r.FormValue("symbol"))
 			if r.FormValue("symbol") == "MUUSDT" {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"nofx/logger"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/adshao/go-binance/v2/futures"
@@ -118,6 +119,15 @@ func (t *FuturesTrader) SetMarginMode(symbol string, isCrossMargin bool) error {
 
 // SetLeverage sets leverage (with smart detection and cooldown period)
 func (t *FuturesTrader) SetLeverage(symbol string, leverage int) error {
+	maxLeverage, err := t.GetMaxLeverage(symbol)
+	if err != nil {
+		return fmt.Errorf("failed to get leverage bracket for %s: %w", symbol, err)
+	}
+	if leverage > maxLeverage {
+		logger.Infof("  ⚠️ %s requested leverage %dx exceeds exchange maximum %dx; reducing to %dx", symbol, leverage, maxLeverage, maxLeverage)
+		leverage = maxLeverage
+	}
+
 	// First try to get current leverage (from position information)
 	currentLeverage := 0
 	positions, err := t.GetPositions()
@@ -160,6 +170,52 @@ func (t *FuturesTrader) SetLeverage(symbol string, leverage int) error {
 	time.Sleep(5 * time.Second)
 
 	return nil
+}
+
+// GetMaxLeverage returns the highest initial leverage currently allowed by
+// Binance's signed per-symbol leverage bracket endpoint.
+func (t *FuturesTrader) GetMaxLeverage(symbol string) (int, error) {
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+	if symbol == "" {
+		return 0, fmt.Errorf("symbol is required")
+	}
+
+	t.maxLeverageMutex.RLock()
+	entry, ok := t.maxLeverageCache[symbol]
+	t.maxLeverageMutex.RUnlock()
+	if ok && entry.value > 0 && time.Now().Before(entry.expiresAt) {
+		return entry.value, nil
+	}
+
+	maxLeverage := 0
+	brackets, err := t.client.NewGetLeverageBracketService().Symbol(symbol).Do(context.Background())
+	if err != nil {
+		return 0, fmt.Errorf("query Binance leverage bracket: %w", err)
+	}
+	for _, item := range brackets {
+		if item == nil || !strings.EqualFold(item.Symbol, symbol) {
+			continue
+		}
+		for _, bracket := range item.Brackets {
+			if bracket.InitialLeverage > maxLeverage {
+				maxLeverage = bracket.InitialLeverage
+			}
+		}
+	}
+	if maxLeverage <= 0 {
+		return 0, fmt.Errorf("no valid leverage bracket returned for %s", symbol)
+	}
+
+	t.maxLeverageMutex.Lock()
+	if t.maxLeverageCache == nil {
+		t.maxLeverageCache = make(map[string]maxLeverageCacheEntry)
+	}
+	t.maxLeverageCache[symbol] = maxLeverageCacheEntry{
+		value:     maxLeverage,
+		expiresAt: time.Now().Add(time.Minute),
+	}
+	t.maxLeverageMutex.Unlock()
+	return maxLeverage, nil
 }
 
 // GetMarketPrice gets market price
@@ -287,4 +343,3 @@ func (t *FuturesTrader) FormatPrice(symbol string, price float64) (string, error
 	format := fmt.Sprintf("%%.%df", precision)
 	return fmt.Sprintf(format, price), nil
 }
-

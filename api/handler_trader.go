@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	maxManualBTCETHLeverage = 20
-	maxManualAltLeverage    = 20
+	maxManualBTCETHLeverage = 50
+	maxManualAltLeverage    = 50
 )
 
 // AI trader management related structures
@@ -74,10 +74,10 @@ func traderCreationRequestError(reason string) string {
 
 func validateTraderLeverageRange(btcEthLeverage, altcoinLeverage int) (string, string) {
 	if btcEthLeverage < 0 || btcEthLeverage > maxManualBTCETHLeverage {
-		return traderCreationRequestError("BTC/ETH leverage must be between 1x and 20x"), "trader.create.invalid_btc_eth_leverage"
+		return traderCreationRequestError("BTC/ETH leverage must be between 1x and 50x"), "trader.create.invalid_btc_eth_leverage"
 	}
 	if altcoinLeverage < 0 || altcoinLeverage > maxManualAltLeverage {
-		return traderCreationRequestError("Altcoin leverage must be between 1x and 20x"), "trader.create.invalid_altcoin_leverage"
+		return traderCreationRequestError("Altcoin leverage must be between 1x and 50x"), "trader.create.invalid_altcoin_leverage"
 	}
 	return "", ""
 }

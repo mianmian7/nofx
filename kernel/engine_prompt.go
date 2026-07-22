@@ -327,7 +327,7 @@ func writeVergexHardConstraints(sb *strings.Builder, accountEquity float64, risk
 		sb.WriteString(fmt.Sprintf("- Max margin usage: ≤%.0f%%\n", riskControl.MaxMarginUsage*100))
 		sb.WriteString(fmt.Sprintf("- Min order size: ≥%.0f USDT\n\n", riskControl.MinPositionSize))
 		sb.WriteString("## AI guided\n")
-		sb.WriteString(fmt.Sprintf("- Leverage: every open position must use exactly %dx\n", riskControl.AltcoinMaxLeverage))
+		sb.WriteString(fmt.Sprintf("- Maximum leverage: every open position must use at most %dx; lower leverage is allowed\n", riskControl.AltcoinMaxLeverage))
 		sb.WriteString(fmt.Sprintf("- Risk/reward: ≥1:%.1f\n", riskControl.MinRiskRewardRatio))
 		sb.WriteString(fmt.Sprintf("- Min confidence to open: ≥%d\n\n", riskControl.MinConfidence))
 		sb.WriteString("# Position Sizing\n\n")
@@ -460,7 +460,7 @@ func buildXYZStockCustomPrompt(symbol string) string {
 	sb.WriteString("- Per-trade stop-loss: 1.5-3% from entry. ALWAYS set a numeric `stop_loss`.\n")
 	sb.WriteString("- Take-profit: target at least R/R 2:1; set a numeric `take_profit`.\n")
 	sb.WriteString("- Per-trade notional: <= 25% of account equity (probing 10-15%, full 20-25%).\n")
-	sb.WriteString("- Leverage: 2-3x default, never above 5x. Never go all-in.\n")
+	sb.WriteString("- Prefer 2-3x leverage when conditions are uncertain; never exceed the configured maximum or go all-in.\n")
 	sb.WriteString("- Do not flip directly from long to short or short to long in the same cycle. Manage or close the open position first.\n\n")
 
 	sb.WriteString("## Position Management\n")

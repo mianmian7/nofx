@@ -18,10 +18,10 @@ const (
 	MaxPositions            = 8
 	MaxTimeframes           = 4
 	MinKlineCount           = 10
-	MaxKlineCount           = 30
+	MaxKlineCount           = 50
 	MinLeverage             = 1
-	MaxBTCETHLeverage       = 20
-	MaxAltLeverage          = 20
+	MaxBTCETHLeverage       = 50
+	MaxAltLeverage          = 50
 	MinPositionRatio        = 0.5
 	MaxPositionRatio        = 10.0
 	MinRiskReward           = 1.0

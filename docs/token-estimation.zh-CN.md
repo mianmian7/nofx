@@ -118,7 +118,7 @@ const (
     MaxPositions      = 3    // 最大同时持仓数
     MaxTimeframes     = 4    // 最大时间框架数
     MinKlineCount     = 10   // 最少 K 线数
-    MaxKlineCount     = 30   // 最多 K 线数
+    MaxKlineCount     = 50   // 最多 K 线数
 )
 ```
 

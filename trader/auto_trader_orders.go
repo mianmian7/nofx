@@ -26,6 +26,14 @@ const (
 
 // executeDecisionWithRecord executes AI decision and records detailed information
 func (at *AutoTrader) executeDecisionWithRecord(decision *kernel.Decision, actionRecord *store.DecisionAction) error {
+	if decision.Action == "open_long" || decision.Action == "open_short" {
+		if provider, ok := at.trader.(leverageLimitProvider); ok {
+			if err := clampDecisionToExchangeLeverageLimit(decision, provider); err != nil {
+				return err
+			}
+			actionRecord.Leverage = decision.Leverage
+		}
+	}
 	if at.executionMode == ExecutionModePaper {
 		if at.paperBroker == nil {
 			return fmt.Errorf("paper broker is not configured")
@@ -66,6 +74,25 @@ func (at *AutoTrader) executeDecisionWithRecord(decision *kernel.Decision, actio
 	default:
 		return fmt.Errorf("unknown action: %s", decision.Action)
 	}
+}
+
+type leverageLimitProvider interface {
+	GetMaxLeverage(symbol string) (int, error)
+}
+
+func clampDecisionToExchangeLeverageLimit(decision *kernel.Decision, provider leverageLimitProvider) error {
+	maxLeverage, err := provider.GetMaxLeverage(decision.Symbol)
+	if err != nil {
+		return fmt.Errorf("failed to verify exchange leverage limit for %s: %w", decision.Symbol, err)
+	}
+	if maxLeverage <= 0 {
+		return fmt.Errorf("exchange returned invalid leverage limit %d for %s", maxLeverage, decision.Symbol)
+	}
+	if decision.Leverage > maxLeverage {
+		logger.Infof("  ⚠️ %s decision leverage %dx exceeds exchange maximum %dx; reducing to %dx", decision.Symbol, decision.Leverage, maxLeverage, maxLeverage)
+		decision.Leverage = maxLeverage
+	}
+	return nil
 }
 
 func validateExecutionSymbol(exchange, symbol string) error {

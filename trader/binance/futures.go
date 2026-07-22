@@ -47,6 +47,9 @@ func getBrOrderID() string {
 type FuturesTrader struct {
 	client *futures.Client
 
+	maxLeverageCache map[string]maxLeverageCacheEntry
+	maxLeverageMutex sync.RWMutex
+
 	// Balance cache
 	cachedBalance     map[string]interface{}
 	balanceCacheTime  time.Time
@@ -76,8 +79,9 @@ func NewFuturesTrader(apiKey, secretKey string, userId string) *FuturesTrader {
 	// Sync time to avoid "Timestamp ahead" error
 	syncBinanceServerTime(client)
 	trader := &FuturesTrader{
-		client:        client,
-		cacheDuration: 15 * time.Second, // 15-second cache
+		client:           client,
+		maxLeverageCache: make(map[string]maxLeverageCacheEntry),
+		cacheDuration:    15 * time.Second, // 15-second cache
 	}
 
 	// Set dual-side position mode (Hedge Mode)
@@ -87,6 +91,11 @@ func NewFuturesTrader(apiKey, secretKey string, userId string) *FuturesTrader {
 	}
 
 	return trader
+}
+
+type maxLeverageCacheEntry struct {
+	value     int
+	expiresAt time.Time
 }
 
 // setDualSidePosition sets dual-side position mode (called during initialization)
