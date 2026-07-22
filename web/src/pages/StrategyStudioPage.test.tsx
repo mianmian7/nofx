@@ -139,6 +139,7 @@ describe('StrategyStudioPage initial data policy', () => {
     expect(screen.getByText('自定义')).toBeVisible()
     expect(screen.getByText('最大杠杆')).toBeVisible()
     expect(screen.getByRole('option', { name: '50x' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: '125x' })).toBeInTheDocument()
     expect(screen.getByText('原始 K 线')).toBeVisible()
     expect(screen.getByText('时间周期')).toBeVisible()
     expect(screen.getByText('K 线数量')).toBeVisible()

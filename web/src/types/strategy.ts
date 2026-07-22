@@ -78,7 +78,7 @@ export interface GridStrategyConfig {
   grid_count: number
   // Total investment in USDT
   total_investment: number
-  // Maximum leverage (1-50); execution is further capped by the exchange symbol bracket.
+  // Maximum leverage (1-125); execution is further capped by the exchange symbol bracket.
   leverage: number
   // Upper price boundary (0 = auto-calculate from ATR)
   upper_price: number

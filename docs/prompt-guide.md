@@ -127,7 +127,7 @@ Entry conditions: Confidence ≥ 85, multiple indicator convergence.
 
 - Risk-reward ratio ≥ 1:3
 - Maximum 3 positions simultaneously
-- Maximum leverage is strategy-configured (up to 50x) and further capped by the exchange's current per-symbol bracket at execution
+- Maximum leverage is strategy-configured (up to 125x) and further capped by the exchange's current per-symbol bracket at execution
 - Margin usage rate ≤ 90%
 
 ⚠️ **Methods 1 & 2**: These constraints are automatically added and cannot be overridden
@@ -411,7 +411,7 @@ The following constraints are enforced by the system. **Methods 1 & 2** automati
 
 #### 4. Leverage Limits
 **Requirement**:
-- All symbols: never exceed the configured strategy maximum (up to 50x)
+- All symbols: never exceed the configured strategy maximum (up to 125x)
 - Execution: query the exchange's current per-symbol leverage bracket and use the lower limit
 
 ⚠️ **Strictly Enforced**: Decisions exceeding limits will be rejected

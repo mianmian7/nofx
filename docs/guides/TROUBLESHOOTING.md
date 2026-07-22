@@ -64,7 +64,7 @@ Before reporting a bug, please check:
      "altcoin_leverage": 5
    }
    ```
-3. Or use the main account (the strategy maximum can be configured up to 50x, while the exchange's per-symbol bracket still applies)
+3. Or use the main account (the strategy maximum can be configured up to 125x, while the exchange's per-symbol bracket still applies)
 
 ---
 

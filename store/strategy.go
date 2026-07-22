@@ -20,8 +20,8 @@ const (
 	MinKlineCount           = 10
 	MaxKlineCount           = 50
 	MinLeverage             = 1
-	MaxBTCETHLeverage       = 50
-	MaxAltLeverage          = 50
+	MaxBTCETHLeverage       = 125
+	MaxAltLeverage          = 125
 	MinPositionRatio        = 0.5
 	MaxPositionRatio        = 10.0
 	MinRiskReward           = 1.0

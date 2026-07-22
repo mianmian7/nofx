@@ -347,8 +347,8 @@ export const translations = {
     confirmSelection: 'Confirm',
     tradingSymbolsDescription:
       'Empty = use default symbols. Use USDT perps (e.g., BTCUSDT, ETHUSDT) or Hyperliquid XYZ USDC markets (e.g., TSLA-USDC)',
-    btcEthLeverageValidation: 'BTC/ETH leverage must be between 1-50x',
-    altcoinLeverageValidation: 'Altcoin leverage must be between 1-50x',
+    btcEthLeverageValidation: 'BTC/ETH leverage must be between 1-125x',
+    altcoinLeverageValidation: 'Altcoin leverage must be between 1-125x',
     invalidSymbolFormat:
       'Invalid symbol format: {symbol}, use USDT perps or SYMBOL-USDC',
 
@@ -1683,8 +1683,8 @@ export const translations = {
     confirmSelection: '确认选择',
     tradingSymbolsDescription:
       '留空 = 使用默认币种。支持 USDT 合约（如：BTCUSDT, ETHUSDT）或 Hyperliquid XYZ USDC 标的（如：TSLA-USDC）',
-    btcEthLeverageValidation: 'BTC/ETH杠杆必须在1-50倍之间',
-    altcoinLeverageValidation: '山寨币杠杆必须在1-50倍之间',
+    btcEthLeverageValidation: 'BTC/ETH杠杆必须在1-125倍之间',
+    altcoinLeverageValidation: '山寨币杠杆必须在1-125倍之间',
     invalidSymbolFormat:
       '无效的币种格式：{symbol}，请使用 USDT 合约或 SYMBOL-USDC',
 
@@ -2970,8 +2970,8 @@ export const translations = {
     confirmSelection: 'Konfirmasi',
     tradingSymbolsDescription:
       'Kosong = gunakan simbol default. Gunakan perp USDT (misal BTCUSDT, ETHUSDT) atau market Hyperliquid XYZ USDC (misal TSLA-USDC)',
-    btcEthLeverageValidation: 'Leverage BTC/ETH harus antara 1-50x',
-    altcoinLeverageValidation: 'Leverage Altcoin harus antara 1-50x',
+    btcEthLeverageValidation: 'Leverage BTC/ETH harus antara 1-125x',
+    altcoinLeverageValidation: 'Leverage Altcoin harus antara 1-125x',
     invalidSymbolFormat:
       'Format simbol tidak valid: {symbol}, gunakan perp USDT atau SYMBOL-USDC',
     systemPromptTemplate: 'Template Prompt Sistem',

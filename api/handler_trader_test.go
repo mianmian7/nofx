@@ -3,16 +3,16 @@ package api
 import "testing"
 
 func TestValidateTraderLeverageRangeMatchesManualLimits(t *testing.T) {
-	if msg, code := validateTraderLeverageRange(50, 50); msg != "" || code != "" {
-		t.Fatalf("expected 50/50 leverage to be accepted, got msg=%q code=%q", msg, code)
+	if msg, code := validateTraderLeverageRange(125, 125); msg != "" || code != "" {
+		t.Fatalf("expected 125/125 leverage to be accepted, got msg=%q code=%q", msg, code)
 	}
 
-	if msg, code := validateTraderLeverageRange(51, 50); msg == "" || code != "trader.create.invalid_btc_eth_leverage" {
-		t.Fatalf("expected BTC/ETH leverage > 50 to be rejected, got msg=%q code=%q", msg, code)
+	if msg, code := validateTraderLeverageRange(126, 125); msg == "" || code != "trader.create.invalid_btc_eth_leverage" {
+		t.Fatalf("expected BTC/ETH leverage > 125 to be rejected, got msg=%q code=%q", msg, code)
 	}
 
-	if msg, code := validateTraderLeverageRange(50, 51); msg == "" || code != "trader.create.invalid_altcoin_leverage" {
-		t.Fatalf("expected altcoin leverage > 50 to be rejected, got msg=%q code=%q", msg, code)
+	if msg, code := validateTraderLeverageRange(125, 126); msg == "" || code != "trader.create.invalid_altcoin_leverage" {
+		t.Fatalf("expected altcoin leverage > 125 to be rejected, got msg=%q code=%q", msg, code)
 	}
 }
 

@@ -2925,7 +2925,9 @@ export function StrategyStudioPage() {
                           }
                           className="w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
                         >
-                          {[1, 2, 3, 5, 8, 10, 15, 20, 30, 50].map((value) => (
+                          {[
+                            1, 2, 3, 5, 8, 10, 15, 20, 30, 50, 75, 100, 125,
+                          ].map((value) => (
                             <option key={value} value={value}>
                               {value}x
                             </option>
