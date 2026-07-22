@@ -1389,12 +1389,12 @@ export function StrategyStudioPage() {
       risk_control: defaultRisk({
         ...base.ai_config?.risk_control,
         max_positions: 2,
-        btc_eth_max_leverage: 5,
-        altcoin_max_leverage: 5,
-        // Few, concentrated positions held for big moves. 5x leverage so a
-        // wide (-5%) stop is survivable; 2 positions × 2.5x = 5x total.
-        btc_eth_max_position_value_ratio: 2.5,
-        altcoin_max_position_value_ratio: 2.5,
+        btc_eth_max_leverage: 10,
+        altcoin_max_leverage: 10,
+        // Few, concentrated positions held for big moves. 10x leverage keeps a
+        // wide (-5%) stop survivable; 2 positions × 5x = 10x total.
+        btc_eth_max_position_value_ratio: 5,
+        altcoin_max_position_value_ratio: 5,
         max_margin_usage: 1.0,
         min_confidence: 78,
         min_risk_reward_ratio: 3,
