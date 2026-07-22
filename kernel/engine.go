@@ -190,27 +190,35 @@ type StrategyEngine struct {
 	nofxosClient       *nofxos.Client
 	vergexClient       *vergex.Client
 	vergexRankingCache map[string]*vergex.SignalRankItem
+	binanceCandidates  func(limit int) ([]string, error)
 }
 
 // NewStrategyEngine creates strategy execution engine.
 // claw402WalletKey is optional — if provided, nofxos data requests are routed through claw402.
 func NewStrategyEngine(config *store.StrategyConfig, claw402WalletKey ...string) *StrategyEngine {
-	// Create NofxOS client with API key from config
-	apiKey := config.Indicators.NofxOSAPIKey
-	if apiKey == "" {
-		apiKey = nofxos.DefaultAuthKey
+	binanceClient := market.NewAPIClient()
+	binanceCandidates := binanceClient.GetBinanceDynamicSymbols
+	// External ranking data is opt-in. A direct NofxOS client is created only
+	// when the strategy contains a user-provided key; otherwise an explicitly
+	// selected paid source may use a Claw402 wallet below.
+	apiKey := strings.TrimSpace(config.Indicators.NofxOSAPIKey)
+	var client *nofxos.Client
+	if apiKey != "" {
+		client = nofxos.NewClient(nofxos.DefaultBaseURL, apiKey)
 	}
-	client := nofxos.NewClient(nofxos.DefaultBaseURL, apiKey)
 
 	// If claw402 wallet key is provided (from trader's AI config), route through claw402
 	walletKey := ""
 	if len(claw402WalletKey) > 0 {
 		walletKey = claw402WalletKey[0]
 	}
-	if walletKey == "" {
+	if walletKey == "" && strategyUsesClaw402Data(config) && apiKey == "" {
 		walletKey = os.Getenv("CLAW402_WALLET_KEY")
 	}
-	if walletKey != "" {
+	if walletKey != "" && strategyUsesClaw402Data(config) {
+		if client == nil {
+			client = nofxos.NewClient(nofxos.DefaultBaseURL, "")
+		}
 		claw402URL := os.Getenv("CLAW402_URL")
 		if claw402URL == "" {
 			claw402URL = "https://claw402.ai"
@@ -220,7 +228,8 @@ func NewStrategyEngine(config *store.StrategyConfig, claw402WalletKey ...string)
 			client.SetClaw402(claw402Client)
 			logger.Infof("🔗 NofxOS data routed through claw402 (%s)", claw402URL)
 		} else {
-			logger.Warnf("⚠️ Failed to init claw402 data client: %v (using direct nofxos.ai)", err)
+			client = nil
+			logger.Warnf("⚠️ Failed to init claw402 data client: %v (external ranking data disabled)", err)
 		}
 
 		vergexClient, err := vergex.NewClient(claw402URL, walletKey, &logger.MCPLogger{})
@@ -234,6 +243,7 @@ func NewStrategyEngine(config *store.StrategyConfig, claw402WalletKey ...string)
 			nofxosClient:       client,
 			vergexClient:       vergexClient,
 			vergexRankingCache: make(map[string]*vergex.SignalRankItem),
+			binanceCandidates:  binanceCandidates,
 		}
 	}
 
@@ -241,6 +251,22 @@ func NewStrategyEngine(config *store.StrategyConfig, claw402WalletKey ...string)
 		config:             config,
 		nofxosClient:       client,
 		vergexRankingCache: make(map[string]*vergex.SignalRankItem),
+		binanceCandidates:  binanceCandidates,
+	}
+}
+
+func strategyUsesClaw402Data(config *store.StrategyConfig) bool {
+	if config == nil {
+		return false
+	}
+	source := config.CoinSource
+	switch source.SourceType {
+	case "vergex_signal", "ai500", "oi_top", "oi_low":
+		return true
+	case "mixed":
+		return source.UseAI500 || source.UseOITop || source.UseOILow
+	default:
+		return false
 	}
 }
 
@@ -295,9 +321,16 @@ func (e *StrategyEngine) GetCandidateCoins() ([]CandidateCoin, error) {
 	coinSource := e.config.CoinSource
 
 	switch coinSource.SourceType {
+	case "binance_dynamic":
+		coins, err := e.getBinanceDynamicCoins(coinSource.BinanceDynamicLimit)
+		if err != nil {
+			return nil, err
+		}
+		return e.filterExcludedCoins(coins), nil
+
 	case "static":
 		for _, symbol := range coinSource.StaticCoins {
-			symbol = market.Normalize(symbol)
+			symbol = market.NormalizeForExchange("binance", symbol)
 			candidates = append(candidates, CandidateCoin{
 				Symbol:  symbol,
 				Sources: []string{"static"},
@@ -311,7 +344,7 @@ func (e *StrategyEngine) GetCandidateCoins() ([]CandidateCoin, error) {
 		if !coinSource.UseAI500 {
 			logger.Infof("⚠️  source_type is 'ai500' but use_ai500 is false, falling back to static coins")
 			for _, symbol := range coinSource.StaticCoins {
-				symbol = market.Normalize(symbol)
+				symbol = market.NormalizeForExchange("binance", symbol)
 				candidates = append(candidates, CandidateCoin{
 					Symbol:  symbol,
 					Sources: []string{"static"},
@@ -331,7 +364,7 @@ func (e *StrategyEngine) GetCandidateCoins() ([]CandidateCoin, error) {
 		if !coinSource.UseOITop {
 			logger.Infof("⚠️  source_type is 'oi_top' but use_oi_top is false, falling back to static coins")
 			for _, symbol := range coinSource.StaticCoins {
-				symbol = market.Normalize(symbol)
+				symbol = market.NormalizeForExchange("binance", symbol)
 				candidates = append(candidates, CandidateCoin{
 					Symbol:  symbol,
 					Sources: []string{"static"},
@@ -351,7 +384,7 @@ func (e *StrategyEngine) GetCandidateCoins() ([]CandidateCoin, error) {
 		if !coinSource.UseOILow {
 			logger.Infof("⚠️  source_type is 'oi_low' but use_oi_low is false, falling back to static coins")
 			for _, symbol := range coinSource.StaticCoins {
-				symbol = market.Normalize(symbol)
+				symbol = market.NormalizeForExchange("binance", symbol)
 				candidates = append(candidates, CandidateCoin{
 					Symbol:  symbol,
 					Sources: []string{"static"},
@@ -482,7 +515,7 @@ func (e *StrategyEngine) GetCandidateCoins() ([]CandidateCoin, error) {
 		}
 
 		for _, symbol := range coinSource.StaticCoins {
-			symbol = market.Normalize(symbol)
+			symbol = market.NormalizeForExchange("binance", symbol)
 			if _, exists := symbolSources[symbol]; !exists {
 				symbolSources[symbol] = []string{"static"}
 			} else {
@@ -503,6 +536,24 @@ func (e *StrategyEngine) GetCandidateCoins() ([]CandidateCoin, error) {
 	}
 }
 
+func (e *StrategyEngine) getBinanceDynamicCoins(limit int) ([]CandidateCoin, error) {
+	if e.binanceCandidates == nil {
+		return nil, fmt.Errorf("Binance dynamic candidate source is unavailable")
+	}
+	symbols, err := e.binanceCandidates(limit)
+	if err != nil {
+		return nil, fmt.Errorf("load Binance dynamic candidates: %w", err)
+	}
+	candidates := make([]CandidateCoin, 0, len(symbols))
+	for _, symbol := range symbols {
+		candidates = append(candidates, CandidateCoin{
+			Symbol:  market.NormalizeForExchange("binance", symbol),
+			Sources: []string{"binance_dynamic"},
+		})
+	}
+	return candidates, nil
+}
+
 // filterExcludedCoins removes excluded coins from the candidates list
 func (e *StrategyEngine) filterExcludedCoins(candidates []CandidateCoin) []CandidateCoin {
 	if len(e.config.CoinSource.ExcludedCoins) == 0 {
@@ -512,7 +563,7 @@ func (e *StrategyEngine) filterExcludedCoins(candidates []CandidateCoin) []Candi
 	// Build excluded set for O(1) lookup
 	excluded := make(map[string]bool)
 	for _, coin := range e.config.CoinSource.ExcludedCoins {
-		normalized := market.Normalize(coin)
+		normalized := market.NormalizeForExchange("binance", coin)
 		excluded[normalized] = true
 	}
 
@@ -530,6 +581,9 @@ func (e *StrategyEngine) filterExcludedCoins(candidates []CandidateCoin) []Candi
 }
 
 func (e *StrategyEngine) getAI500Coins(limit int) ([]CandidateCoin, error) {
+	if e.nofxosClient == nil {
+		return nil, fmt.Errorf("AI500 requires an explicit NofxOS API key or Claw402 data wallet")
+	}
 	if limit <= 0 {
 		limit = 30
 	}
@@ -550,6 +604,9 @@ func (e *StrategyEngine) getAI500Coins(limit int) ([]CandidateCoin, error) {
 }
 
 func (e *StrategyEngine) getOITopCoins(limit int) ([]CandidateCoin, error) {
+	if e.nofxosClient == nil {
+		return nil, fmt.Errorf("OI ranking requires an explicit NofxOS API key or Claw402 data wallet")
+	}
 	if limit <= 0 {
 		limit = 10
 	}
@@ -574,6 +631,9 @@ func (e *StrategyEngine) getOITopCoins(limit int) ([]CandidateCoin, error) {
 }
 
 func (e *StrategyEngine) getOILowCoins(limit int) ([]CandidateCoin, error) {
+	if e.nofxosClient == nil {
+		return nil, fmt.Errorf("OI ranking requires an explicit NofxOS API key or Claw402 data wallet")
+	}
 	if limit <= 0 {
 		limit = 10
 	}

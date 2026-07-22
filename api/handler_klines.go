@@ -44,9 +44,23 @@ func (s *Server) handleKlines(c *gin.Context) {
 
 	var klines []market.Kline
 	exchangeLower := strings.ToLower(exchange)
+	if exchangeLower == "hyperliquid" || exchangeLower == "hyperliquid-xyz" || exchangeLower == "xyz" {
+		c.JSON(http.StatusGone, gin.H{
+			"error":     "Hyperliquid market data is disabled; use Binance instead",
+			"error_key": "product.hyperliquid_disabled",
+		})
+		return
+	}
 
 	// Route to appropriate data source based on exchange type
 	switch exchangeLower {
+	case "binance":
+		symbol = market.NormalizeForExchange("binance", symbol)
+		klines, err = market.GetBinanceKlines(symbol, interval, limit)
+		if err != nil {
+			SafeInternalError(c, "Get klines from Binance", err)
+			return
+		}
 	case "alpaca":
 		// US Stocks via Alpaca
 		klines, err = s.getKlinesFromAlpaca(symbol, interval, limit)
@@ -448,9 +462,20 @@ func hyperliquidCategoryOrder(category string) int {
 	}
 }
 
+func binanceTradFiCategory(underlyingType string) string {
+	switch strings.ToUpper(strings.TrimSpace(underlyingType)) {
+	case "COMMODITY":
+		return "commodity"
+	case "INDEX":
+		return "index"
+	default:
+		return "stock"
+	}
+}
+
 // handleSymbols returns available symbols for a given exchange
 func (s *Server) handleSymbols(c *gin.Context) {
-	exchange := c.DefaultQuery("exchange", "hyperliquid")
+	exchange := c.DefaultQuery("exchange", "binance")
 
 	type SymbolInfo struct {
 		Symbol       string  `json:"symbol"`
@@ -469,7 +494,59 @@ func (s *Server) handleSymbols(c *gin.Context) {
 	var symbols []SymbolInfo
 
 	exchangeLower := strings.ToLower(exchange)
+	if exchangeLower == "hyperliquid" || exchangeLower == "hyperliquid-xyz" || exchangeLower == "xyz" {
+		c.JSON(http.StatusGone, gin.H{
+			"error":     "Hyperliquid symbols are disabled; use Binance instead",
+			"error_key": "product.hyperliquid_disabled",
+		})
+		return
+	}
 	switch exchangeLower {
+	case "binance":
+		tickers, err := market.NewAPIClient().GetBinanceDynamicTickers(10)
+		if err != nil {
+			SafeInternalError(c, "Get Binance dynamic symbols", err)
+			return
+		}
+		for _, ticker := range tickers {
+			markPrice, _ := strconv.ParseFloat(ticker.LastPrice, 64)
+			quoteVolume, _ := strconv.ParseFloat(ticker.QuoteVolume, 64)
+			changePct, _ := strconv.ParseFloat(ticker.PriceChangePercent, 64)
+			name := strings.TrimSuffix(ticker.Symbol, "USDT")
+			symbols = append(symbols, SymbolInfo{
+				Symbol:       ticker.Symbol,
+				Display:      ticker.Symbol,
+				Name:         name,
+				Category:     "crypto",
+				Exchange:     "binance",
+				Volume24h:    quoteVolume,
+				MarkPrice:    markPrice,
+				Change24hPct: changePct,
+			})
+		}
+
+	case "binance-tradifi", "binance_tradifi":
+		tickers, err := market.NewAPIClient().GetBinanceTradFiTickers()
+		if err != nil {
+			SafeInternalError(c, "Get Binance TradFi symbols", err)
+			return
+		}
+		for _, ticker := range tickers {
+			markPrice, _ := strconv.ParseFloat(ticker.LastPrice, 64)
+			quoteVolume, _ := strconv.ParseFloat(ticker.QuoteVolume, 64)
+			changePct, _ := strconv.ParseFloat(ticker.PriceChangePercent, 64)
+			symbols = append(symbols, SymbolInfo{
+				Symbol:       ticker.Symbol,
+				Display:      ticker.Symbol,
+				Name:         ticker.BaseAsset,
+				Category:     binanceTradFiCategory(ticker.UnderlyingType),
+				Exchange:     "binance-tradifi",
+				Volume24h:    quoteVolume,
+				MarkPrice:    markPrice,
+				Change24hPct: changePct,
+			})
+		}
+
 	case "hyperliquid", "hyperliquid-xyz", "xyz":
 		ctx := context.Background()
 

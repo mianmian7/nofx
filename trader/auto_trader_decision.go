@@ -81,6 +81,13 @@ func (at *AutoTrader) GetStatus() map[string]interface{} {
 		"stop_until":      at.stopUntil.Format(time.RFC3339),
 		"last_reset_time": at.lastResetTime.Format(time.RFC3339),
 		"ai_provider":     aiProvider,
+		"execution_mode":  string(at.executionMode),
+	}
+	if at.executionMode == ExecutionModePaper && at.paperBroker != nil {
+		result["paper"] = at.paperBroker.Snapshot()
+		result["paper_performance"] = at.paperBroker.Performance()
+		result["paper_recent_fills"] = at.paperBroker.RecentFills(20)
+		result["paper_notice"] = "Simulation only; no real exchange orders are sent"
 	}
 
 	// Add strategy info
@@ -161,6 +168,11 @@ func (at *AutoTrader) GetAccountInfo() (map[string]interface{}, error) {
 		}
 		marginUsed := (quantity * markPrice) / float64(leverage)
 		totalMarginUsed += marginUsed
+	}
+	if at.executionMode == ExecutionModePaper {
+		if initialMargin, ok := balance["totalInitialMargin"].(float64); ok {
+			totalMarginUsed = initialMargin
+		}
 	}
 
 	// Verify unrealized P&L consistency (API value vs calculated from positions)
@@ -349,7 +361,7 @@ func (at *AutoTrader) recordAndConfirmOrder(orderResult map[string]interface{}, 
 	}
 
 	// Normalize symbol for position record consistency
-	normalizedSymbolForPosition := market.Normalize(symbol)
+	normalizedSymbolForPosition := market.NormalizeForExchange(at.exchange, symbol)
 
 	logger.Infof("  📝 Recording position (ID: %s, action: %s, price: %.6f, qty: %.6f, fee: %.4f)",
 		orderID, action, actualPrice, actualQty, fee)
@@ -441,7 +453,7 @@ func (at *AutoTrader) createOrderRecord(orderID, symbol, action, positionSide st
 	reduceOnly := (action == "close_long" || action == "close_short")
 
 	// Normalize symbol for consistency
-	normalizedSymbol := market.Normalize(symbol)
+	normalizedSymbol := market.NormalizeForExchange(at.exchange, symbol)
 
 	return &store.TraderOrder{
 		TraderID:        at.id,
@@ -488,7 +500,7 @@ func (at *AutoTrader) recordOrderFill(orderRecordID int64, exchangeOrderID, symb
 	tradeID := fmt.Sprintf("%s-%d", exchangeOrderID, time.Now().UnixNano())
 
 	// Normalize symbol for consistency
-	normalizedSymbol := market.Normalize(symbol)
+	normalizedSymbol := market.NormalizeForExchange(at.exchange, symbol)
 
 	fill := &store.TraderFill{
 		TraderID:        at.id,

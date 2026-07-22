@@ -67,20 +67,18 @@ describe('launchAutopilot', () => {
     mocks.api.startTrader.mockResolvedValue(undefined)
   })
 
-  it('never touches the strategy when preflight fails', async () => {
+  it('Paper launch skips exchange balance preflight and declares paper mode', async () => {
     mocks.runLaunchPreflight.mockResolvedValue(failedPreflight())
-    const ensureStrategy = vi.fn()
+    const ensureStrategy = vi.fn().mockResolvedValue('strat-paper')
 
     const outcome = await launchAutopilot({ ensureStrategy })
 
-    expect(ensureStrategy).not.toHaveBeenCalled()
-    expect(mocks.api.createTrader).not.toHaveBeenCalled()
-    expect(outcome.ok).toBe(false)
-    if (outcome.ok || outcome.kind !== 'preflight') {
-      throw new Error('expected a preflight failure outcome')
-    }
-    expect(outcome.setupTarget).toBe('claw402')
-    expect(outcome.message).toContain('AI wallet needs 1 USDC.')
+    expect(mocks.runLaunchPreflight).not.toHaveBeenCalled()
+    expect(ensureStrategy).toHaveBeenCalledTimes(1)
+    expect(mocks.api.createTrader).toHaveBeenCalledWith(
+      expect.objectContaining({ execution_mode: 'paper', strategy_id: 'strat-paper' })
+    )
+    expect(outcome.ok).toBe(true)
   })
 
   it('creates and starts the trader after preflight passes', async () => {
@@ -179,7 +177,7 @@ describe('launchAutopilot', () => {
     expect(outcome.setupTarget).toBe('claw402')
   })
 
-  it('routes missing exchange setup to the hyperliquid anchor', async () => {
+  it('routes missing exchange setup to the generic exchange anchor', async () => {
     mocks.resolveLaunchExchange.mockResolvedValue({
       exchange: null,
       reason: 'No Hyperliquid account is connected.',
@@ -191,7 +189,7 @@ describe('launchAutopilot', () => {
       expect.objectContaining({
         ok: false,
         kind: 'setup',
-        setupTarget: 'hyperliquid',
+        setupTarget: 'exchange',
       })
     )
     expect(mocks.runLaunchPreflight).not.toHaveBeenCalled()

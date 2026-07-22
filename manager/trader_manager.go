@@ -642,6 +642,9 @@ func (tm *TraderManager) addTraderFromStore(traderCfg *store.Trader, aiModelCfg 
 	if _, exists := tm.traders[traderCfg.ID]; exists {
 		return fmt.Errorf("trader ID '%s' already exists", traderCfg.ID)
 	}
+	if exchangeCfg != nil && strings.EqualFold(strings.TrimSpace(exchangeCfg.ExchangeType), "hyperliquid") {
+		return fmt.Errorf("unsupported trading platform hyperliquid: configure Binance Futures instead")
+	}
 
 	// Load strategy config (must have strategy)
 	var strategyConfig *store.StrategyConfig
@@ -680,6 +683,7 @@ func (tm *TraderManager) addTraderFromStore(traderCfg *store.Trader, aiModelCfg 
 		AIModel:               aiModelCfg.Provider,
 		Exchange:              exchangeCfg.ExchangeType, // Exchange type: binance/bybit/okx/etc
 		ExchangeID:            exchangeCfg.ID,           // Exchange account UUID (for multi-account)
+		ExecutionMode:         trader.ExecutionMode(traderCfg.ExecutionMode),
 		BinanceAPIKey:         "",
 		BinanceSecretKey:      "",
 		HyperliquidPrivateKey: "",
@@ -753,7 +757,7 @@ func (tm *TraderManager) addTraderFromStore(traderCfg *store.Trader, aiModelCfg 
 		traderConfig.CustomAPIKey = string(aiModelCfg.APIKey)
 	}
 
-	traderConfig.Claw402WalletKey = resolveTraderDataWalletKey(st, traderCfg.UserID, aiModelCfg)
+	traderConfig.Claw402WalletKey = resolveTraderDataWalletKey(st, traderCfg.UserID, aiModelCfg, strategyConfig)
 
 	// Create trader instance
 	at, err := trader.NewAutoTrader(traderConfig, st, traderCfg.UserID)
@@ -793,7 +797,11 @@ func (tm *TraderManager) addTraderFromStore(traderCfg *store.Trader, aiModelCfg 
 	return nil
 }
 
-func resolveTraderDataWalletKey(st *store.Store, userID string, selectedModel *store.AIModel) string {
+func resolveTraderDataWalletKey(st *store.Store, userID string, selectedModel *store.AIModel, strategyConfig *store.StrategyConfig) string {
+	if !strategyNeedsPaidDataWallet(strategyConfig) {
+		return ""
+	}
+
 	// Fast path: selected model is itself a claw402 model.
 	if selectedModel != nil && selectedModel.Provider == "claw402" {
 		if walletKey := string(selectedModel.APIKey); walletKey != "" {
@@ -815,4 +823,21 @@ func resolveTraderDataWalletKey(st *store.Store, userID string, selectedModel *s
 		return ""
 	}
 	return walletKey
+}
+
+func strategyNeedsPaidDataWallet(config *store.StrategyConfig) bool {
+	if config == nil {
+		return false
+	}
+	source := config.CoinSource
+	switch source.SourceType {
+	case "vergex_signal":
+		return true
+	case "ai500", "oi_top", "oi_low":
+		return strings.TrimSpace(config.Indicators.NofxOSAPIKey) == ""
+	case "mixed":
+		return (source.UseAI500 || source.UseOITop || source.UseOILow) && strings.TrimSpace(config.Indicators.NofxOSAPIKey) == ""
+	default:
+		return false
+	}
 }

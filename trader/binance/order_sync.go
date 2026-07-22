@@ -183,7 +183,7 @@ func (t *FuturesTrader) SyncOrdersFromBinance(traderID string, exchangeID string
 		}
 
 		// Normalize symbol
-		symbol := market.Normalize(trade.Symbol)
+		symbol := market.NormalizeForExchange("binance", trade.Symbol)
 
 		// Determine order action based on side and position side
 		orderAction := t.determineOrderAction(trade.Side, trade.PositionSide, trade.RealizedPnL)

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Menu, X, ChevronDown, Settings } from 'lucide-react'
+import { Menu, X, ChevronDown, Settings, Languages } from 'lucide-react'
 import { t, type Language } from '../../i18n/translations'
 import { OFFICIAL_LINKS } from '../../constants/branding'
 import {
@@ -11,7 +11,6 @@ import {
   type UserMode,
 } from '../../lib/onboarding'
 import { getCurrentPageForPath, ROUTES, type Page } from '../../router/paths'
-import { HyperliquidWalletConnect } from './HyperliquidWalletConnect'
 
 interface HeaderBarProps {
   onLoginClick?: () => void
@@ -30,7 +29,8 @@ export default function HeaderBar({
   isLoggedIn = false,
   isHomePage = false,
   currentPage,
-  language = 'en' as Language,
+  language = 'zh' as Language,
+  onLanguageChange,
   user,
   onLogout,
   onPageChange,
@@ -84,10 +84,18 @@ export default function HeaderBar({
           }}
           className="flex items-center gap-2 hover:opacity-80 transition-opacity cursor-pointer"
         >
-          <span className="flex items-center justify-center w-8 h-8 rounded-md overflow-hidden shrink-0" style={{ background: '#fff', border: '1px solid rgba(26,24,19,0.12)' }}>
+          <span
+            className="flex items-center justify-center w-8 h-8 rounded-md overflow-hidden shrink-0"
+            style={{
+              background: '#fff',
+              border: '1px solid rgba(26,24,19,0.12)',
+            }}
+          >
             <img src="/icons/nofx.svg" alt="NOFX Logo" className="w-8 h-8" />
           </span>
-          <span className="text-lg font-bold text-nofx-gold tracking-wide">NOFX</span>
+          <span className="text-lg font-bold text-nofx-gold tracking-wide">
+            NOFX
+          </span>
         </div>
 
         {/* Desktop Menu */}
@@ -195,15 +203,25 @@ export default function HeaderBar({
                 ))
             })()}
             {/* Dashboard context slot — terminal selector + status portals in here */}
-            <div id="dash-header-slot" className="hidden lg:flex items-center" />
+            <div
+              id="dash-header-slot"
+              className="hidden lg:flex items-center"
+            />
           </div>
 
           {/* Right Side - Social Links and User Actions */}
           <div className="flex items-center gap-4">
-            <HyperliquidWalletConnect
-              language={language}
-              isLoggedIn={isLoggedIn}
-            />
+            <button
+              type="button"
+              onClick={() =>
+                onLanguageChange?.(language === 'zh' ? 'en' : 'zh')
+              }
+              className="inline-flex items-center gap-1 rounded-lg border border-[rgba(26,24,19,0.14)] px-2.5 py-1.5 text-xs font-semibold text-nofx-text-muted transition hover:text-nofx-gold"
+              title={language === 'zh' ? 'Switch to English' : '切换到中文'}
+            >
+              <Languages className="h-4 w-4" />
+              {language === 'zh' ? 'EN' : '中文'}
+            </button>
             {/* Social Links - Always visible */}
             <div className="flex items-center gap-1">
               {/* GitHub */}
@@ -260,7 +278,10 @@ export default function HeaderBar({
             </div>
 
             {/* Divider */}
-            <div className="h-5 w-px" style={{ background: 'rgba(26,24,19,0.15)' }} />
+            <div
+              className="h-5 w-px"
+              style={{ background: 'rgba(26,24,19,0.15)' }}
+            />
 
             {/* User Info and Actions */}
             {isLoggedIn && user ? (
@@ -561,7 +582,18 @@ export default function HeaderBar({
                   ))}
                 </div>
 
-                {/* Account (language switcher removed — English-only UI) */}
+                <button
+                  type="button"
+                  onClick={() =>
+                    onLanguageChange?.(language === 'zh' ? 'en' : 'zh')
+                  }
+                  className="flex items-center justify-center gap-2 rounded-lg border border-[rgba(26,24,19,0.14)] px-3 py-2 text-sm font-semibold text-nofx-text-muted"
+                >
+                  <Languages className="h-4 w-4" />
+                  {language === 'zh' ? 'Switch to English' : '切换到中文'}
+                </button>
+
+                {/* Account */}
                 <div className="grid grid-cols-1 gap-4">
                   {/* Auth Actions */}
                   {isLoggedIn && user ? (

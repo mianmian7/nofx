@@ -34,17 +34,23 @@ func Get(symbol string) (*Data, error) {
 func GetWithExchange(symbol, exchange string) (*Data, error) {
 	var klines3m, klines4h []Kline
 	var err error
-	// Normalize symbol
-	symbol = Normalize(symbol)
+	// Normalize within the selected venue. Explicit Binance TradFi USDT
+	// contracts must never be reinterpreted through the Hyperliquid XYZ list.
+	symbol = NormalizeForExchange(exchange, symbol)
 
 	// Check if this is an xyz dex asset (use Hyperliquid API)
 	isXyzAsset := IsXyzDexAsset(symbol)
 
 	// For hyperliquid exchange, also use Hyperliquid API
-	useHyperliquidAPI := isXyzAsset || strings.ToLower(exchange) == "hyperliquid"
+	useHyperliquidAPI := strings.EqualFold(exchange, "hyperliquid") && isXyzAsset
 
 	// Get 3-minute K-line data (or 5-minute for xyz assets as 3m may not be available)
-	if useHyperliquidAPI {
+	if strings.EqualFold(exchange, "binance") {
+		klines3m, err = GetBinanceKlines(symbol, "3m", 100)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get 3-minute K-line from Binance: %v", err)
+		}
+	} else if useHyperliquidAPI {
 		// Use Hyperliquid API for xyz dex assets (use 5m since 3m may not be available)
 		klines3m, err = getKlinesFromHyperliquid(symbol, "5m", 100)
 		if err != nil {
@@ -65,7 +71,12 @@ func GetWithExchange(symbol, exchange string) (*Data, error) {
 	}
 
 	// Get 4-hour K-line data
-	if useHyperliquidAPI {
+	if strings.EqualFold(exchange, "binance") {
+		klines4h, err = GetBinanceKlines(symbol, "4h", 100)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get 4-hour K-line from Binance: %v", err)
+		}
+	} else if useHyperliquidAPI {
 		klines4h, err = getKlinesFromHyperliquid(symbol, "4h", 100)
 		if err != nil {
 			return nil, fmt.Errorf("Failed to get 4-hour K-line from Hyperliquid: %v", err)
@@ -146,7 +157,7 @@ func GetWithExchange(symbol, exchange string) (*Data, error) {
 // primaryTimeframe: primary timeframe (used for calculating current indicators), defaults to timeframes[0]
 // count: number of K-lines for each timeframe
 func GetWithTimeframes(symbol string, timeframes []string, primaryTimeframe string, count int) (*Data, error) {
-	symbol = Normalize(symbol)
+	symbol = NormalizeForExchange("binance", symbol)
 
 	if len(timeframes) == 0 {
 		return nil, fmt.Errorf("at least one timeframe is required")
@@ -173,28 +184,15 @@ func GetWithTimeframes(symbol string, timeframes []string, primaryTimeframe stri
 	timeframeData := make(map[string]*TimeframeSeriesData)
 	var primaryKlines []Kline
 
-	// Check if this is an xyz dex asset (use Hyperliquid API)
-	isXyzAsset := IsXyzDexAsset(symbol)
-
 	// Get K-line data for each timeframe
 	for _, tf := range timeframes {
 		var klines []Kline
 		var err error
 
-		if isXyzAsset {
-			// Use Hyperliquid API for xyz dex assets
-			klines, err = getKlinesFromHyperliquid(symbol, tf, 200)
-			if err != nil {
-				logger.Infof("⚠️ Failed to get %s %s K-line from Hyperliquid: %v", symbol, tf, err)
-				continue
-			}
-		} else {
-			// Use CoinAnk for regular crypto assets (default to Binance)
-			klines, err = getKlinesFromCoinAnk(symbol, tf, "binance", 200)
-			if err != nil {
-				logger.Infof("⚠️ Failed to get %s %s K-line from CoinAnk: %v", symbol, tf, err)
-				continue
-			}
+		klines, err = GetBinanceKlines(symbol, tf, 200)
+		if err != nil {
+			logger.Infof("⚠️ Failed to get %s %s K-line from Binance: %v", symbol, tf, err)
+			continue
 		}
 
 		if len(klines) == 0 {
@@ -581,6 +579,24 @@ func Normalize(symbol string) string {
 	return symbol + "USDT"
 }
 
+// NormalizeForExchange normalizes a symbol without allowing another venue's
+// asset catalogue to reinterpret an explicit exchange contract. In particular,
+// Binance TradFi contracts such as MUUSDT and SKHYNIXUSDT must remain exact
+// USDT symbols even when their base ticker also exists on Hyperliquid XYZ.
+func NormalizeForExchange(exchange, symbol string) string {
+	if strings.EqualFold(strings.TrimSpace(exchange), "binance") {
+		normalized := strings.ToUpper(strings.TrimSpace(symbol))
+		normalized = strings.ReplaceAll(normalized, "_", "")
+		normalized = strings.TrimSuffix(normalized, "-SWAP")
+		normalized = strings.ReplaceAll(normalized, "-", "")
+		if strings.HasSuffix(normalized, "USDT") {
+			return normalized
+		}
+		return normalized + "USDT"
+	}
+	return Normalize(symbol)
+}
+
 // parseFloat parses float value
 func parseFloat(v interface{}) (float64, error) {
 	switch val := v.(type) {
@@ -603,7 +619,7 @@ func BuildDataFromKlines(symbol string, primary []Kline, longer []Kline) (*Data,
 		return nil, fmt.Errorf("primary series is empty")
 	}
 
-	symbol = Normalize(symbol)
+	symbol = NormalizeForExchange("binance", symbol)
 	current := primary[len(primary)-1]
 	currentPrice := current.Close
 

@@ -98,7 +98,8 @@ export interface CreateExchangeRequest {
 export interface CreateTraderRequest {
   name: string
   ai_model_id: string
-  exchange_id: string
+	exchange_id: string
+	execution_mode?: 'paper' | 'live'
   strategy_id?: string // Strategy ID (new version, uses saved strategy config)
   scan_interval_minutes?: number
   is_cross_margin?: boolean

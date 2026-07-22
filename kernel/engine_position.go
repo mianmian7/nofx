@@ -2,6 +2,7 @@ package kernel
 
 import (
 	"fmt"
+	"math"
 	"nofx/logger"
 	"nofx/market"
 )
@@ -76,7 +77,10 @@ func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoi
 			}
 		}
 
-		tolerance := maxPositionValue * 0.01
+		// The prompt displays whole-USDT limits. Accept the displayed rounded
+		// boundary so an AI decision of 20 is not rejected when the exact cap is
+		// 19.63 due to account decimals.
+		tolerance := math.Max(maxPositionValue*0.01, 0.5)
 		if d.PositionSizeUSD > maxPositionValue+tolerance {
 			switch {
 			case d.Symbol == "BTCUSDT" || d.Symbol == "ETHUSDT":

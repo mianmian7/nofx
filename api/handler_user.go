@@ -229,13 +229,13 @@ func (s *Server) createDefaultStrategies(userID string, lang string) error {
 	}
 	locales := map[string]strategyLocale{
 		"zh": {
-			defaultStrategy: strategyI18n{"NOFX Claw402 Auto Strategy", "The only built-in strategy: read the Claw402.ai board each cycle, fetch Signal Lab and cost/liquidation heatmap per candidate, then decide with raw candles."},
+			defaultStrategy: strategyI18n{"NOFX 本地动态策略", "使用 Binance 公开行情按成交额动态筛选候选交易对，再由你配置的 AI 模型决定交易或等待。"},
 		},
 		"en": {
-			defaultStrategy: strategyI18n{"NOFX Claw402 Auto Strategy", "The only built-in strategy: read the Claw402.ai board each cycle, fetch Signal Lab and cost/liquidation heatmap per candidate, then decide with raw candles."},
+			defaultStrategy: strategyI18n{"NOFX Local Dynamic Strategy", "Build a dynamic candidate pool from public Binance market data, then let the configured AI model trade or wait."},
 		},
 		"id": {
-			defaultStrategy: strategyI18n{"Strategi Otomatis NOFX Claw402", "Satu strategi bawaan: membaca papan Claw402.ai, mengambil Signal Lab dan heatmap biaya/likuidasi per kandidat, lalu memutuskan dengan candle mentah."},
+			defaultStrategy: strategyI18n{"Strategi Dinamis Lokal NOFX", "Membuat kandidat dinamis dari data pasar publik Binance, lalu model AI yang dikonfigurasi memutuskan transaksi atau menunggu."},
 		},
 	}
 	locale, ok := locales[lang]
@@ -250,30 +250,26 @@ func (s *Server) createDefaultStrategies(userID string, lang string) error {
 		applyConfig func(*store.StrategyConfig)
 	}
 
-	setClaw402Strategy := func(c *store.StrategyConfig) {
-		c.CoinSource.SourceType = "vergex_signal"
+	setLocalDynamicStrategy := func(c *store.StrategyConfig) {
+		c.CoinSource.SourceType = "binance_dynamic"
+		c.CoinSource.BinanceDynamicLimit = store.MaxCandidateCoins
 		c.CoinSource.StaticCoins = nil
 		c.CoinSource.UseAI500 = false
 		c.CoinSource.UseOITop = false
 		c.CoinSource.UseOILow = false
 		c.CoinSource.UseHyperAll = false
 		c.CoinSource.UseHyperMain = false
-		c.CoinSource.HyperRankCategory = "all"
-		c.CoinSource.VergexLimit = 10
-		c.CoinSource.VergexMarketType = "all"
-		c.CoinSource.VergexChain = "hyperliquid"
-		c.RiskControl.MaxPositions = 4
-		c.RiskControl.BTCETHMaxLeverage = 20
-		c.RiskControl.AltcoinMaxLeverage = 20
-		// 5× equity notional per position: 4 positions = 20x total account
-		// notional (full margin, ~5% liquidation cushion). Aggressive by
-		// operator choice — bigger single positions; the 0.4 short-signal
-		// floor keeps the book balanced so it is not a one-directional bet.
-		c.RiskControl.BTCETHMaxPositionValueRatio = 5.0
-		c.RiskControl.AltcoinMaxPositionValueRatio = 5.0
-		c.RiskControl.MaxMarginUsage = 1.0
-		c.RiskControl.MinConfidence = 78
-		c.RiskControl.MinRiskRewardRatio = 3.0
+		c.CoinSource.VergexLimit = 0
+		c.CoinSource.VergexMarketType = ""
+		c.CoinSource.VergexChain = ""
+		c.RiskControl.MaxPositions = 3
+		c.RiskControl.BTCETHMaxLeverage = 3
+		c.RiskControl.AltcoinMaxLeverage = 3
+		c.RiskControl.BTCETHMaxPositionValueRatio = 1.0
+		c.RiskControl.AltcoinMaxPositionValueRatio = 0.5
+		c.RiskControl.MaxMarginUsage = 0.5
+		c.RiskControl.MinConfidence = 75
+		c.RiskControl.MinRiskRewardRatio = 2.0
 		c.Indicators.Klines.PrimaryTimeframe = "15m"
 		c.Indicators.Klines.PrimaryCount = 30
 		c.Indicators.Klines.LongerTimeframe = ""
@@ -289,7 +285,7 @@ func (s *Server) createDefaultStrategies(userID string, lang string) error {
 			description: locale.defaultStrategy.description,
 			isActive:    true,
 			applyConfig: func(c *store.StrategyConfig) {
-				setClaw402Strategy(c)
+				setLocalDynamicStrategy(c)
 			},
 		},
 	}

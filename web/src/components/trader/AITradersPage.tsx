@@ -682,6 +682,10 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
       toast.info(
         'Deposit USDC to your Hyperliquid account, the balance check updates automatically.'
       )
+    } else if (setupTarget === 'model') {
+      handleAddModel()
+    } else if (setupTarget === 'exchange') {
+      handleAddExchange()
     } else {
       return
     }
@@ -689,7 +693,15 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
     const nextParams = new URLSearchParams(searchParams)
     nextParams.delete('setup')
     setSearchParams(nextParams, { replace: true })
-  }, [allExchanges, allModels, searchParams, setSearchParams, supportedModels, token, user])
+  }, [
+    allExchanges,
+    allModels,
+    searchParams,
+    setSearchParams,
+    supportedModels,
+    token,
+    user,
+  ])
 
   const refreshLaunchState = async () => {
     await Promise.all([loadConfigs(), mutateTraders()])

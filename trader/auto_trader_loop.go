@@ -329,8 +329,8 @@ func (at *AutoTrader) runCycle() error {
 	return nil
 }
 
-func normalizeUniverseSymbol(symbol string) string {
-	return market.Normalize(strings.TrimSpace(symbol))
+func normalizeUniverseSymbol(exchange, symbol string) string {
+	return market.NormalizeForExchange(exchange, strings.TrimSpace(symbol))
 }
 
 // universeBaseKey returns the bare base ticker used for fuzzy candidate
@@ -370,7 +370,7 @@ func (at *AutoTrader) filterDecisionsToStrategyUniverse(decisions []kernel.Decis
 	allowed := make(map[string]bool, len(ctx.CandidateCoins))
 	allowedBases := make(map[string]bool, len(ctx.CandidateCoins))
 	for _, coin := range ctx.CandidateCoins {
-		allowed[normalizeUniverseSymbol(coin.Symbol)] = true
+		allowed[normalizeUniverseSymbol(at.exchange, coin.Symbol)] = true
 		if base := universeBaseKey(coin.Symbol); base != "" {
 			allowedBases[base] = true
 		}
@@ -379,7 +379,7 @@ func (at *AutoTrader) filterDecisionsToStrategyUniverse(decisions []kernel.Decis
 	positions := make(map[string]bool, len(ctx.Positions))
 	positionBases := make(map[string]bool, len(ctx.Positions))
 	for _, pos := range ctx.Positions {
-		positions[normalizeUniverseSymbol(pos.Symbol)] = true
+		positions[normalizeUniverseSymbol(at.exchange, pos.Symbol)] = true
 		if base := universeBaseKey(pos.Symbol); base != "" {
 			positionBases[base] = true
 		}
@@ -387,7 +387,7 @@ func (at *AutoTrader) filterDecisionsToStrategyUniverse(decisions []kernel.Decis
 
 	filtered := make([]kernel.Decision, 0, len(decisions))
 	for _, d := range decisions {
-		sym := normalizeUniverseSymbol(d.Symbol)
+		sym := normalizeUniverseSymbol(at.exchange, d.Symbol)
 		if sym == "" || sym == "ALL" {
 			filtered = append(filtered, d)
 			continue
@@ -439,6 +439,11 @@ func canonicalUniverseSymbolForBase(ctx *kernel.Context, base string) string {
 
 // buildTradingContext builds trading context
 func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
+	if at.executionMode == ExecutionModePaper && at.paperBroker != nil {
+		if err := at.paperBroker.RefreshOpenPositions(); err != nil {
+			return nil, fmt.Errorf("failed to refresh paper positions: %w", err)
+		}
+	}
 	// 1. Get account information
 	balance, err := at.trader.GetBalance()
 	if err != nil {

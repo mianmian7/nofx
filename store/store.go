@@ -29,6 +29,7 @@ type Store struct {
 	order          *OrderStore
 	grid           *GridStore
 	aiCharge       *AIChargeStore
+	paper          *PaperStore
 	telegramConfig TelegramConfigStore
 
 	mu sync.RWMutex
@@ -164,6 +165,9 @@ func (s *Store) initTables() error {
 	if err := s.AICharge().initTables(); err != nil {
 		return fmt.Errorf("failed to initialize AI charge tables: %w", err)
 	}
+	if err := s.Paper().initTables(); err != nil {
+		return fmt.Errorf("failed to initialize paper account tables: %w", err)
+	}
 	return nil
 }
 
@@ -225,6 +229,15 @@ func (s *Store) Trader() *TraderStore {
 		s.trader = NewTraderStore(s.gdb)
 	}
 	return s.trader
+}
+
+func (s *Store) Paper() *PaperStore {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.paper == nil {
+		s.paper = NewPaperStore(s.gdb)
+	}
+	return s.paper
 }
 
 // Decision gets decision log storage

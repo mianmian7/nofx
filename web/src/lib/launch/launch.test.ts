@@ -26,9 +26,9 @@ function preflightResult(checks: LaunchCheck[]): LaunchPreflightResult {
 }
 
 describe('setupTargetForCheck', () => {
-  it('routes AI wallet problems to claw402 setup', () => {
+  it('routes generic model problems separately from claw402 wallet problems', () => {
     expect(setupTargetForCheck({ id: 'ai_model', status: 'failed' })).toBe(
-      'claw402'
+      'model'
     )
     expect(setupTargetForCheck({ id: 'ai_wallet', status: 'failed' })).toBe(
       'claw402'
@@ -38,19 +38,19 @@ describe('setupTargetForCheck', () => {
     ).toBe('claw402')
   })
 
-  it('routes exchange config/account problems to hyperliquid setup', () => {
+  it('routes exchange config/account problems to generic exchange setup', () => {
     expect(
       setupTargetForCheck({ id: 'exchange_config', status: 'failed' })
-    ).toBe('hyperliquid')
+    ).toBe('exchange')
     expect(
       setupTargetForCheck({ id: 'exchange_account', status: 'failed' })
-    ).toBe('hyperliquid')
+    ).toBe('exchange')
   })
 
-  it('routes funding shortfalls to the funds anchor', () => {
+  it('routes funding shortfalls to generic exchange setup', () => {
     expect(
       setupTargetForCheck({ id: 'exchange_funds', status: 'failed' })
-    ).toBe('hyperliquid-funds')
+    ).toBe('exchange')
   })
 
   it('has no anchor for strategy problems', () => {
@@ -93,12 +93,12 @@ describe('describeLaunchFailures / failedLaunchChecks', () => {
 describe('pickTradingModel', () => {
   const base: Partial<AIModel> = { enabled: true }
 
-  it('prefers claw402 over other enabled models', () => {
+  it('prefers a user-owned direct model over claw402', () => {
     const models = [
       { ...base, id: 'openai', provider: 'openai', has_api_key: true },
       { ...base, id: 'c402', provider: 'claw402', has_api_key: true },
     ] as AIModel[]
-    expect(pickTradingModel(models)?.id).toBe('c402')
+    expect(pickTradingModel(models)?.id).toBe('openai')
   })
 
   it('accepts a claw402 model with only a wallet address', () => {
@@ -120,7 +120,7 @@ describe('pickTradingModel', () => {
 describe('pickTradingExchange', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('requires enabled + key + builder approval + wallet address', () => {
+  it('does not select Hyperliquid after migration to Binance execution', () => {
     const ready = {
       id: 'hl',
       exchange_type: 'hyperliquid',
@@ -129,18 +129,35 @@ describe('pickTradingExchange', () => {
       hyperliquidBuilderApproved: true,
       hyperliquidWalletAddr: '0x1',
     } as unknown as Exchange
-    expect(pickTradingExchange([ready])?.id).toBe('hl')
+    expect(pickTradingExchange([ready])).toBeNull()
+  })
 
-    const unapproved = {
-      ...ready,
-      hyperliquidBuilderApproved: false,
+  it('accepts an enabled Binance account without Hyperliquid setup', () => {
+    const binance = {
+      id: 'binance',
+      exchange_type: 'binance',
+      enabled: true,
+      has_api_key: true,
     } as unknown as Exchange
-    expect(pickTradingExchange([unapproved])).toBeNull()
+    const hyperliquid = {
+      id: 'hl',
+      exchange_type: 'hyperliquid',
+      enabled: true,
+      has_api_key: true,
+      hyperliquidBuilderApproved: true,
+      hyperliquidWalletAddr: '0x1',
+    } as unknown as Exchange
 
-    const noAddr = {
-      ...ready,
-      hyperliquidWalletAddr: ' ',
+    expect(pickTradingExchange([hyperliquid, binance])?.id).toBe('binance')
+  })
+
+  it('preserves other enabled non-Hyperliquid venues', () => {
+    const bybit = {
+      id: 'bybit',
+      exchange_type: 'bybit',
+      enabled: true,
+      has_api_key: true,
     } as unknown as Exchange
-    expect(pickTradingExchange([noAddr])).toBeNull()
+    expect(pickTradingExchange([bybit])?.id).toBe('bybit')
   })
 })

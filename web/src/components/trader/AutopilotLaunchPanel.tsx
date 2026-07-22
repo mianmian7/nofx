@@ -19,7 +19,7 @@ import { toast } from 'sonner'
 import { api } from '../../lib/api'
 import { buildDashboardPath, ROUTES } from '../../router/paths'
 import {
-  ensureClaw402Strategy,
+  ensureDefaultStrategy,
   launchAutopilot,
 } from '../../lib/launch/launchAutopilot'
 import { runLaunchPreflight } from '../../lib/launch/preflight'
@@ -225,15 +225,33 @@ export function AutopilotLaunchPanel({
     [models]
   )
 
-  const hyperliquidExchange = useMemo(
+  const configuredModel = useMemo(
     () =>
-      exchanges.find(
-        (exchange) =>
-          exchange.exchange_type === 'hyperliquid' &&
-          exchange.enabled &&
-          Boolean(exchange.hyperliquidWalletAddr) &&
-          Boolean(exchange.hyperliquidBuilderApproved)
-      ) || null,
+      models.find(
+        (model) =>
+          model.provider !== 'claw402' &&
+          model.enabled &&
+          (model.has_api_key || model.apiKey)
+      ) ||
+      models.find(
+        (model) =>
+          model.enabled &&
+          (model.has_api_key || model.apiKey || model.walletAddress)
+      ) ||
+      null,
+    [models]
+  )
+
+  const configuredExchange = useMemo(
+    () =>
+      exchanges.find((exchange) => exchange.exchange_type === 'binance' && exchange.enabled) ||
+      exchanges.find((exchange) => exchange.exchange_type !== 'hyperliquid' && exchange.enabled) ||
+      null,
+    [exchanges]
+  )
+
+  const hyperliquidExchange = useMemo(
+    () => exchanges.find(() => false) || null,
     [exchanges]
   )
 
@@ -314,11 +332,7 @@ export function AutopilotLaunchPanel({
 
   const autopilotTrader = useMemo(
     () =>
-      traders.find((trader) => trader.trader_name === 'NOFX Autopilot') ||
-      traders.find((trader) =>
-        (trader.strategy_name || '').toLowerCase().includes('claw402')
-      ) ||
-      null,
+      traders.find((trader) => trader.trader_name === 'NOFX Autopilot') || null,
     [traders]
   )
 
@@ -336,8 +350,8 @@ export function AutopilotLaunchPanel({
   }
 
   useEffect(() => {
-    void loadWallet()
-  }, [])
+    if (claw402Model) void loadWallet()
+  }, [claw402Model])
 
   const refreshEverything = async () => {
     setRefreshing(true)
@@ -349,13 +363,12 @@ export function AutopilotLaunchPanel({
   }
 
   const handleLaunch = async () => {
-    if (!claw402Model || !hyperliquidExchange) return
     setLaunching(true)
     try {
       // Shared launch path (same as Strategy Studio): server preflight with
       // fresh balances first, then strategy provisioning, then create/start.
       const outcome = await launchAutopilot({
-        ensureStrategy: ensureClaw402Strategy,
+        ensureStrategy: ensureDefaultStrategy,
         scanIntervalMinutes: 5,
       })
 
@@ -369,6 +382,10 @@ export function AutopilotLaunchPanel({
             onOpenClaw402Config?.()
           } else if (outcome.setupTarget === 'hyperliquid') {
             onOpenHyperliquidConfig?.()
+          } else if (outcome.setupTarget === 'model') {
+            navigate(`${ROUTES.traders}?setup=model`)
+          } else if (outcome.setupTarget === 'exchange') {
+            navigate(`${ROUTES.traders}?setup=exchange`)
           }
         }
         await refreshEverything()
@@ -384,6 +401,99 @@ export function AutopilotLaunchPanel({
     } finally {
       setLaunching(false)
     }
+  }
+
+  if (!claw402Model || !hyperliquidExchange) {
+    const modelReady = Boolean(configuredModel)
+    const exchangeReady = Boolean(configuredExchange)
+    return (
+      <section className="rounded-2xl border border-nofx-gold/20 bg-nofx-bg-lighter p-5 md:p-6">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <div className="inline-flex items-center gap-2 text-sm font-semibold text-nofx-text">
+              <ShieldCheck className="h-4 w-4 text-nofx-gold" />
+              {isZh ? '本地动态 Autopilot' : 'Local dynamic Autopilot'}
+            </div>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-nofx-text-muted">
+              {isZh
+                ? '从 Binance 公共永续行情动态筛选候选交易对，再交给你配置的 AI 模型判断和执行。'
+                : 'Public Binance perpetual data builds the dynamic candidate pool, then your configured AI model decides and executes on Binance.'}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() =>
+              autopilotTrader?.is_running
+                ? navigate(buildDashboardPath(autopilotTrader.trader_id))
+                : void handleLaunch()
+            }
+            disabled={launching || !modelReady || !exchangeReady}
+            className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-nofx-gold px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {launching ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Zap className="h-4 w-4" />
+            )}
+            {autopilotTrader?.is_running
+              ? isZh
+                ? '查看运行状态'
+                : 'View running bot'
+              : isZh
+                ? '启动 Autopilot'
+                : 'Launch Autopilot'}
+          </button>
+        </div>
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          <button
+            type="button"
+            onClick={() => navigate(`${ROUTES.traders}?setup=model`)}
+            className="flex items-center justify-between rounded-xl border border-nofx-gold/15 bg-nofx-bg-deeper px-4 py-3 text-left"
+          >
+            <span>
+              <span className="block text-sm font-semibold text-nofx-text">
+                {isZh ? '1. 配置 AI 模型' : '1. Configure an AI model'}
+              </span>
+              <span className="mt-1 block text-xs text-nofx-text-muted">
+                {configuredModel
+                  ? `${configuredModel.name} · ${configuredModel.provider}`
+                  : isZh
+                    ? '尚未配置可用模型'
+                    : 'No usable model configured'}
+              </span>
+            </span>
+            {modelReady ? (
+              <CheckCircle2 className="h-5 w-5 text-nofx-success" />
+            ) : (
+              <ArrowRight className="h-5 w-5 text-nofx-gold" />
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => navigate(`${ROUTES.traders}?setup=exchange`)}
+            className="flex items-center justify-between rounded-xl border border-nofx-gold/15 bg-nofx-bg-deeper px-4 py-3 text-left"
+          >
+            <span>
+              <span className="block text-sm font-semibold text-nofx-text">
+                {isZh ? '2. 配置交易所' : '2. Configure an exchange'}
+              </span>
+              <span className="mt-1 block text-xs text-nofx-text-muted">
+                {configuredExchange
+                  ? `${configuredExchange.account_name || configuredExchange.name} · ${configuredExchange.exchange_type}`
+                  : isZh
+                    ? '尚未配置可用交易所'
+                    : 'No usable exchange configured'}
+              </span>
+            </span>
+            {exchangeReady ? (
+              <CheckCircle2 className="h-5 w-5 text-nofx-success" />
+            ) : (
+              <ArrowRight className="h-5 w-5 text-nofx-gold" />
+            )}
+          </button>
+        </div>
+      </section>
+    )
   }
 
   const steps: Array<{
@@ -580,8 +690,8 @@ export function AutopilotLaunchPanel({
                 Start NOFX Autopilot in minutes
               </h2>
               <p className="mt-2 max-w-2xl text-sm leading-6 text-nofx-text-muted">
-                Four small steps, about $13 total. No API keys, no config
-                files — the AI trades for you, and you can stop it anytime.
+                Four small steps, about $13 total. No API keys, no config files
+                — the AI trades for you, and you can stop it anytime.
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -626,7 +736,9 @@ export function AutopilotLaunchPanel({
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <h3 className="font-semibold text-nofx-text">{step.title}</h3>
+                      <h3 className="font-semibold text-nofx-text">
+                        {step.title}
+                      </h3>
                       {step.action}
                     </div>
                     <p className="mt-1 text-xs leading-5 text-nofx-text-muted">

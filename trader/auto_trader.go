@@ -5,6 +5,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"nofx/kernel"
 	"nofx/logger"
+	"nofx/market"
 	"nofx/mcp"
 	_ "nofx/mcp/payment"
 	_ "nofx/mcp/provider"
@@ -58,8 +59,9 @@ type AutoTraderConfig struct {
 	AIModel    string // AI model: "qwen" or "deepseek"
 
 	// Trading platform selection
-	Exchange   string // Exchange type: "binance", "bybit", "okx", "bitget", "gate", "hyperliquid", "aster" or "lighter"
-	ExchangeID string // Exchange account UUID (for multi-account support)
+	Exchange      string // Exchange type: "binance", "bybit", "okx", "bitget", "gate", "hyperliquid", "aster" or "lighter"
+	ExchangeID    string // Exchange account UUID (for multi-account support)
+	ExecutionMode ExecutionMode
 
 	// Binance API configuration
 	BinanceAPIKey    string
@@ -122,7 +124,8 @@ type AutoTraderConfig struct {
 	Claw402WalletKey string
 
 	// Scan configuration
-	ScanInterval time.Duration // Scan interval (recommended 15 minutes)
+	ScanInterval             time.Duration // Scan interval (recommended 15 minutes)
+	PaperRiskMonitorInterval time.Duration // Paper-only mark/SL/TP/liquidation refresh interval
 
 	// Account configuration
 	InitialBalance float64 // Initial balance (for P&L calculation, must be set manually)
@@ -149,11 +152,14 @@ type AutoTrader struct {
 	name                  string // Trader display name
 	aiModel               string // AI model name
 	exchange              string // Trading platform type (binance/bybit/etc)
+	executionMode         ExecutionMode
+	paperBroker           *PaperBroker
 	exchangeID            string // Exchange account UUID
 	showInCompetition     bool   // Whether to show in competition page
 	config                AutoTraderConfig
 	trader                Trader // Use Trader interface (supports multiple platforms)
 	mcpClient             mcp.AIClient
+	cycleRunner           func() error           // Optional injected cycle runner for deterministic lifecycle tests
 	store                 *store.Store           // Data storage (decision records, etc.)
 	strategyEngine        *kernel.StrategyEngine // Strategy engine (uses strategy configuration)
 	cycleNumber           int                    // Current cycle number
@@ -189,6 +195,9 @@ type AutoTrader struct {
 // st parameter is used to store decision records to database
 func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*AutoTrader, error) {
 	// Set default values
+	if config.PaperRiskMonitorInterval <= 0 {
+		config.PaperRiskMonitorInterval = 5 * time.Second
+	}
 	if config.ID == "" {
 		config.ID = "default_trader"
 	}
@@ -234,7 +243,7 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 		mcpClient = mcp.NewAIClientByProvider(aiModel)
 	}
 	if mcpClient == nil {
-		mcpClient = mcp.New()
+		return nil, fmt.Errorf("unsupported AI provider %q; configure a registered provider or custom endpoint", aiModel)
 	}
 
 	// Payment providers (claw402) ignore customURL
@@ -254,9 +263,16 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 	if config.Exchange == "" {
 		config.Exchange = "binance"
 	}
+	if config.ExecutionMode == "" {
+		config.ExecutionMode = ExecutionModePaper
+	}
+	if config.ExecutionMode != ExecutionModePaper && config.ExecutionMode != ExecutionModeLive {
+		return nil, fmt.Errorf("unsupported execution mode: %s", config.ExecutionMode)
+	}
 
 	// Create corresponding trader based on configuration
 	var trader Trader
+	var paperBroker *PaperBroker
 	var err error
 
 	// Record position mode (general)
@@ -266,60 +282,78 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 	}
 	logger.Infof("📊 [%s] Position mode: %s", config.Name, marginModeStr)
 
-	switch config.Exchange {
-	case "binance":
-		logger.Infof("🏦 [%s] Using Binance Futures trading", config.Name)
-		trader = binance.NewFuturesTrader(config.BinanceAPIKey, config.BinanceSecretKey, userID)
-	case "bybit":
-		logger.Infof("🏦 [%s] Using Bybit Futures trading", config.Name)
-		trader = bybit.NewBybitTrader(config.BybitAPIKey, config.BybitSecretKey)
-	case "okx":
-		logger.Infof("🏦 [%s] Using OKX Futures trading", config.Name)
-		trader = okx.NewOKXTrader(config.OKXAPIKey, config.OKXSecretKey, config.OKXPassphrase)
-	case "bitget":
-		logger.Infof("🏦 [%s] Using Bitget Futures trading", config.Name)
-		trader = bitget.NewBitgetTrader(config.BitgetAPIKey, config.BitgetSecretKey, config.BitgetPassphrase)
-	case "gate":
-		logger.Infof("🏦 [%s] Using Gate.io Futures trading", config.Name)
-		trader = gate.NewGateTrader(config.GateAPIKey, config.GateSecretKey)
-	case "kucoin":
-		logger.Infof("🏦 [%s] Using KuCoin Futures trading", config.Name)
-		trader = kucoin.NewKuCoinTrader(config.KuCoinAPIKey, config.KuCoinSecretKey, config.KuCoinPassphrase)
-	case "hyperliquid":
-		logger.Infof("🏦 [%s] Using Hyperliquid trading", config.Name)
-		trader, err = hyperliquid.NewHyperliquidTrader(config.HyperliquidPrivateKey, config.HyperliquidWalletAddr, config.HyperliquidTestnet, config.HyperliquidUnifiedAcct)
-		if err != nil {
-			return nil, fmt.Errorf("failed to initialize Hyperliquid trader: %w", err)
+	if config.ExecutionMode == ExecutionModePaper {
+		if config.InitialBalance <= 0 {
+			config.InitialBalance = 10_000
 		}
-	case "aster":
-		logger.Infof("🏦 [%s] Using Aster trading", config.Name)
-		trader, err = aster.NewAsterTrader(config.AsterUser, config.AsterSigner, config.AsterPrivateKey)
-		if err != nil {
-			return nil, fmt.Errorf("failed to initialize Aster trader: %w", err)
+		priceSource := &binancePaperPriceSource{client: market.NewAPIClient()}
+		paperConfig := PaperBrokerConfig{InitialBalance: config.InitialBalance, TakerFeeBPS: 5, SlippageBPS: 2}
+		if st != nil {
+			paperBroker, err = NewPersistentPaperBroker(paperConfig, priceSource, st.Paper(), config.ID)
+		} else {
+			paperBroker, err = NewPaperBroker(paperConfig, priceSource)
 		}
-	case "lighter":
-		logger.Infof("🏦 [%s] Using LIGHTER trading", config.Name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize paper broker: %w", err)
+		}
+		trader = paperBroker
+		logger.Infof("🧪 [%s] Paper Trading enabled; no exchange write client was created", config.Name)
+	} else {
+		switch config.Exchange {
+		case "binance":
+			logger.Infof("🏦 [%s] Using Binance Futures trading", config.Name)
+			trader = binance.NewFuturesTrader(config.BinanceAPIKey, config.BinanceSecretKey, userID)
+		case "bybit":
+			logger.Infof("🏦 [%s] Using Bybit Futures trading", config.Name)
+			trader = bybit.NewBybitTrader(config.BybitAPIKey, config.BybitSecretKey)
+		case "okx":
+			logger.Infof("🏦 [%s] Using OKX Futures trading", config.Name)
+			trader = okx.NewOKXTrader(config.OKXAPIKey, config.OKXSecretKey, config.OKXPassphrase)
+		case "bitget":
+			logger.Infof("🏦 [%s] Using Bitget Futures trading", config.Name)
+			trader = bitget.NewBitgetTrader(config.BitgetAPIKey, config.BitgetSecretKey, config.BitgetPassphrase)
+		case "gate":
+			logger.Infof("🏦 [%s] Using Gate.io Futures trading", config.Name)
+			trader = gate.NewGateTrader(config.GateAPIKey, config.GateSecretKey)
+		case "kucoin":
+			logger.Infof("🏦 [%s] Using KuCoin Futures trading", config.Name)
+			trader = kucoin.NewKuCoinTrader(config.KuCoinAPIKey, config.KuCoinSecretKey, config.KuCoinPassphrase)
+		case "hyperliquid":
+			logger.Infof("🏦 [%s] Using Hyperliquid trading", config.Name)
+			trader, err = hyperliquid.NewHyperliquidTrader(config.HyperliquidPrivateKey, config.HyperliquidWalletAddr, config.HyperliquidTestnet, config.HyperliquidUnifiedAcct)
+			if err != nil {
+				return nil, fmt.Errorf("failed to initialize Hyperliquid trader: %w", err)
+			}
+		case "aster":
+			logger.Infof("🏦 [%s] Using Aster trading", config.Name)
+			trader, err = aster.NewAsterTrader(config.AsterUser, config.AsterSigner, config.AsterPrivateKey)
+			if err != nil {
+				return nil, fmt.Errorf("failed to initialize Aster trader: %w", err)
+			}
+		case "lighter":
+			logger.Infof("🏦 [%s] Using LIGHTER trading", config.Name)
 
-		if config.LighterWalletAddr == "" || config.LighterAPIKeyPrivateKey == "" {
-			return nil, fmt.Errorf("Lighter requires wallet address and API Key private key")
-		}
+			if config.LighterWalletAddr == "" || config.LighterAPIKeyPrivateKey == "" {
+				return nil, fmt.Errorf("Lighter requires wallet address and API Key private key")
+			}
 
-		// Lighter only supports mainnet (testnet disabled)
-		trader, err = lighter.NewLighterTraderV2(
-			config.LighterWalletAddr,
-			config.LighterAPIKeyPrivateKey,
-			config.LighterAPIKeyIndex,
-			false, // Always use mainnet for Lighter
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to initialize LIGHTER trader: %w", err)
+			// Lighter only supports mainnet (testnet disabled)
+			trader, err = lighter.NewLighterTraderV2(
+				config.LighterWalletAddr,
+				config.LighterAPIKeyPrivateKey,
+				config.LighterAPIKeyIndex,
+				false, // Always use mainnet for Lighter
+			)
+			if err != nil {
+				return nil, fmt.Errorf("failed to initialize LIGHTER trader: %w", err)
+			}
+			logger.Infof("✓ LIGHTER trader initialized successfully")
+		case "indodax":
+			logger.Infof("🏦 [%s] Using Indodax Spot trading", config.Name)
+			trader = indodax.NewIndodaxTrader(config.IndodaxAPIKey, config.IndodaxSecretKey)
+		default:
+			return nil, fmt.Errorf("unsupported trading platform: %s", config.Exchange)
 		}
-		logger.Infof("✓ LIGHTER trader initialized successfully")
-	case "indodax":
-		logger.Infof("🏦 [%s] Using Indodax Spot trading", config.Name)
-		trader = indodax.NewIndodaxTrader(config.IndodaxAPIKey, config.IndodaxSecretKey)
-	default:
-		return nil, fmt.Errorf("unsupported trading platform: %s", config.Exchange)
 	}
 
 	// Validate initial balance configuration, auto-fetch from exchange if 0
@@ -379,6 +413,8 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 		name:                  config.Name,
 		aiModel:               config.AIModel,
 		exchange:              config.Exchange,
+		executionMode:         config.ExecutionMode,
+		paperBroker:           paperBroker,
 		exchangeID:            config.ExchangeID,
 		showInCompetition:     config.ShowInCompetition,
 		config:                config,
@@ -443,10 +479,15 @@ func (at *AutoTrader) reloadStrategyConfigIfChanged() error {
 // Run runs the automatic trading main loop
 func (at *AutoTrader) Run() error {
 	at.isRunningMutex.Lock()
+	if at.isRunning {
+		at.isRunningMutex.Unlock()
+		at.logWarnf("⚠️ Trader runtime is already running; duplicate Run ignored")
+		return nil
+	}
 	at.isRunning = true
+	at.stopMonitorCh = make(chan struct{})
 	at.isRunningMutex.Unlock()
 
-	at.stopMonitorCh = make(chan struct{})
 	at.startTime = time.Now()
 
 	logger.Info("🚀 AI-driven automatic trading system started")
@@ -456,11 +497,10 @@ func (at *AutoTrader) Run() error {
 
 	// Pre-launch checks for claw402 users
 	at.runPreLaunchChecks()
-	at.monitorWg.Add(1)
-	defer at.monitorWg.Done()
 
 	// Start drawdown monitoring
 	at.startDrawdownMonitor()
+	at.startPaperRiskMonitor()
 
 	// Start Lighter order sync if using Lighter exchange
 	if at.exchange == "lighter" {
@@ -551,7 +591,7 @@ func (at *AutoTrader) Run() error {
 			at.logErrorf("❌ Grid execution failed: %v", err)
 		}
 	} else {
-		if err := at.runCycle(); err != nil {
+		if err := at.runAutomaticCycle(); err != nil {
 			at.logErrorf("❌ Execution failed: %v", err)
 		}
 	}
@@ -575,7 +615,7 @@ func (at *AutoTrader) Run() error {
 					at.logErrorf("❌ Grid execution failed: %v", err)
 				}
 			} else {
-				if err := at.runCycle(); err != nil {
+				if err := at.runAutomaticCycle(); err != nil {
 					at.logErrorf("❌ Execution failed: %v", err)
 				}
 			}
@@ -586,6 +626,13 @@ func (at *AutoTrader) Run() error {
 	}
 
 	return nil
+}
+
+func (at *AutoTrader) runAutomaticCycle() error {
+	if at.cycleRunner != nil {
+		return at.cycleRunner()
+	}
+	return at.runCycle()
 }
 
 // Stop stops the automatic trading

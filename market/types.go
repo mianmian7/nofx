@@ -87,6 +87,7 @@ type SymbolInfo struct {
 	BaseAsset         string `json:"baseAsset"`
 	QuoteAsset        string `json:"quoteAsset"`
 	ContractType      string `json:"contractType"`
+	UnderlyingType    string `json:"underlyingType"`
 	PricePrecision    int    `json:"pricePrecision"`
 	QuantityPrecision int    `json:"quantityPrecision"`
 }
@@ -114,10 +115,19 @@ type PriceTicker struct {
 
 type Ticker24hr struct {
 	Symbol             string `json:"symbol"`
+	LastPrice          string `json:"lastPrice"`
 	PriceChange        string `json:"priceChange"`
 	PriceChangePercent string `json:"priceChangePercent"`
 	Volume             string `json:"volume"`
 	QuoteVolume        string `json:"quoteVolume"`
+}
+
+// BinanceTradFiTicker joins public USDⓈ-M 24h ticker data with the contract
+// metadata needed to distinguish equities, indices, and commodities.
+type BinanceTradFiTicker struct {
+	Ticker24hr
+	BaseAsset      string
+	UnderlyingType string
 }
 
 // SymbolFeatures feature data structure
@@ -231,11 +241,11 @@ const (
 type GridDirection string
 
 const (
-	GridDirectionNeutral   GridDirection = "neutral"     // 50% buy + 50% sell
-	GridDirectionLong      GridDirection = "long"        // 100% buy
-	GridDirectionShort     GridDirection = "short"       // 100% sell
-	GridDirectionLongBias  GridDirection = "long_bias"   // 70% buy + 30% sell (default)
-	GridDirectionShortBias GridDirection = "short_bias"  // 30% buy + 70% sell (default)
+	GridDirectionNeutral   GridDirection = "neutral"    // 50% buy + 50% sell
+	GridDirectionLong      GridDirection = "long"       // 100% buy
+	GridDirectionShort     GridDirection = "short"      // 100% sell
+	GridDirectionLongBias  GridDirection = "long_bias"  // 70% buy + 30% sell (default)
+	GridDirectionShortBias GridDirection = "short_bias" // 30% buy + 70% sell (default)
 )
 
 // GetBuySellRatio returns the buy and sell ratio for this direction

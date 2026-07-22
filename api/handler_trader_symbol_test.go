@@ -4,24 +4,26 @@ import "testing"
 
 func TestIsSupportedTraderSymbol(t *testing.T) {
 	tests := []struct {
-		name   string
-		symbol string
-		want   bool
+		name     string
+		exchange string
+		symbol   string
+		want     bool
 	}{
-		{name: "legacy USDT perp", symbol: "BTCUSDT", want: true},
-		{name: "legacy USDT perp lowercase", symbol: "ethusdt", want: true},
-		{name: "Hyperliquid xyz stock USDC pair", symbol: "SMSN-USDC", want: true},
-		{name: "Hyperliquid xyz commodity USDC pair", symbol: "GOLD-USDC", want: true},
-		{name: "legacy internal xyz prefix still accepted", symbol: "xyz:SMSN", want: true},
-		{name: "empty slot ignored", symbol: "  ", want: true},
-		{name: "bare stock without xyz prefix rejected", symbol: "SMSN", want: false},
-		{name: "unknown non-USDT pair rejected", symbol: "BTCUSD", want: false},
+		{name: "Binance USDT perp", exchange: "binance", symbol: "BTCUSDT", want: true},
+		{name: "Binance USDT perp lowercase", exchange: "binance", symbol: "ethusdt", want: true},
+		{name: "Hyperliquid xyz stock USDC pair rejected", exchange: "binance", symbol: "SMSN-USDC", want: false},
+		{name: "Hyperliquid xyz commodity USDC pair rejected on other venue", exchange: "bybit", symbol: "GOLD-USDC", want: false},
+		{name: "legacy internal xyz prefix rejected", exchange: "okx", symbol: "xyz:SMSN", want: false},
+		{name: "empty slot ignored", exchange: "binance", symbol: "  ", want: true},
+		{name: "bare stock rejected by Binance", exchange: "binance", symbol: "SMSN", want: false},
+		{name: "non-USDT rejected by Binance", exchange: "binance", symbol: "BTCUSD", want: false},
+		{name: "other venue keeps its native symbol format", exchange: "bybit", symbol: "BTCUSD", want: true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := isSupportedTraderSymbol(tt.symbol); got != tt.want {
-				t.Fatalf("isSupportedTraderSymbol(%q) = %v, want %v", tt.symbol, got, tt.want)
+			if got := isSupportedTraderSymbol(tt.exchange, tt.symbol); got != tt.want {
+				t.Fatalf("isSupportedTraderSymbol(%q, %q) = %v, want %v", tt.exchange, tt.symbol, got, tt.want)
 			}
 		})
 	}

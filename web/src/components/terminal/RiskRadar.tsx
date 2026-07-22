@@ -1,5 +1,7 @@
 import { useMemo } from 'react'
 import type { Position } from '../../types'
+import { useLanguage } from '../../contexts/LanguageContext'
+import { t } from '../../i18n/translations'
 
 /**
  * RiskRadar renders derived risk telemetry for the live trading book — long /
@@ -49,6 +51,9 @@ interface RiskRadarProps {
 }
 
 export function RiskRadar({ positions, account, config, fullStats }: RiskRadarProps) {
+  const { language } = useLanguage()
+  const tt = (key: string, params?: Record<string, string | number>) =>
+    t(`terminalDashboard.${key}`, language, params)
   const pos = positions ?? []
 
   const m = useMemo(() => {
@@ -127,7 +132,7 @@ export function RiskRadar({ positions, account, config, fullStats }: RiskRadarPr
 
   const hasData = pos.length > 0 || account != null
   if (!hasData) {
-    return <div className="tm-sc" style={{ padding: '16px 0' }}>No live risk data.</div>
+    return <div className="tm-sc" style={{ padding: '16px 0' }}>{tt('noRiskData')}</div>
   }
 
   // ── one-glance verdicts ──────────────────────────────────────────────
@@ -135,80 +140,80 @@ export function RiskRadar({ positions, account, config, fullStats }: RiskRadarPr
   const biasSkew = m.longShare - m.shortShare
   const exposureTag: Verdict =
     m.totalNotional === 0
-      ? { text: 'Flat', tone: 'muted' }
+      ? { text: tt('flat'), tone: 'muted' }
       : biasSkew > 15
-        ? { text: 'Long-lean', tone: 'up' }
+        ? { text: tt('longLean'), tone: 'up' }
         : biasSkew < -15
-          ? { text: 'Short-lean', tone: 'dn' }
-          : { text: 'Balanced', tone: 'ink' }
+          ? { text: tt('shortLean'), tone: 'dn' }
+          : { text: tt('balanced'), tone: 'ink' }
 
   // Leverage: Safe / High / Risky by avg vs cap.
   const levTag: Verdict =
     m.configMax === 0 || m.avgLev === 0
       ? { text: '—', tone: 'muted' }
       : m.levUse > 80
-        ? { text: 'Risky', tone: 'dn' }
+        ? { text: tt('risky'), tone: 'dn' }
         : m.levUse >= 50
-          ? { text: 'High', tone: 'amber' }
-          : { text: 'Safe', tone: 'up' }
+          ? { text: tt('high'), tone: 'amber' }
+          : { text: tt('safe'), tone: 'up' }
 
   // Margin used: Ample / Tight / Risky.
   const marginTag: Verdict =
     m.marginPct > 80
-      ? { text: 'Risky', tone: 'dn' }
+      ? { text: tt('risky'), tone: 'dn' }
       : m.marginPct >= 50
-        ? { text: 'Tight', tone: 'amber' }
-        : { text: 'Ample', tone: 'up' }
+        ? { text: tt('tight'), tone: 'amber' }
+        : { text: tt('ample'), tone: 'up' }
 
   // Concentration: Spread / Concentrated.
   const concTag: Verdict =
     m.totalNotional === 0
       ? { text: '—', tone: 'muted' }
       : m.concentration >= 35
-        ? { text: 'Concentrated', tone: 'amber' }
-        : { text: 'Spread', tone: 'up' }
+        ? { text: tt('concentrated'), tone: 'amber' }
+        : { text: tt('spreadOut'), tone: 'up' }
 
   // Drawdown: Calm / Caution / Deep by depth.
   const ddTag: Verdict =
     m.drawdown <= 0
-      ? { text: 'Calm', tone: 'up' }
+      ? { text: tt('calm'), tone: 'up' }
       : m.drawdown >= 20
-        ? { text: 'Deep', tone: 'dn' }
-        : { text: 'Caution', tone: 'amber' }
+        ? { text: tt('deep'), tone: 'dn' }
+        : { text: tt('caution'), tone: 'amber' }
 
   // Positions: Room / Full.
   const countTag: Verdict =
     m.maxPositions === 0
       ? { text: `${m.count}`, tone: 'muted' }
       : m.count >= m.maxPositions
-        ? { text: 'Full', tone: 'amber' }
-        : { text: 'Room', tone: 'up' }
+        ? { text: tt('full'), tone: 'amber' }
+        : { text: tt('room'), tone: 'up' }
 
   return (
     <div style={{ fontFamily: 'var(--tm-mono)' }}>
       {/* header */}
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 1 }}>
-        <span className="tm-px" style={{ fontSize: 11 }}>Risk radar</span>
+        <span className="tm-px" style={{ fontSize: 11 }}>{tt('riskRadar')}</span>
         <span
           className="tm-sc"
           style={{ marginLeft: 'auto', color: m.totalNotional > 0 ? 'var(--tm-up)' : 'var(--tm-muted)' }}
         >
-          {m.totalNotional > 0 ? '● live' : '○ flat'}
+          {m.totalNotional > 0 ? `● ${tt('live')}` : `○ ${tt('flat')}`}
         </span>
       </div>
       <div className="tm-sc" style={{ fontSize: 9, marginBottom: 8 }}>
-        Risk radar · live position-risk check
+        {tt('riskRadarDesc')}
       </div>
 
       {/* Net exposure — diverging long/short split, the visual centerpiece */}
       <div style={{ marginBottom: 9, paddingBottom: 9, borderBottom: '1px solid var(--tm-hair)' }}>
         <div style={{ display: 'flex', alignItems: 'baseline', marginBottom: 4 }}>
-          <Label zh="Net exposure" en="NET EXPOSURE" />
+          <Label text={tt('netExposure')} />
           <Tag verdict={exposureTag} />
           <span className="tm-mono" style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--tm-ink)' }}>
-            long {pct(m.longShare)}
+            {tt('long')} {pct(m.longShare)}
             <span style={{ color: 'var(--tm-muted)' }}> / </span>
-            short {pct(m.shortShare)}
+            {tt('short')} {pct(m.shortShare)}
           </span>
         </div>
         <div style={{ display: 'flex', height: 7, background: 'var(--tm-hair)', overflow: 'hidden' }}>
@@ -216,57 +221,52 @@ export function RiskRadar({ positions, account, config, fullStats }: RiskRadarPr
           <div style={{ width: `${m.shortShare}%`, background: 'var(--tm-dn)' }} />
         </div>
         <div className="tm-mono" style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, marginTop: 3 }}>
-          <span style={{ color: 'var(--tm-up)' }}>long {fmtUsd(m.longNotional)}</span>
+          <span style={{ color: 'var(--tm-up)' }}>{tt('long')} {fmtUsd(m.longNotional)}</span>
           <span style={{ color: 'var(--tm-ink-2)' }}>
-            net <b style={{ color: m.netNotional >= 0 ? 'var(--tm-up)' : 'var(--tm-dn)' }}>{fmtUsd(m.netNotional)}</b>
+            {tt('net')} <b style={{ color: m.netNotional >= 0 ? 'var(--tm-up)' : 'var(--tm-dn)' }}>{fmtUsd(m.netNotional)}</b>
           </span>
-          <span style={{ color: 'var(--tm-dn)' }}>short {fmtUsd(m.shortNotional)}</span>
+          <span style={{ color: 'var(--tm-dn)' }}>{tt('short')} {fmtUsd(m.shortNotional)}</span>
         </div>
       </div>
 
       {/* gauge rows */}
       <GaugeRow
-        zh="Leverage"
-        en="LEVERAGE"
-        value={`${m.avgLev.toFixed(1)}× avg`}
-        sub={`/ ${m.maxLev > 0 ? `${m.maxLev.toFixed(0)}×` : '—'} peak · ${m.configMax > 0 ? `${m.configMax}×` : '—'} cap`}
+        label={tt('leverage')}
+        value={`${m.avgLev.toFixed(1)}× ${tt('average')}`}
+        sub={tt('peakCap', { peak: m.maxLev > 0 ? `${m.maxLev.toFixed(0)}×` : '—', cap: m.configMax > 0 ? `${m.configMax}×` : '—' })}
         fill={m.levUse}
         color={levTag.tone === 'dn' ? 'var(--tm-dn)' : levTag.tone === 'amber' ? C_AMBER : 'var(--tm-up)'}
         verdict={levTag}
       />
       <GaugeRow
-        zh="Margin used"
-        en="MARGIN USED"
+        label={tt('marginUsed')}
         value={pct(m.marginPct)}
-        sub="of equity"
+        sub={tt('ofEquity')}
         fill={Math.min(100, Math.max(0, m.marginPct))}
         color={utilColor(m.marginPct)}
         verdict={marginTag}
       />
       <GaugeRow
-        zh="Concentration"
-        en="CONCENTRATION"
+        label={tt('concentration')}
         value={pct(m.concentration)}
-        sub="top-position share"
+        sub={tt('topPositionShare')}
         fill={m.concentration}
         color={concTag.tone === 'amber' ? C_AMBER : 'var(--tm-up)'}
         verdict={concTag}
       />
       <GaugeRow
-        zh="Drawdown"
-        en="MAX DRAWDOWN"
+        label={tt('drawdown')}
         value={`-${pct(m.drawdown)}`}
-        sub="peak drawdown"
+        sub={tt('peakDrawdown')}
         fill={Math.min(100, m.drawdown)}
         color="var(--tm-red)"
         verdict={ddTag}
         valueColor="var(--tm-dn)"
       />
       <GaugeRow
-        zh="Positions"
-        en="POSITIONS"
+        label={tt('positions')}
         value={m.maxPositions > 0 ? `${m.count} / ${m.maxPositions}` : `${m.count}`}
-        sub="held / cap"
+        sub={tt('heldCap')}
         fill={m.maxPositions > 0 ? m.countUse : 0}
         color={countTag.tone === 'amber' ? C_AMBER : 'var(--tm-up)'}
         verdict={countTag}
@@ -282,7 +282,7 @@ export function RiskRadar({ positions, account, config, fullStats }: RiskRadarPr
           borderTop: '1px solid var(--tm-hair)',
         }}
       >
-        <Label zh="Unrealized PnL" en="UNREALIZED PNL" />
+        <Label text={tt('unrealizedPnl')} />
         <span
           className="tm-mono"
           style={{ marginLeft: 'auto', fontSize: 13, fontWeight: 700, color: m.upnl >= 0 ? 'var(--tm-up)' : 'var(--tm-dn)' }}
@@ -338,18 +338,16 @@ function Tag({ verdict }: { verdict: Verdict }) {
 }
 
 // ── bilingual label block ──────────────────────────────────────────────
-function Label({ zh, en }: { zh: string; en: string }) {
+function Label({ text }: { text: string }) {
   return (
     <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1.2 }}>
-      <span style={{ fontSize: 11, color: 'var(--tm-ink)', fontWeight: 600 }}>{zh}</span>
-      <span className="tm-sc" style={{ fontSize: 8, letterSpacing: '0.12em' }}>{en}</span>
+      <span style={{ fontSize: 11, color: 'var(--tm-ink)', fontWeight: 600 }}>{text}</span>
     </span>
   )
 }
 
 interface GaugeRowProps {
-  zh: string
-  en: string
+  label: string
   value: string
   sub?: string
   fill: number
@@ -358,12 +356,12 @@ interface GaugeRowProps {
   valueColor?: string
 }
 
-function GaugeRow({ zh, en, value, sub, fill, color, verdict, valueColor }: GaugeRowProps) {
+function GaugeRow({ label, value, sub, fill, color, verdict, valueColor }: GaugeRowProps) {
   const w = Math.min(100, Math.max(0, fill))
   return (
     <div style={{ marginBottom: 9 }}>
       <div style={{ display: 'flex', alignItems: 'center', marginBottom: 4 }}>
-        <Label zh={zh} en={en} />
+        <Label text={label} />
         <Tag verdict={verdict} />
         <span
           className="tm-mono"

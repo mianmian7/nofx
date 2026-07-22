@@ -1,5 +1,7 @@
 import { useMemo } from 'react'
 import type { SignalRankItem } from '../../lib/api/data'
+import { useLanguage } from '../../contexts/LanguageContext'
+import { t } from '../../i18n/translations'
 
 /**
  * SignalMatrix renders the vergex (claw402) signal ranking as a high-density
@@ -59,6 +61,8 @@ interface SignalMatrixProps {
 }
 
 export function SignalMatrix({ items, max = 36, active, onSelect }: SignalMatrixProps) {
+  const { language } = useLanguage()
+  const tt = (key: string) => t(`terminalDashboard.${key}`, language)
   const view = useMemo(() => {
     const raw = items ?? []
     const sorted = [...raw].sort((a, b) => a.rank - b.rank).slice(0, max)
@@ -88,26 +92,26 @@ export function SignalMatrix({ items, max = 36, active, onSelect }: SignalMatrix
   if (!view.cells.length) {
     return (
       <div style={{ fontFamily: 'var(--tm-mono)' }}>
-        <Head />
-        <div className="tm-sc">No signal data (claw402).</div>
+        <Head title={tt('signalMatrix')} description={tt('signalMatrixDesc')} />
+        <div className="tm-sc">{tt('noSignalData')}</div>
       </div>
     )
   }
 
   return (
     <div style={{ fontFamily: 'var(--tm-mono)' }}>
-      <Head />
+      <Head title={tt('signalMatrix')} description={tt('signalMatrixDesc')} />
 
       {/* legend */}
       <div
         className="tm-sc"
         style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 6, fontSize: 9 }}
       >
-        <Swatch c="var(--tm-up)" label="Bullish" />
-        <Swatch c="var(--tm-dn)" label="Bearish" />
-        <Swatch c="var(--tm-muted)" label="Neutral" />
-        {onSelect && <span style={{ color: 'var(--tm-red)' }}>click to switch ▸</span>}
-        <span style={{ marginLeft: 'auto' }}>{view.cells.length} signals</span>
+        <Swatch c="var(--tm-up)" label={tt('bullish')} />
+        <Swatch c="var(--tm-dn)" label={tt('bearish')} />
+        <Swatch c="var(--tm-muted)" label={tt('neutral')} />
+        {onSelect && <span style={{ color: 'var(--tm-red)' }}>{tt('clickToSwitch')} ▸</span>}
+        <span style={{ marginLeft: 'auto' }}>{view.cells.length} {tt('signals')}</span>
       </div>
 
       <div
@@ -123,7 +127,7 @@ export function SignalMatrix({ items, max = 36, active, onSelect }: SignalMatrix
           return (
           <div
             key={`${c.rank}-${c.symbol}`}
-            title={`${base} · #${c.rank} · ${c.bias} · ${c.score} — click to switch`}
+            title={`${base} · #${c.rank} · ${tt(c.bias)} · ${c.score} — ${tt('clickToSwitch')}`}
             onClick={onSelect ? () => onSelect(base) : undefined}
             style={{
               padding: '4px 5px',
@@ -171,11 +175,11 @@ function fmtScore(n: number): string {
   return n.toFixed(2)
 }
 
-function Head() {
+function Head({ title, description }: { title: string; description: string }) {
   return (
     <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
-      <span className="tm-px" style={{ fontSize: 11 }}>Signal matrix</span>
-      <span className="tm-sc">Signal matrix · vergex</span>
+      <span className="tm-px" style={{ fontSize: 11 }}>{title}</span>
+      <span className="tm-sc">{description}</span>
     </div>
   )
 }

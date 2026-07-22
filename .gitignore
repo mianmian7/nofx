@@ -139,3 +139,7 @@ PR_DESCRIPTION.md
 .agents/
 skills-lock.json
 img.png
+
+# Local browser validation artifacts
+/.playwright-cli/
+/output/

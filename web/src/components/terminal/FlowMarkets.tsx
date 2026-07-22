@@ -1,5 +1,7 @@
 import { useMemo } from 'react'
 import type { FlowMarketItem } from '../../lib/api/data'
+import { useLanguage } from '../../contexts/LanguageContext'
+import { t } from '../../i18n/translations'
 
 interface FlowMarketsProps {
   items?: FlowMarketItem[]
@@ -33,6 +35,9 @@ const GRID = '64px 96px minmax(120px, 1fr) 80px 96px'
  * latest price. Sorted by net inflow descending (the upstream ordering).
  */
 export function FlowMarkets({ items, window = '1h' }: FlowMarketsProps) {
+  const { language } = useLanguage()
+  const tt = (key: string, params?: Record<string, string | number>) =>
+    t(`terminalDashboard.${key}`, language, params)
   const win = window.toUpperCase()
   const rows = useMemo(() => {
     if (!items || items.length === 0) return []
@@ -56,7 +61,7 @@ export function FlowMarkets({ items, window = '1h' }: FlowMarketsProps) {
   }, [items])
 
   if (rows.length === 0) {
-    return <div className="tm-sc" style={{ padding: '12px 0' }}>No net-flow data (claw402 payment required).</div>
+    return <div className="tm-sc" style={{ padding: '12px 0' }}>{tt('noNetFlowData')}</div>
   }
 
   return (
@@ -74,11 +79,11 @@ export function FlowMarkets({ items, window = '1h' }: FlowMarketsProps) {
           fontSize: 9,
         }}
       >
-        <span>SYMBOL</span>
-        <span style={{ textAlign: 'right' }}>{win} NET</span>
-        <span>BUY/SELL</span>
-        <span style={{ textAlign: 'right' }}>TRADES</span>
-        <span style={{ textAlign: 'right' }}>PRICE</span>
+        <span>{tt('symbol')}</span>
+        <span style={{ textAlign: 'right' }}>{win} {tt('netInflow')}</span>
+        <span>{tt('buySell')}</span>
+        <span style={{ textAlign: 'right' }}>{tt('trades')}</span>
+        <span style={{ textAlign: 'right' }}>{tt('price')}</span>
       </div>
 
       {/* rows */}
@@ -140,8 +145,7 @@ export function FlowMarkets({ items, window = '1h' }: FlowMarketsProps) {
 
       {/* legend — explains every column */}
       <div className="tm-sc" style={{ marginTop: 8, fontSize: 9, lineHeight: 1.6 }}>
-        net inflow = {win} net buying · <span className="tm-up">green</span>/<span className="tm-dn">red</span> = buy/sell split
-        {' · '}trades = count · last price = last traded price
+        {tt('netFlowLegend', { window: win })}
       </div>
     </div>
   )

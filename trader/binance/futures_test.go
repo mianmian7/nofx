@@ -23,11 +23,15 @@ import (
 // Inherits TraderTestSuite and adds Binance Futures specific mock logic
 type BinanceFuturesTestSuite struct {
 	*testutil.TraderTestSuite // Embeds base test suite
-	mockServer              *httptest.Server
+	mockServer                *httptest.Server
+	leverageSymbols           *[]string
+	orderSymbols              *[]string
 }
 
 // NewBinanceFuturesTestSuite Creates Binance Futures test suite
 func NewBinanceFuturesTestSuite(t *testing.T) *BinanceFuturesTestSuite {
+	var leverageSymbols []string
+	var orderSymbols []string
 	// Create mock HTTP server
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Return different mock responses based on URL path
@@ -150,6 +154,20 @@ func NewBinanceFuturesTestSuite(t *testing.T) *BinanceFuturesTestSuite {
 						},
 					},
 					{
+						"symbol":             "MUUSDT",
+						"status":             "TRADING",
+						"baseAsset":          "MU",
+						"quoteAsset":         "USDT",
+						"pricePrecision":     2,
+						"quantityPrecision":  3,
+						"baseAssetPrecision": 8,
+						"quotePrecision":     8,
+						"filters": []map[string]interface{}{
+							{"filterType": "PRICE_FILTER", "minPrice": "0.01", "maxPrice": "100000", "tickSize": "0.01"},
+							{"filterType": "LOT_SIZE", "minQty": "0.001", "maxQty": "10000", "stepSize": "0.001"},
+						},
+					},
+					{
 						"symbol":             "ETHUSDT",
 						"status":             "TRADING",
 						"baseAsset":          "ETH",
@@ -179,6 +197,7 @@ func NewBinanceFuturesTestSuite(t *testing.T) *BinanceFuturesTestSuite {
 		// Mock CreateOrder - /fapi/v1/order (POST)
 		case path == "/fapi/v1/order" && r.Method == "POST":
 			symbol := r.FormValue("symbol")
+			orderSymbols = append(orderSymbols, symbol)
 			if symbol == "" {
 				symbol = "BTCUSDT"
 			}
@@ -223,6 +242,12 @@ func NewBinanceFuturesTestSuite(t *testing.T) *BinanceFuturesTestSuite {
 
 		// Mock SetLeverage - /fapi/v1/leverage
 		case path == "/fapi/v1/leverage":
+			leverageSymbols = append(leverageSymbols, r.FormValue("symbol"))
+			if r.FormValue("symbol") == "MUUSDT" {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"code": -4046, "msg": "No need to change"})
+				return
+			}
 			// Convert string to integer
 			leverageStr := r.FormValue("leverage")
 			leverage := 10 // default value
@@ -283,6 +308,8 @@ func NewBinanceFuturesTestSuite(t *testing.T) *BinanceFuturesTestSuite {
 	return &BinanceFuturesTestSuite{
 		TraderTestSuite: baseSuite,
 		mockServer:      mockServer,
+		leverageSymbols: &leverageSymbols,
+		orderSymbols:    &orderSymbols,
 	}
 }
 
@@ -311,6 +338,21 @@ func TestFuturesTrader_CommonInterface(t *testing.T) {
 
 	// Run all common interface tests
 	suite.RunAllTests()
+}
+
+func TestOpenLongKeepsBinanceTradFiSymbolForLeverageAndOrder(t *testing.T) {
+	suite := NewBinanceFuturesTestSuite(t)
+	defer suite.Cleanup()
+
+	if _, err := suite.Trader.OpenLong("MUUSDT", 1, 3); err != nil {
+		t.Fatalf("OpenLong(MUUSDT): %v", err)
+	}
+	if len(*suite.leverageSymbols) == 0 || (*suite.leverageSymbols)[len(*suite.leverageSymbols)-1] != "MUUSDT" {
+		t.Fatalf("leverage symbols = %v, want MUUSDT", *suite.leverageSymbols)
+	}
+	if len(*suite.orderSymbols) == 0 || (*suite.orderSymbols)[len(*suite.orderSymbols)-1] != "MUUSDT" {
+		t.Fatalf("order symbols = %v, want MUUSDT", *suite.orderSymbols)
+	}
 }
 
 // ============================================================

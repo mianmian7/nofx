@@ -25,6 +25,7 @@ type CreateTraderRequest struct {
 	AIModelID           string  `json:"ai_model_id" binding:"required"`
 	ExchangeID          string  `json:"exchange_id" binding:"required"`
 	StrategyID          string  `json:"strategy_id"` // Strategy ID (new version)
+	ExecutionMode       string  `json:"execution_mode"`
 	InitialBalance      float64 `json:"initial_balance"`
 	ScanIntervalMinutes int     `json:"scan_interval_minutes"`
 	IsCrossMargin       *bool   `json:"is_cross_margin"`     // Pointer type, nil means use default value true
@@ -46,6 +47,7 @@ type UpdateTraderRequest struct {
 	AIModelID           string  `json:"ai_model_id" binding:"required"`
 	ExchangeID          string  `json:"exchange_id" binding:"required"`
 	StrategyID          string  `json:"strategy_id"` // Strategy ID (new version)
+	ExecutionMode       string  `json:"execution_mode"`
 	InitialBalance      float64 `json:"initial_balance"`
 	ScanIntervalMinutes int     `json:"scan_interval_minutes"`
 	IsCrossMargin       *bool   `json:"is_cross_margin"`
@@ -80,12 +82,52 @@ func validateTraderLeverageRange(btcEthLeverage, altcoinLeverage int) (string, s
 	return "", ""
 }
 
-func isSupportedTraderSymbol(symbol string) bool {
+func normalizeExecutionMode(mode string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "paper":
+		return "paper", nil
+	case "live":
+		return "live", nil
+	default:
+		return "", fmt.Errorf("execution_mode must be paper or live")
+	}
+}
+
+func validateStartConfirmation(mode, liveConfirm string) error {
+	normalized, err := normalizeExecutionMode(mode)
+	if err != nil {
+		return err
+	}
+	if normalized == "live" && !strings.EqualFold(strings.TrimSpace(liveConfirm), "true") {
+		return fmt.Errorf("live trading requires live_confirm=true")
+	}
+	return nil
+}
+
+func isSupportedTraderSymbol(exchangeType, symbol string) bool {
 	normalized := strings.ToUpper(strings.TrimSpace(symbol))
 	if normalized == "" {
 		return true
 	}
-	return strings.HasSuffix(normalized, "USDT") || strings.HasSuffix(normalized, "-USDC") || strings.HasPrefix(normalized, "XYZ:")
+	if strings.HasPrefix(normalized, "XYZ:") || strings.HasSuffix(normalized, "-USDC") {
+		return false
+	}
+	if strings.ToLower(strings.TrimSpace(exchangeType)) != "binance" {
+		return true
+	}
+	if !strings.HasSuffix(normalized, "USDT") || strings.ContainsAny(normalized, ":-_/ ") {
+		return false
+	}
+	base := strings.TrimSuffix(normalized, "USDT")
+	if base == "" {
+		return false
+	}
+	for _, r := range base {
+		if (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
+			return false
+		}
+	}
+	return true
 }
 
 func exchangeDisplayName(exchange *store.Exchange) string {
@@ -189,8 +231,8 @@ func validateExchangeForTraderCreation(exchange *store.Exchange) (string, string
 			)
 	}
 
-	switch exchange.ExchangeType {
-	case "binance", "bybit", "okx", "bitget", "gate", "kucoin", "hyperliquid", "aster", "lighter", "indodax":
+	switch strings.ToLower(strings.TrimSpace(exchange.ExchangeType)) {
+	case "binance", "bybit", "okx", "bitget", "gate", "kucoin", "aster", "lighter", "indodax":
 		return "", "", nil
 	default:
 		return formatTraderCreationError(
@@ -328,27 +370,16 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		SafeBadRequestWithDetails(c, traderCreationRequestError("The submitted information is incomplete or has an invalid format"), "trader.create.invalid_request", nil)
 		return
 	}
+	executionMode, modeErr := normalizeExecutionMode(req.ExecutionMode)
+	if modeErr != nil {
+		SafeBadRequestWithDetails(c, modeErr.Error(), "trader.create.invalid_execution_mode", nil)
+		return
+	}
 
 	// Validate leverage values against the same limits exposed by manual user config.
 	if errMsg, errCode := validateTraderLeverageRange(req.BTCETHLeverage, req.AltcoinLeverage); errMsg != "" {
 		SafeBadRequestWithDetails(c, errMsg, errCode, nil)
 		return
-	}
-
-	// Validate trading symbol format. Hyperliquid xyz dex markets (stocks,
-	// commodities, indices, FX, Pre-IPO) are user-facing SYMBOL-USDC pairs,
-	// while standard crypto/perp markets keep the legacy USDT suffix format.
-	if req.TradingSymbols != "" {
-		symbols := strings.Split(req.TradingSymbols, ",")
-		for _, symbol := range symbols {
-			symbol = strings.TrimSpace(symbol)
-			if !isSupportedTraderSymbol(symbol) {
-				SafeBadRequestWithDetails(c, traderCreationRequestError(
-					fmt.Sprintf("The trading pair %s has an invalid format; only USDT perpetuals or Hyperliquid XYZ USDC instruments (SYMBOL-USDC) are currently supported", symbol),
-				), "trader.create.invalid_symbol", mapStringPairs("symbol", symbol))
-				return
-			}
-		}
 	}
 
 	model, err := s.store.AIModel().Get(userID, req.AIModelID)
@@ -460,12 +491,31 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		}
 	}
 
-	if exchangeMsg, exchangeErrorKey, exchangeErrorParams := validateExchangeForTraderCreation(exchangeCfg); exchangeMsg != "" {
+	if executionMode == "paper" {
+		if exchangeCfg == nil || strings.EqualFold(exchangeCfg.ExchangeType, "hyperliquid") {
+			SafeBadRequestWithDetails(c, "Paper Trading requires a supported non-Hyperliquid market source", "trader.create.paper_market_source_invalid", nil)
+			return
+		}
+		if actualBalance <= 0 {
+			actualBalance = 10_000
+		}
+	} else if exchangeMsg, exchangeErrorKey, exchangeErrorParams := validateExchangeForTraderCreation(exchangeCfg); exchangeMsg != "" {
 		SafeBadRequestWithDetails(c, exchangeMsg, exchangeErrorKey, exchangeErrorParams)
 		return
 	}
+	if req.TradingSymbols != "" {
+		for _, symbol := range strings.Split(req.TradingSymbols, ",") {
+			symbol = strings.TrimSpace(symbol)
+			if !isSupportedTraderSymbol(exchangeCfg.ExchangeType, symbol) {
+				SafeBadRequestWithDetails(c, traderCreationRequestError(
+					fmt.Sprintf("The trading pair %s is not valid for %s", symbol, exchangeCfg.ExchangeType),
+				), "trader.create.invalid_symbol", mapStringPairs("symbol", symbol, "exchange_type", exchangeCfg.ExchangeType))
+				return
+			}
+		}
+	}
 
-	{
+	if executionMode == "live" {
 		tempTrader, createErr := buildExchangeProbeTrader(exchangeCfg, userID)
 		if createErr != nil {
 			SafeBadRequestWithDetails(c, formatTraderCreationError(
@@ -501,7 +551,8 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		AIModelID:            req.AIModelID,
 		ExchangeID:           req.ExchangeID,
 		StrategyID:           req.StrategyID, // Associated strategy ID (new version)
-		InitialBalance:       actualBalance,  // Use actual queried balance
+		ExecutionMode:        executionMode,
+		InitialBalance:       actualBalance, // Use actual queried balance
 		BTCETHLeverage:       btcEthLeverage,
 		AltcoinLeverage:      altcoinLeverage,
 		TradingSymbols:       req.TradingSymbols,
@@ -596,6 +647,17 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Trader does not exist"})
 		return
 	}
+	executionMode := existingTrader.ExecutionMode
+	if req.ExecutionMode != "" {
+		executionMode, err = normalizeExecutionMode(req.ExecutionMode)
+		if err != nil {
+			SafeBadRequestWithDetails(c, err.Error(), "trader.update.invalid_execution_mode", nil)
+			return
+		}
+	}
+	if executionMode == "" {
+		executionMode = "paper"
+	}
 
 	if errMsg, errCode := validateTraderLeverageRange(req.BTCETHLeverage, req.AltcoinLeverage); errMsg != "" {
 		SafeBadRequestWithDetails(c, errMsg, errCode, nil)
@@ -645,7 +707,37 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 		strategyID = existingTrader.StrategyID
 	}
 
-	exchangeChanged := req.ExchangeID != "" && req.ExchangeID != existingTrader.ExchangeID
+	targetExchangeID := req.ExchangeID
+	if targetExchangeID == "" {
+		targetExchangeID = existingTrader.ExchangeID
+	}
+	targetExchange, exchangeErr := s.store.Exchange().GetByID(userID, targetExchangeID)
+	if exchangeErr != nil {
+		SafeBadRequestWithDetails(c, "The selected exchange account was not found", "trader.update.exchange_not_found", nil)
+		return
+	}
+	if executionMode == "live" {
+		if exchangeMsg, exchangeErrorKey, exchangeErrorParams := validateExchangeForTraderCreation(targetExchange); exchangeMsg != "" {
+			SafeBadRequestWithDetails(c, exchangeMsg, exchangeErrorKey, exchangeErrorParams)
+			return
+		}
+	} else if targetExchange == nil || strings.EqualFold(targetExchange.ExchangeType, "hyperliquid") {
+		SafeBadRequestWithDetails(c, "Paper Trading requires a supported non-Hyperliquid market source", "trader.update.paper_market_source_invalid", nil)
+		return
+	}
+	if req.TradingSymbols != "" {
+		for _, symbol := range strings.Split(req.TradingSymbols, ",") {
+			symbol = strings.TrimSpace(symbol)
+			if !isSupportedTraderSymbol(targetExchange.ExchangeType, symbol) {
+				SafeBadRequestWithDetails(c,
+					fmt.Sprintf("The trading pair %s is not valid for %s", symbol, targetExchange.ExchangeType),
+					"trader.update.invalid_symbol", mapStringPairs("symbol", symbol, "exchange_type", targetExchange.ExchangeType))
+				return
+			}
+		}
+	}
+
+	exchangeChanged := targetExchangeID != existingTrader.ExchangeID
 	resetInitialBalance := exchangeChanged && req.InitialBalance <= 0
 
 	initialBalance := existingTrader.InitialBalance
@@ -662,8 +754,9 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 		UserID:               userID,
 		Name:                 req.Name,
 		AIModelID:            req.AIModelID,
-		ExchangeID:           req.ExchangeID,
+		ExchangeID:           targetExchangeID,
 		StrategyID:           strategyID, // Associated strategy ID
+		ExecutionMode:        executionMode,
 		InitialBalance:       initialBalance,
 		BTCETHLeverage:       btcEthLeverage,
 		AltcoinLeverage:      altcoinLeverage,
@@ -781,6 +874,21 @@ func (s *Server) handleStartTrader(c *gin.Context) {
 	if fullCfg != nil && fullCfg.Trader != nil && fullCfg.Trader.Name != "" {
 		traderName = fullCfg.Trader.Name
 	}
+	if err := validateStartConfirmation(fullCfg.Trader.ExecutionMode, c.Query("live_confirm")); err != nil {
+		SafeBadRequestWithDetails(c, err.Error(), "trader.start.live_confirmation_required", mapStringPairs("trader_name", traderName))
+		return
+	}
+	if fullCfg != nil && fullCfg.Exchange != nil && strings.EqualFold(fullCfg.Exchange.ExchangeType, "hyperliquid") {
+		exchangeType := "unknown"
+		if fullCfg != nil && fullCfg.Exchange != nil {
+			exchangeType = fullCfg.Exchange.ExchangeType
+		}
+		SafeBadRequestWithDetails(c, formatTraderStartError(
+			fmt.Sprintf("Bot \"%s\" is configured for disabled Hyperliquid execution", traderName),
+			"Create or select a Binance Futures account and update the bot before starting it",
+		), "trader.start.hyperliquid_disabled", mapStringPairs("trader_name", traderName, "exchange_type", exchangeType))
+		return
+	}
 
 	if fullCfg != nil && fullCfg.Exchange != nil && fullCfg.Exchange.ExchangeType == "hyperliquid" && !fullCfg.Exchange.HyperliquidBuilderApproved {
 		SafeBadRequestWithDetails(c, formatTraderStartError(
@@ -859,7 +967,7 @@ func (s *Server) handleStartTrader(c *gin.Context) {
 	// Server-side launch gate: the trader cannot function without a funded AI
 	// wallet and a ready exchange account, so verify both before the run loop
 	// starts. `?force=true` skips the gate for deliberate manual overrides.
-	if c.Query("force") != "true" {
+	if fullCfg.Trader.ExecutionMode == "live" && c.Query("force") != "true" {
 		// strategyRequired=false: a trader that loaded into memory necessarily
 		// has a valid strategy (the manager refuses to load without one), so the
 		// preflight strategy check would be redundant here.

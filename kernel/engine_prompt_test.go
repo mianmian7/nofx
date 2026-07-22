@@ -29,8 +29,8 @@ func TestBuildSystemPromptUsesVergexClaw402Prompt(t *testing.T) {
 	if !strings.Contains(prompt, "Direction must be data-driven") {
 		t.Fatalf("prompt should explain that direction is data-driven, not long-only:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "every open position must use exactly 20x") {
-		t.Fatalf("prompt should force 20x leverage for Claw402 opens:\n%s", prompt)
+	if !strings.Contains(prompt, "every open position must use exactly 3x") {
+		t.Fatalf("prompt should apply the configured 3x leverage limit:\n%s", prompt)
 	}
 	if !strings.Contains(prompt, "use the full max notional per position") {
 		t.Fatalf("prompt should force full-size Claw402 opens:\n%s", prompt)
@@ -72,7 +72,7 @@ func TestBuildSystemPromptFallsBackToEnglishWhenConfiguredLanguageIsChinese(t *t
 
 	required := []string{
 		"Data Dictionary & Trading Rules",
-		"You are a professional Hyperliquid USDC multi-asset trading AI",
+		"You are a professional Binance USDⓈ-M multi-asset trading AI",
 		"Trading Frequency Awareness",
 		"Entry Standards",
 		"Decision Process",

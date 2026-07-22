@@ -1,10 +1,6 @@
 import { api } from '../api'
 import { ApiError } from '../httpClient'
-import {
-  describeLaunchFailures,
-  primarySetupTarget,
-  runLaunchPreflight,
-} from './preflight'
+import { describeLaunchFailures, primarySetupTarget } from './preflight'
 import { resolveLaunchExchange, resolveLaunchModel } from './resolve'
 import type { LaunchOutcome } from './types'
 
@@ -36,9 +32,8 @@ export async function launchAutopilot(
       return {
         ok: false,
         kind: 'setup',
-        message:
-          'No enabled AI model is ready. Create or fund the Claw402 wallet first.',
-        setupTarget: 'claw402',
+        message: 'No enabled AI model with valid credentials is ready.',
+        setupTarget: 'model',
       }
     }
 
@@ -48,26 +43,13 @@ export async function launchAutopilot(
         ok: false,
         kind: 'setup',
         message: exchangeResult.reason,
-        setupTarget: 'hyperliquid',
+        setupTarget: 'exchange',
       }
     }
     const exchange = exchangeResult.exchange
 
-    const preflight = await runLaunchPreflight({
-      ai_model_id: model.id,
-      exchange_id: exchange.id,
-    })
-    if (!preflight.ready) {
-      return {
-        ok: false,
-        kind: 'preflight',
-        message:
-          describeLaunchFailures(preflight) ||
-          'Launch prerequisites are not ready yet.',
-        preflight,
-        setupTarget: primarySetupTarget(preflight),
-      }
-    }
+    // Autopilot defaults to Paper Trading. It uses public Binance market data
+    // and must not require exchange trading permission or account balance.
 
     const strategyId = await ensureStrategy()
 
@@ -79,8 +61,7 @@ export async function launchAutopilot(
       scan_interval_minutes: scanIntervalMinutes,
       is_cross_margin: true,
       show_in_competition: true,
-      btc_eth_leverage: 10,
-      altcoin_leverage: 10,
+      execution_mode: 'paper' as const,
     }
 
     // Re-fetch the live trader list before deciding create vs update. Stale
@@ -90,11 +71,7 @@ export async function launchAutopilot(
     const existing =
       existingTraders.find(
         (trader) => trader.trader_name === AUTOPILOT_TRADER_NAME
-      ) ||
-      existingTraders.find((trader) =>
-        (trader.strategy_name || '').toLowerCase().includes('claw402')
-      ) ||
-      null
+      ) || null
 
     const autopilot = existing
       ? await api.updateTrader(existing.trader_id, traderRequest)
@@ -121,7 +98,10 @@ export async function launchAutopilot(
   } catch (err) {
     // The server re-runs preflight on start; surface its structured result if
     // readiness changed between our check and the start call.
-    if (err instanceof ApiError && err.errorKey === 'trader.start.preflight_failed') {
+    if (
+      err instanceof ApiError &&
+      err.errorKey === 'trader.start.preflight_failed'
+    ) {
       const preflight = err.errorData?.preflight
       if (preflight) {
         return {
@@ -143,19 +123,21 @@ export async function launchAutopilot(
 }
 
 /**
- * Default strategy provisioning for the guided panel: reuse the active
- * Claw402 strategy, otherwise create and activate it.
+ * Default strategy provisioning for the guided panel: reuse an active local
+ * or static strategy, otherwise create the local Binance dynamic default.
  */
-export async function ensureClaw402Strategy(): Promise<string> {
+export async function ensureDefaultStrategy(): Promise<string> {
   const strategies = await api.getStrategies()
   const existing =
     strategies.find(
       (strategy) =>
         strategy.is_active &&
-        strategy.config?.ai_config?.coin_source?.source_type === 'vergex_signal'
+        ['binance_dynamic', 'static'].includes(
+          strategy.config?.ai_config?.coin_source?.source_type || ''
+        )
     ) ||
     strategies.find((strategy) =>
-      strategy.name.toLowerCase().includes('claw402')
+      strategy.name.toLowerCase().includes('local dynamic')
     )
 
   if (existing) {
@@ -167,9 +149,9 @@ export async function ensureClaw402Strategy(): Promise<string> {
 
   const config = await api.getDefaultStrategyConfig()
   const created = await api.createStrategy({
-    name: 'NOFX Claw402 Auto Strategy',
+    name: 'NOFX Local Dynamic Strategy',
     description:
-      'Single built-in strategy: Claw402 board, per-symbol details, raw candles, then execution.',
+      'Public Binance market data builds the candidate pool; the configured AI model makes the final decision.',
     config,
   })
   if (created?.id) {
@@ -179,9 +161,9 @@ export async function ensureClaw402Strategy(): Promise<string> {
 
   const refreshed = await api.getStrategies()
   const fallback = refreshed.find((strategy) =>
-    strategy.name.toLowerCase().includes('claw402')
+    strategy.name.toLowerCase().includes('local dynamic')
   )
-  if (!fallback) throw new Error('Failed to create Claw402 strategy')
+  if (!fallback) throw new Error('Failed to create local dynamic strategy')
   await api.activateStrategy(fallback.id)
   return fallback.id
 }

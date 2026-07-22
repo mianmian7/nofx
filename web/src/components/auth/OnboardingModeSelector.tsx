@@ -21,18 +21,18 @@ export function OnboardingModeSelector({
   }> = [
     {
       id: 'beginner',
-      title: isZh ? 'Beginner Mode' : 'Beginner Mode',
-      badge: isZh ? 'Recommended' : 'Recommended',
+      title: isZh ? 'Claw402 托管模型' : 'Managed Claw402 model',
       description: isZh
-        ? 'Generate a Base wallet automatically and start with Claw402 + GLM by default.'
-        : 'Generate a Base wallet automatically and start with Claw402 + GLM by default.',
+        ? '使用托管模型调用；交易候选和执行仍走 Binance Futures。'
+        : 'Use managed model calls while market candidates and execution stay on Binance Futures.',
     },
     {
       id: 'advanced',
-      title: isZh ? 'Advanced Mode' : 'Advanced Mode',
+      title: isZh ? 'Binance + 自有模型' : 'Binance + your own model',
+      badge: isZh ? '推荐' : 'Recommended',
       description: isZh
-        ? 'Keep the full manual flow and configure models, wallets, and exchanges yourself.'
-        : 'Keep the full manual flow and configure models, wallets, and exchanges yourself.',
+        ? '配置你自己的 AI API 和 Binance Futures；默认使用免费的 Binance 本地动态候选。'
+        : 'Configure your own AI API and Binance Futures; free Binance local dynamic candidates are the default.',
     },
   ]
 

@@ -1,5 +1,7 @@
 import { useMemo } from 'react'
 import type { DecisionRecord } from '../../types'
+import { useLanguage } from '../../contexts/LanguageContext'
+import { t } from '../../i18n/translations'
 
 /**
  * ExecutionLog renders the AI trading agent's real decisions and order results
@@ -102,6 +104,8 @@ interface ExecutionLogProps {
 }
 
 export function ExecutionLog({ decisions, height = 440 }: ExecutionLogProps) {
+  const { language } = useLanguage()
+  const tt = (key: string) => t(`terminalDashboard.${key}`, language)
   // Newest cycle first.
   const cycles = useMemo(() => {
     const list = decisions ?? []
@@ -112,7 +116,7 @@ export function ExecutionLog({ decisions, height = 440 }: ExecutionLogProps) {
     <div style={{ fontFamily: 'var(--tm-mono)' }}>
       {/* header */}
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 2 }}>
-        <span className="tm-px" style={{ fontSize: 11 }}>Execution log</span>
+        <span className="tm-px" style={{ fontSize: 11 }}>{tt('executionLog')}</span>
         <span
           className="tm-sc"
           style={{ marginLeft: 'auto', color: cycles.length ? 'var(--tm-up)' : 'var(--tm-muted)' }}
@@ -121,7 +125,7 @@ export function ExecutionLog({ decisions, height = 440 }: ExecutionLogProps) {
         </span>
       </div>
       <div className="tm-sc" style={{ fontSize: 9, marginBottom: 5 }}>
-        Execution log · AI decisions & fills per cycle
+        {tt('executionLogDesc')}
       </div>
 
       {/* legend */}
@@ -129,15 +133,15 @@ export function ExecutionLog({ decisions, height = 440 }: ExecutionLogProps) {
         className="tm-sc"
         style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 6, fontSize: 9 }}
       >
-        <Legend glyph="✓" c="var(--tm-up)" label="ok" />
-        <Legend glyph="⚠" c={C_AMBER} label="throttle" />
-        <Legend glyph="❌" c="var(--tm-dn)" label="risk" />
+        <Legend glyph="✓" c="var(--tm-up)" label={tt('ok')} />
+        <Legend glyph="⚠" c={C_AMBER} label={tt('throttle')} />
+        <Legend glyph="❌" c="var(--tm-dn)" label={tt('risk')} />
       </div>
 
       <div className="tm-hair" style={{ marginBottom: 0 }} />
 
       {!cycles.length ? (
-        <div className="tm-sc" style={{ padding: '16px 0' }}>No execution events yet.</div>
+        <div className="tm-sc" style={{ padding: '16px 0' }}>{tt('noExecutionEvents')}</div>
       ) : (
         <div
           style={{
@@ -171,6 +175,9 @@ interface CycleProps {
 }
 
 function Cycle({ record }: CycleProps) {
+  const { language } = useLanguage()
+  const tt = (key: string, params?: Record<string, string | number>) =>
+    t(`terminalDashboard.${key}`, language, params)
   const time = fmtTime(record.timestamp)
   const actions = record.decisions ?? []
   const logs = record.execution_log ?? []
@@ -193,14 +200,14 @@ function Cycle({ record }: CycleProps) {
           color: 'var(--tm-ink-2)',
         }}
       >
-        <span style={{ color: 'var(--tm-ink)', fontWeight: 700 }}>CYCLE {record.cycle_number}</span>
+        <span style={{ color: 'var(--tm-ink)', fontWeight: 700 }}>{tt('cycle').toUpperCase()} {record.cycle_number}</span>
         <span style={{ color: 'var(--tm-muted)' }}>·</span>
         <span style={{ color: 'var(--tm-muted)' }}>{time}</span>
         <span style={{ marginLeft: 'auto', color: 'var(--tm-muted)' }}>
-          {count === 0 ? 'no action' : `${count} action${count > 1 ? 's' : ''}`}
+          {count === 0 ? tt('noAction') : tt('actions', { count })}
         </span>
         {!record.success ? (
-          <span style={{ color: 'var(--tm-dn)', fontWeight: 700 }}>FAULT</span>
+          <span style={{ color: 'var(--tm-dn)', fontWeight: 700 }}>{tt('fault').toUpperCase()}</span>
         ) : null}
       </div>
 

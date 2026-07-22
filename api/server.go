@@ -28,6 +28,7 @@ type Server struct {
 	port                      int
 	telegramReloadCh          chan<- struct{} // signal Telegram bot to reload
 	authLimiter               *ipRateLimiter  // per-IP throttle for login/register
+	backtestJobs              *backtestJobStore
 }
 
 // NewServer Creates API server
@@ -53,7 +54,8 @@ func NewServer(traderManager *manager.TraderManager, st *store.Store, cryptoServ
 		// Auth throttle: allow a small burst (typos / page reloads) then ~1
 		// attempt every 6s (10/min) sustained per IP. Generous for a human,
 		// hostile to online password brute-force.
-		authLimiter: newIPRateLimiter(1.0/6.0, 8),
+		authLimiter:  newIPRateLimiter(1.0/6.0, 8),
+		backtestJobs: newBacktestJobStore(),
 	}
 
 	// Setup routes
@@ -148,10 +150,10 @@ func (s *Server) setupRoutes() {
 		// Wallet validation (no authentication required — used by frontend config form)
 		api.POST("/wallet/validate", s.handleWalletValidate)
 		api.POST("/wallet/generate", s.handleWalletGenerate)
-		s.route(api, "GET", "/hyperliquid/connect-config", "Get NOFX Hyperliquid builder authorization config", s.handleHyperliquidConnectConfig)
-		s.route(api, "GET", "/hyperliquid/account", "Get Hyperliquid account balance summary", s.handleHyperliquidAccount)
-		s.route(api, "GET", "/hyperliquid/agent", "Get Hyperliquid approved agent wallets and authorization expiry", s.handleHyperliquidAgent)
-		s.route(api, "POST", "/hyperliquid/submit-exchange", "Submit a user-signed Hyperliquid approval action", s.handleHyperliquidSubmitExchange)
+		s.route(api, "GET", "/hyperliquid/connect-config", "Hyperliquid is disabled", s.handleHyperliquidGone)
+		s.route(api, "GET", "/hyperliquid/account", "Hyperliquid is disabled", s.handleHyperliquidGone)
+		s.route(api, "GET", "/hyperliquid/agent", "Hyperliquid is disabled", s.handleHyperliquidGone)
+		s.route(api, "POST", "/hyperliquid/submit-exchange", "Hyperliquid is disabled", s.handleHyperliquidGone)
 
 		// Crypto related endpoints (no authentication required, not exposed to bot).
 		// SECURITY: only the config + public-key endpoints are exposed. Transport
@@ -211,10 +213,10 @@ func (s *Server) setupRoutes() {
 			// Server IP query (requires authentication, for whitelist configuration)
 			s.route(protected, "GET", "/server-ip", "Get server public IP (for exchange whitelist)", s.handleGetServerIP)
 
-			s.route(protected, "GET", "/vergex/signal-ranking", "Vergex signal ranking via claw402 (?marketType=all&limit=30)", s.handleVergexSignalRanking)
-			s.route(protected, "GET", "/vergex/signal-lab", "Vergex signal lab via claw402 (?marketType=hip3_perp&symbol=AAPL)", s.handleVergexSignalLab)
-			s.route(protected, "GET", "/vergex/cost-liquidation-heatmap", "Vergex cost/liquidation heatmap via claw402 (?marketType=hip3_perp&symbol=AAPL)", s.handleVergexCostLiquidationHeatmap)
-			s.route(protected, "GET", "/vergex/flow-markets", "Vergex net-flow market ranking via claw402 (?chain=mainnet&window=1h&limit=25)", s.handleVergexFlowMarkets)
+			s.route(protected, "GET", "/vergex/signal-ranking", "Hyperliquid/Vergex is disabled", s.handleHyperliquidGone)
+			s.route(protected, "GET", "/vergex/signal-lab", "Hyperliquid/Vergex is disabled", s.handleHyperliquidGone)
+			s.route(protected, "GET", "/vergex/cost-liquidation-heatmap", "Hyperliquid/Vergex is disabled", s.handleHyperliquidGone)
+			s.route(protected, "GET", "/vergex/flow-markets", "Hyperliquid/Vergex is disabled", s.handleHyperliquidGone)
 
 			// AI trader management
 			s.routeWithSchema(protected, "GET", "/my-traders", "List user's traders with status",
@@ -236,8 +238,8 @@ Only include fields you want to change.`,
 			s.routeWithSchema(protected, "DELETE", "/traders/:id", "Delete trader",
 				`:id = trader_id from GET /api/my-traders. Stops and permanently removes the trader and all its data.`,
 				s.handleDeleteTrader)
-			s.routeWithSchema(protected, "POST", "/traders/:id/start", "Start trader — begins live trading",
-				`:id = trader_id from GET /api/my-traders. No request body needed. The trader must have a valid exchange and AI model configured.
+			s.routeWithSchema(protected, "POST", "/traders/:id/start", "Start Paper or Live trader",
+				`:id = trader_id from GET /api/my-traders. Paper starts without exchange trading permission. Live requires ?live_confirm=true.
 Runs launch preflight first and returns 400 with {"error_key":"trader.start.preflight_failed","preflight":{...}} when checks fail. Append ?force=true to skip balance gates.`,
 				s.handleStartTrader)
 			s.routeWithSchema(protected, "GET", "/traders/:id/preflight", "Run launch readiness checks for a trader",
@@ -294,14 +296,8 @@ CRITICAL: Always use the "id" field for exchange_id. Do not use "exchange_type" 
 Use this endpoint to show balance and health in the exchange list without depending on traders.`,
 				s.handleGetExchangeAccountStates)
 			s.routeWithSchema(protected, "POST", "/exchanges", "Create a new exchange account",
-				`Body: {"exchange_type":"<string>","account_name":"<string, user label>","enabled":true,"api_key":"<string>","secret_key":"<string>","passphrase":"<string, required for okx/gate/kucoin>"}
-exchange_type values: "binance","bybit","okx","bitget","gate","kucoin","indodax" (CEX) | "hyperliquid","aster","lighter" (DEX)
-Required fields by exchange:
-  binance/bybit/bitget/indodax: api_key + secret_key
-  okx/gate/kucoin: api_key + secret_key + passphrase
-  hyperliquid: hyperliquid_wallet_addr
-  aster: aster_user + aster_signer + aster_private_key
-  lighter: lighter_wallet_addr + lighter_private_key + lighter_api_key_private_key + lighter_api_key_index`,
+				`Body: {"exchange_type":"<string>","account_name":"<string, user label>","enabled":true,"api_key":"<string>","secret_key":"<string>","passphrase":"<string>"}
+Supported execution venues: "binance","bybit","okx","bitget","gate","kucoin","indodax","aster","lighter". Hyperliquid is disabled; use Binance Futures for migrated strategies.`,
 				s.handleCreateExchange)
 			s.routeWithSchema(protected, "PUT", "/exchanges", "Update an existing exchange account configuration",
 				`Body: {"id":"<EXACT id from GET /api/exchanges>","exchange_type":"<string>","account_name":"<string>","enabled":<bool>,"api_key":"<string>","secret_key":"<string>","passphrase":"<string, for okx/gate/kucoin>"}
@@ -339,16 +335,17 @@ CRITICAL: Always use the "id" field for strategy_id.`,
 				s.handleGetDefaultStrategyConfig)
 			s.route(protected, "POST", "/strategies/preview-prompt", "Preview the AI prompt that will be generated from a config", s.handlePreviewPrompt)
 			s.route(protected, "POST", "/strategies/test-run", "Test-run strategy AI analysis", s.handleStrategyTestRun)
+			s.route(protected, "POST", "/strategies/:id/backtests", "Start an asynchronous historical AI replay", s.handleStartStrategyBacktest)
+			s.route(protected, "GET", "/strategy-backtests/:job_id", "Get historical replay progress and result", s.handleGetStrategyBacktest)
 			s.route(protected, "GET", "/strategies/:id", "Get strategy by ID", s.handleGetStrategy)
 			s.routeWithSchema(protected, "POST", "/strategies", "Create a new trading strategy",
-				`Body: {"name":"<string, required>","description":"<string, optional>","lang":"zh|en","config":<StrategyConfig object, OPTIONAL — if omitted the system applies complete working defaults automatically (ai500 top coins, all standard indicators, standard risk control)>}
+				`Body: {"name":"<string, required>","description":"<string, optional>","lang":"zh|en","config":<StrategyConfig object, OPTIONAL — if omitted the system applies complete working defaults automatically (local Binance dynamic candidates, raw candles, conservative risk control)>}
 IMPORTANT: For most use cases just POST {"name":"<name>"} — the backend fills everything in. Only include "config" when the user explicitly requests custom settings (specific coins, custom leverage, custom timeframes).
 
 StrategyConfig fields:
-  coin_source.source_type: "vergex_signal" (Claw402/Vergex signal-ranking; default and recommended)
-  coin_source.vergex_limit: number of Claw402 candidates enriched with detail data (default 10, max 10)
-  coin_source.vergex_market_type: "all" for the full Claw402 board; detail calls use each ranking item's market_type
-  coin_source.vergex_chain: "hyperliquid"
+	coin_source.source_type: "binance_dynamic" (default, free public Binance perpetual-market ranking) | "static" (manual Binance USDT symbols)
+  coin_source.binance_dynamic_limit: number of liquid Binance perpetual candidates (default 10, max 10)
+  coin_source.static_coins: explicit symbols such as ["BTCUSDT","ETHUSDT"] when source_type="static"
   indicators.klines.primary_timeframe: "1m"|"3m"|"5m"|"15m"|"1h"|"4h" — scalping→"5m", trend/swing→"1h"/"4h"
   indicators.klines.primary_count: number of candles (20-100)
   indicators.klines.enable_multi_timeframe: true for trend/swing analysis
@@ -360,27 +357,23 @@ StrategyConfig fields:
   indicators.enable_boll: true for volatility, range trading, breakout strategies
   indicators.enable_atr: true for volatility measurement and stop-loss sizing
   indicators.enable_volume: ALWAYS true
-  indicators.enable_oi: ALWAYS true (open interest data)
-  indicators.enable_funding_rate: ALWAYS true
+  indicators.enable_oi: optional open-interest data
+  indicators.enable_funding_rate: optional funding-rate data
   indicators.ema_periods: [20,50] default, [9,21] for faster signals
   indicators.rsi_periods: [7,14] default
   indicators.atr_periods: [14] default
   indicators.boll_periods: [20] default
-  indicators.nofxos_api_key: ALWAYS "cm_568c67eae410d912c54c"
-  indicators.enable_quant_data: ALWAYS true
-  indicators.enable_quant_oi: ALWAYS true
-  indicators.enable_quant_netflow: ALWAYS true
-  indicators.enable_oi_ranking: ALWAYS true, oi_ranking_duration:"1h", oi_ranking_limit:10
-  indicators.enable_netflow_ranking: ALWAYS true, netflow_ranking_duration:"1h", netflow_ranking_limit:10
-  indicators.enable_price_ranking: ALWAYS true, price_ranking_duration:"1h,4h,24h", price_ranking_limit:10
+  indicators.nofxos_api_key: optional; never insert a shared or hard-coded key
+  indicators.enable_quant_data/enable_quant_oi/enable_quant_netflow: optional paid/external enrichment, disabled by default
+  indicators.enable_oi_ranking/enable_netflow_ranking/enable_price_ranking: optional paid/external ranking, disabled by default
   risk_control.max_positions: max simultaneous positions (1=single coin, 3=diversified, 5=wide)
-  risk_control.btc_eth_max_leverage: BTC/ETH leverage (conservative:3-5, moderate:5-10, aggressive:10-20)
+  risk_control.btc_eth_max_leverage: BTC/ETH leverage (default 3; higher leverage requires explicit user choice)
   risk_control.altcoin_max_leverage: altcoin leverage (usually lower than BTC leverage)
-  risk_control.btc_eth_max_position_value_ratio: max position size as multiple of equity (default 5)
-  risk_control.altcoin_max_position_value_ratio: default 1
-  risk_control.max_margin_usage: 0.5-0.95 (default 0.9 = use up to 90% margin)
+  risk_control.btc_eth_max_position_value_ratio: max position size as multiple of equity (default 1)
+  risk_control.altcoin_max_position_value_ratio: default 0.5
+  risk_control.max_margin_usage: default 0.5
   risk_control.min_position_size: minimum USDT per trade (default 12)
-  risk_control.min_risk_reward_ratio: minimum profit/loss ratio required (default 3 = 3:1)
+  risk_control.min_risk_reward_ratio: minimum profit/loss ratio required (default 2 = 2:1)
   risk_control.min_confidence: minimum AI confidence to open position (default 75, range 60-90)
   prompt_sections.role_definition: describe the AI's trading persona and goal
   prompt_sections.trading_frequency: guidelines on how often to trade

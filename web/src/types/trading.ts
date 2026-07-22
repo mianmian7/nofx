@@ -11,6 +11,22 @@ export interface SystemStatus {
   stop_until: string
   last_reset_time: string
   ai_provider: string
+  execution_mode?: 'paper' | 'live'
+  paper?: {
+    balance: number
+    equity: number
+    available_balance: number
+    used_margin: number
+    realized_pnl: number
+    unrealized_pnl: number
+    fees: number
+    open_positions: number
+    closed_trades: number
+    wins: number
+    win_rate: number
+    max_drawdown: number
+  }
+  paper_performance?: PaperPerformance
   strategy_type?: 'ai_trading' | 'grid_trading'
   grid_symbol?: string
   /** Runtime health: true when AI failed repeatedly and no new positions open. */
@@ -20,6 +36,42 @@ export interface SystemStatus {
   ai_wallet_status?: 'ok' | 'low' | 'empty' | 'unknown'
   ai_wallet_balance_usdc?: number
   ai_wallet_checked_at?: string
+}
+
+export interface PaperClosedTrade {
+  entry_order_id: number
+  exit_order_id: number
+  symbol: string
+  side: 'long' | 'short' | string
+  quantity: number
+  entry_price: number
+  exit_price: number
+  entry_time: string
+  exit_time: string
+  leverage: number
+  entry_fee: number
+  exit_fee: number
+  fee: number
+  realized_pnl: number
+  close_reason: string
+}
+
+export interface PaperPerformance {
+  total_trades: number
+  win_trades: number
+  loss_trades: number
+  win_rate: number
+  profit_factor: number
+  sharpe_ratio: number
+  total_pnl: number
+  /** All Paper fills, including entry fees for positions that remain open. */
+  total_fees: number
+  /** Fees belonging only to completed Paper trades. */
+  closed_trade_fees: number
+  avg_win: number
+  avg_loss: number
+  max_drawdown_pct: number
+  closed_trades: PaperClosedTrade[]
 }
 
 export interface AccountInfo {
@@ -55,10 +107,10 @@ export interface DecisionAction {
   quantity: number
   leverage: number
   price: number
-  stop_loss?: number      // Stop loss price
-  take_profit?: number    // Take profit price
-  confidence?: number     // AI confidence (0-100)
-  reasoning?: string      // Brief reasoning
+  stop_loss?: number // Stop loss price
+  take_profit?: number // Take profit price
+  confidence?: number // AI confidence (0-100)
+  reasoning?: string // Brief reasoning
   order_id: number
   timestamp: string
   success: boolean
@@ -121,6 +173,7 @@ export interface TraderInfo {
   ai_model: string
   exchange_id?: string
   is_running?: boolean
+  execution_mode?: 'paper' | 'live'
   startup_warning?: string
   show_in_competition?: boolean
   strategy_id?: string
@@ -156,13 +209,14 @@ export interface TraderConfigData {
   trader_name: string
   ai_model: string
   exchange_id: string
-  strategy_id?: string  // Strategy ID
-  strategy_name?: string  // Strategy name
+  strategy_id?: string // Strategy ID
+  strategy_name?: string // Strategy name
   is_cross_margin: boolean
-  show_in_competition: boolean  // Whether to show in the competition arena
+  show_in_competition: boolean // Whether to show in the competition arena
   scan_interval_minutes: number
   initial_balance: number
   is_running: boolean
+  execution_mode?: 'paper' | 'live'
   // Legacy fields below (kept for backward compatibility)
   btc_eth_leverage?: number
   altcoin_leverage?: number

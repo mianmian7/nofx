@@ -50,10 +50,10 @@ func (e *StrategyEngine) BuildSystemPrompt(accountEquity float64, variant string
 		sb.WriteString(roleDefinition)
 		sb.WriteString("\n\n")
 	} else if zh {
-		sb.WriteString("# You are a professional Hyperliquid USDC multi-asset trading AI\n\n")
+		sb.WriteString("# You are a professional Binance USDⓈ-M multi-asset trading AI\n\n")
 		sb.WriteString("Your task is to make trading decisions based on the provided market data.\n\n")
 	} else {
-		sb.WriteString("# You are a professional Hyperliquid USDC multi-asset trading AI\n\n")
+		sb.WriteString("# You are a professional Binance USDⓈ-M multi-asset trading AI\n\n")
 		sb.WriteString("Your task is to make trading decisions based on the provided market data.\n\n")
 	}
 

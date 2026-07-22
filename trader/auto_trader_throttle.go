@@ -21,12 +21,12 @@ const (
 	// directional pair from re-establishing after positions close. A tight value
 	// here (e.g. 2) starves the strategy: once a couple opens fire, every later
 	// cycle is blocked and the book drains to flat. Keep it generous.
-	autopilotMaxOpensPerHour        = 30
-	autopilotMaxOpensPerCycle       = 6
-	earlyCloseStopLossBypassPct     = -2.5
-	earlyCloseTakeProfitBypassPct   = 5.0
-	noiseCloseLossFloorPct          = -1.0
-	noiseCloseProfitCeilingPct      = 2.0
+	autopilotMaxOpensPerHour      = 30
+	autopilotMaxOpensPerCycle     = 6
+	earlyCloseStopLossBypassPct   = -2.5
+	earlyCloseTakeProfitBypassPct = 5.0
+	noiseCloseLossFloorPct        = -1.0
+	noiseCloseProfitCeilingPct    = 2.0
 )
 
 func isOpenAction(action string) bool {
@@ -69,8 +69,8 @@ func openActionSide(action string) string {
 	}
 }
 
-func normalizedDecisionSymbol(symbol string) string {
-	return market.Normalize(strings.TrimSpace(symbol))
+func normalizedDecisionSymbol(exchange, symbol string) string {
+	return market.NormalizeForExchange(exchange, strings.TrimSpace(symbol))
 }
 
 func (at *AutoTrader) tradeThrottleReason(decision kernel.Decision, ctx *kernel.Context, opensQueuedThisCycle int) string {
@@ -89,7 +89,7 @@ func (at *AutoTrader) tradeThrottleReason(decision kernel.Decision, ctx *kernel.
 }
 
 func (at *AutoTrader) openThrottleReason(decision kernel.Decision, ctx *kernel.Context, opensQueuedThisCycle int) string {
-	symbol := normalizedDecisionSymbol(decision.Symbol)
+	symbol := normalizedDecisionSymbol(at.exchange, decision.Symbol)
 	if symbol == "" {
 		return ""
 	}
@@ -98,7 +98,7 @@ func (at *AutoTrader) openThrottleReason(decision kernel.Decision, ctx *kernel.C
 		return fmt.Sprintf("trade throttle: only %d new position may be opened per cycle", autopilotMaxOpensPerCycle)
 	}
 
-	if pos := findAnyContextPosition(ctx, symbol); pos != nil {
+	if pos := findAnyContextPosition(at.exchange, ctx, symbol); pos != nil {
 		return fmt.Sprintf("trade throttle: %s already has an open %s position; manage or close it before opening another side", symbol, pos.Side)
 	}
 
@@ -122,13 +122,13 @@ func (at *AutoTrader) openThrottleReason(decision kernel.Decision, ctx *kernel.C
 }
 
 func (at *AutoTrader) closeThrottleReason(decision kernel.Decision, ctx *kernel.Context) string {
-	symbol := normalizedDecisionSymbol(decision.Symbol)
+	symbol := normalizedDecisionSymbol(at.exchange, decision.Symbol)
 	side := closeActionSide(decision.Action)
 	if symbol == "" || side == "" {
 		return ""
 	}
 
-	pos := findContextPosition(ctx, symbol, side)
+	pos := findContextPosition(at.exchange, ctx, symbol, side)
 	pnlPct := 0.0
 	entryTime := int64(0)
 	if pos != nil {
@@ -185,26 +185,26 @@ func (at *AutoTrader) closeThrottleReason(decision kernel.Decision, ctx *kernel.
 	) + fmt.Sprintf("; wait about %s", roundDuration(remaining))
 }
 
-func findContextPosition(ctx *kernel.Context, symbol string, side string) *kernel.PositionInfo {
+func findContextPosition(exchange string, ctx *kernel.Context, symbol string, side string) *kernel.PositionInfo {
 	if ctx == nil {
 		return nil
 	}
 	for i := range ctx.Positions {
 		pos := &ctx.Positions[i]
-		if normalizedDecisionSymbol(pos.Symbol) == symbol && strings.EqualFold(pos.Side, side) {
+		if normalizedDecisionSymbol(exchange, pos.Symbol) == symbol && strings.EqualFold(pos.Side, side) {
 			return pos
 		}
 	}
 	return nil
 }
 
-func findAnyContextPosition(ctx *kernel.Context, symbol string) *kernel.PositionInfo {
+func findAnyContextPosition(exchange string, ctx *kernel.Context, symbol string) *kernel.PositionInfo {
 	if ctx == nil {
 		return nil
 	}
 	for i := range ctx.Positions {
 		pos := &ctx.Positions[i]
-		if normalizedDecisionSymbol(pos.Symbol) == symbol {
+		if normalizedDecisionSymbol(exchange, pos.Symbol) == symbol {
 			return pos
 		}
 	}
@@ -247,7 +247,7 @@ func (at *AutoTrader) findRecentCloseOrder(symbol string, since time.Time) *stor
 		if order == nil || order.CreatedAt < sinceMs || isCanceledOrder(order) {
 			continue
 		}
-		if normalizedDecisionSymbol(order.Symbol) == symbol && isCloseAction(order.OrderAction) {
+		if normalizedDecisionSymbol(at.exchange, order.Symbol) == symbol && isCloseAction(order.OrderAction) {
 			return order
 		}
 	}
@@ -265,7 +265,7 @@ func (at *AutoTrader) findRecentOpenOrder(symbol string, side string, since time
 		if order == nil || order.CreatedAt < sinceMs || isCanceledOrder(order) {
 			continue
 		}
-		if normalizedDecisionSymbol(order.Symbol) == symbol &&
+		if normalizedDecisionSymbol(at.exchange, order.Symbol) == symbol &&
 			strings.EqualFold(openActionSide(order.OrderAction), side) {
 			return order
 		}

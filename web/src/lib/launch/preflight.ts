@@ -1,9 +1,5 @@
 import { API_BASE, httpClient } from '../api/helpers'
-import type {
-  LaunchCheck,
-  LaunchPreflightResult,
-  SetupTarget,
-} from './types'
+import type { LaunchCheck, LaunchPreflightResult, SetupTarget } from './types'
 
 export interface LaunchPreflightRequest {
   ai_model_id: string
@@ -65,14 +61,15 @@ export function describeLaunchFailures(result: LaunchPreflightResult): string {
 export function setupTargetForCheck(check: LaunchCheck): SetupTarget | null {
   switch (check.id) {
     case 'ai_model':
+      return 'model'
     case 'ai_wallet':
     case 'ai_wallet_funds':
       return 'claw402'
     case 'exchange_config':
     case 'exchange_account':
-      return 'hyperliquid'
+      return 'exchange'
     case 'exchange_funds':
-      return 'hyperliquid-funds'
+      return 'exchange'
     default:
       return null
   }

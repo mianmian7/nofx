@@ -6,6 +6,7 @@ import (
 	"nofx/logger"
 	"nofx/market"
 	"nofx/store"
+	"strings"
 	"time"
 )
 
@@ -25,6 +26,31 @@ const (
 
 // executeDecisionWithRecord executes AI decision and records detailed information
 func (at *AutoTrader) executeDecisionWithRecord(decision *kernel.Decision, actionRecord *store.DecisionAction) error {
+	if at.executionMode == ExecutionModePaper {
+		if at.paperBroker == nil {
+			return fmt.Errorf("paper broker is not configured")
+		}
+		fill, err := at.paperBroker.ExecuteDecision(decision)
+		if err != nil {
+			return err
+		}
+		actionRecord.Action = decision.Action
+		actionRecord.Symbol = fill.Symbol
+		actionRecord.Quantity = fill.Quantity
+		actionRecord.Leverage = decision.Leverage
+		actionRecord.Price = fill.Price
+		actionRecord.StopLoss = decision.StopLoss
+		actionRecord.TakeProfit = decision.TakeProfit
+		actionRecord.OrderID = fill.OrderID
+		actionRecord.Timestamp = fill.Time
+		actionRecord.Success = true
+		return nil
+	}
+	if decision.Action == "open_long" || decision.Action == "open_short" {
+		if err := validateExecutionSymbol(at.exchange, decision.Symbol); err != nil {
+			return err
+		}
+	}
 	switch decision.Action {
 	case "open_long":
 		return at.executeOpenLongWithRecord(decision, actionRecord)
@@ -40,6 +66,33 @@ func (at *AutoTrader) executeDecisionWithRecord(decision *kernel.Decision, actio
 	default:
 		return fmt.Errorf("unknown action: %s", decision.Action)
 	}
+}
+
+func validateExecutionSymbol(exchange, symbol string) error {
+	exchange = strings.ToLower(strings.TrimSpace(exchange))
+	if exchange == "hyperliquid" {
+		return fmt.Errorf("Hyperliquid execution is disabled; configure Binance Futures instead")
+	}
+	normalized := strings.ToUpper(strings.TrimSpace(symbol))
+	if normalized == "" || strings.HasPrefix(normalized, "XYZ:") || strings.HasSuffix(normalized, "-USDC") {
+		return fmt.Errorf("refusing to execute residual Hyperliquid symbol %q on %s", symbol, exchange)
+	}
+	if exchange != "binance" {
+		return nil
+	}
+	if !strings.HasSuffix(normalized, "USDT") || strings.ContainsAny(normalized, ":-_/ ") {
+		return fmt.Errorf("refusing to execute non-Binance symbol %q on Binance Futures", symbol)
+	}
+	base := strings.TrimSuffix(normalized, "USDT")
+	if base == "" {
+		return fmt.Errorf("refusing to execute invalid Binance symbol %q", symbol)
+	}
+	for _, r := range base {
+		if (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
+			return fmt.Errorf("refusing to execute invalid Binance symbol %q", symbol)
+		}
+	}
+	return nil
 }
 
 // executeOpenLongWithRecord executes open long position and records detailed information
@@ -286,7 +339,7 @@ func (at *AutoTrader) executeCloseLongWithRecord(decision *kernel.Decision, acti
 	actionRecord.Price = marketData.CurrentPrice
 
 	// Normalize symbol for database lookup
-	normalizedSymbol := market.Normalize(decision.Symbol)
+	normalizedSymbol := market.NormalizeForExchange(at.exchange, decision.Symbol)
 
 	// Get entry price and quantity - prioritize local database for accurate quantity
 	var entryPrice float64
@@ -350,7 +403,7 @@ func (at *AutoTrader) executeCloseShortWithRecord(decision *kernel.Decision, act
 	actionRecord.Price = marketData.CurrentPrice
 
 	// Normalize symbol for database lookup
-	normalizedSymbol := market.Normalize(decision.Symbol)
+	normalizedSymbol := market.NormalizeForExchange(at.exchange, decision.Symbol)
 
 	// Get entry price and quantity - prioritize local database for accurate quantity
 	var entryPrice float64

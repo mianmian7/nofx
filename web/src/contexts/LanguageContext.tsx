@@ -11,10 +11,10 @@ const LanguageContext = createContext<LanguageContextType | undefined>(
 )
 
 export function LanguageProvider({ children }: { children: ReactNode }) {
-  // Initialize language from localStorage or default to English
+  // Initialize language from localStorage or default to Simplified Chinese.
   const [language, setLanguage] = useState<Language>(() => {
     const saved = localStorage.getItem('language')
-    return saved === 'en' || saved === 'zh' || saved === 'id' ? saved : 'en'
+    return saved === 'en' || saved === 'zh' || saved === 'id' ? saved : 'zh'
   })
 
   // Save language to localStorage whenever it changes

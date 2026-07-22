@@ -1,5 +1,7 @@
 import { useMemo } from 'react'
 import type { HistoricalPosition } from '../../types'
+import { useLanguage } from '../../contexts/LanguageContext'
+import { t } from '../../i18n/translations'
 
 /**
  * EdgeProfile — where the money actually comes from. Aggregates recent closed
@@ -46,6 +48,9 @@ function toEpochMs(value: number | string): number {
 }
 
 export function EdgeProfile({ positions }: EdgeProfileProps) {
+  const { language } = useLanguage()
+  const tt = (key: string, params?: Record<string, string | number>) =>
+    t(`terminalDashboard.${key}`, language, params)
   const { holdBuckets, sideBuckets, sample } = useMemo(() => {
     const holds = [
       newBucket('<15m'),
@@ -79,7 +84,7 @@ export function EdgeProfile({ positions }: EdgeProfileProps) {
   }, [positions])
 
   if (sample === 0) {
-    return <div className="tm-sc">No closed trades yet.</div>
+    return <div className="tm-sc">{tt('noClosedTradeSample')}</div>
   }
 
   const maxAbsNet = Math.max(0.01, ...holdBuckets.map((b) => Math.abs(b.net)))
@@ -92,7 +97,7 @@ export function EdgeProfile({ positions }: EdgeProfileProps) {
         <div className="tm-mono" style={{ display: 'flex', alignItems: 'baseline', fontSize: 11, marginBottom: 2 }}>
           <span style={{ fontWeight: 500, minWidth: 52 }}>{bucket.label}</span>
           <span className="tm-sc">
-            {bucket.n} trades · {bucket.n > 0 ? `${winPct.toFixed(0)}% win` : '—'} · fees ${bucket.fees.toFixed(2)}
+            {bucket.n > 0 ? tt('edgeRow', { trades: bucket.n, win: winPct.toFixed(0), fees: bucket.fees.toFixed(2) }) : '—'}
           </span>
           <span className={up ? 'tm-up' : 'tm-dn'} style={{ marginLeft: 'auto', fontWeight: 600 }}>
             {bucket.n > 0 ? fmtUsd(bucket.net) : '—'}
@@ -120,8 +125,8 @@ export function EdgeProfile({ positions }: EdgeProfileProps) {
   const longHolds = holdBuckets[2].net + holdBuckets[3].net
   const takeaway =
     longHolds > shortHolds
-      ? `edge concentrates in holds ≥ 1h (${fmtUsd(longHolds)} vs ${fmtUsd(shortHolds)} under 1h)`
-      : `short holds outperform on this sample (${fmtUsd(shortHolds)} vs ${fmtUsd(longHolds)} ≥ 1h)`
+      ? tt('longHoldEdge', { long: fmtUsd(longHolds), short: fmtUsd(shortHolds) })
+      : tt('shortHoldEdge', { short: fmtUsd(shortHolds), long: fmtUsd(longHolds) })
 
   return (
     <div>
@@ -129,7 +134,7 @@ export function EdgeProfile({ positions }: EdgeProfileProps) {
       <div style={{ borderTop: '1px solid var(--tm-hair)', margin: '8px 0 7px' }} />
       {sideBuckets.map(row)}
       <div className="tm-sc" style={{ marginTop: 6, fontSize: 9 }}>
-        last {sample} closed · {takeaway}
+        {tt('lastClosedSummary', { sample, takeaway })}
       </div>
     </div>
   )

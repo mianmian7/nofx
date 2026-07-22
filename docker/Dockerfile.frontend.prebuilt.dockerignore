@@ -1,0 +1,8 @@
+**
+!nginx/
+nginx/**
+!nginx/nginx.conf
+!web/
+web/**
+!web/dist/
+!web/dist/**

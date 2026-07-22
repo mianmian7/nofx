@@ -723,18 +723,31 @@ func (s *Server) handleStrategyTestRun(c *gin.Context) {
 
 // runRealAITest Execute real AI test call
 func (s *Server) runRealAITest(userID, modelID, systemPrompt, userPrompt string) (string, error) {
-	// Get AI model configuration
+	aiClient, _, err := s.newConfiguredAIClient(userID, modelID)
+	if err != nil {
+		return "", err
+	}
+
+	response, err := aiClient.CallWithMessages(systemPrompt, userPrompt)
+	if err != nil {
+		return "", fmt.Errorf("AI API call failed: %w", err)
+	}
+
+	return response, nil
+}
+
+func (s *Server) newConfiguredAIClient(userID, modelID string) (mcp.AIClient, *store.AIModel, error) {
 	model, err := s.store.AIModel().Get(userID, modelID)
 	if err != nil {
-		return "", fmt.Errorf("failed to get AI model: %w", err)
+		return nil, nil, fmt.Errorf("failed to get AI model: %w", err)
 	}
 
 	if !model.Enabled {
-		return "", fmt.Errorf("AI model %s is not enabled", model.Name)
+		return nil, nil, fmt.Errorf("AI model %s is not enabled", model.Name)
 	}
 
 	if model.APIKey == "" {
-		return "", fmt.Errorf("AI model %s is missing API Key", model.Name)
+		return nil, nil, fmt.Errorf("AI model %s is missing API Key", model.Name)
 	}
 
 	// Create AI client via registry
@@ -743,7 +756,7 @@ func (s *Server) runRealAITest(userID, modelID, systemPrompt, userPrompt string)
 
 	aiClient := mcp.NewAIClientByProvider(provider)
 	if aiClient == nil {
-		aiClient = mcp.NewClient()
+		return nil, nil, fmt.Errorf("unsupported AI provider %q", provider)
 	}
 
 	// Payment providers ignore custom URL
@@ -753,14 +766,8 @@ func (s *Server) runRealAITest(userID, modelID, systemPrompt, userPrompt string)
 	default:
 		aiClient.SetAPIKey(apiKey, model.CustomAPIURL, model.CustomModelName)
 	}
-
-	// Call AI API
-	response, err := aiClient.CallWithMessages(systemPrompt, userPrompt)
-	if err != nil {
-		return "", fmt.Errorf("AI API call failed: %w", err)
-	}
-
-	return response, nil
+	aiClient.SetTimeout(90 * time.Second)
+	return aiClient, model, nil
 }
 
 func (s *Server) resolveStrategyDataWalletKey(userID, selectedModelID string) (string, error) {

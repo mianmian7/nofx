@@ -1,21 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { demoSeedPrice, demoTick } from '../../lib/demo/demoUniverse'
-
-const rnd = (a: number, b: number) => a + Math.random() * (b - a)
+import { useLanguage } from '../../contexts/LanguageContext'
+import { t } from '../../i18n/translations'
 
 /**
  * OrderBook renders a live L2 depth ladder for a single instrument, streamed
- * directly from Hyperliquid's public WebSocket (`l2Book`). The app trades a
- * Hyperliquid builder-deployed perp DEX named "xyz" for synthetic / equity
- * markets (xyz:SP500, xyz:SKHX, …) and the main dex for crypto majors
- * (BTC, ETH, …). We resolve which one a symbol belongs to from the xyz dex's
- * `allMids` coin set, then subscribe to the matching `l2Book` feed.
- *
- * Real data only — no synthetic depth.
+ * directly from Binance USDⓈ-M Futures' public partial-depth stream.
  */
 
-const HL_INFO = 'https://api.hyperliquid.xyz/info'
-const HL_WS = 'wss://api.hyperliquid.xyz/ws'
+const BINANCE_WS = 'wss://fstream.binance.com/ws'
 const DEPTH = 11 // levels per side
 
 interface Level {
@@ -28,18 +20,9 @@ interface BookState {
   asks: Level[]
 }
 
-function baseSymbol(raw: string): string {
-  return raw
-    .toUpperCase()
-    .replace(/^XYZ:/, '')
-    .replace(/(USDT|USDC|USD)$/, '')
-}
-
-// Resolve a base symbol to the Hyperliquid coin id. Members of the xyz dex get
-// the "xyz:" prefix; everything else is treated as a main-dex coin.
-function resolveCoin(base: string, xyzSet: Set<string>): string {
-  if (!base) return ''
-  return xyzSet.has(base) ? `xyz:${base}` : base
+function binanceSymbol(raw: string): string {
+  const normalized = raw.toUpperCase().trim()
+  return /^[A-Z0-9]+USDT$/.test(normalized) ? normalized : 'BTCUSDT'
 }
 
 function fmtPx(px: number): string {
@@ -58,83 +41,19 @@ interface OrderBookProps {
   symbol: string
   /** optional entry price to mark the user's position level on the ladder */
   markPrice?: number
-  /** showcase mode — drive a fast synthetic book instead of the live WS feed */
-  demo?: boolean
 }
 
-export function OrderBook({ symbol, markPrice, demo = false }: OrderBookProps) {
-  const base = useMemo(() => baseSymbol(symbol || ''), [symbol])
-  const [xyzSet, setXyzSet] = useState<Set<string>>(new Set())
+export function OrderBook({ symbol, markPrice }: OrderBookProps) {
+  const { language } = useLanguage()
+  const tt = (key: string) => t(`terminalDashboard.${key}`, language)
+  const coin = useMemo(() => binanceSymbol(symbol || ''), [symbol])
   const [book, setBook] = useState<BookState | null>(null)
   const [status, setStatus] = useState<'connecting' | 'live' | 'down'>('connecting')
-
-  // one-time: fetch the xyz dex coin universe so we can resolve symbols
-  useEffect(() => {
-    let alive = true
-    fetch(HL_INFO, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'allMids', dex: 'xyz' }),
-    })
-      .then((r) => r.json())
-      .then((mids: Record<string, string>) => {
-        if (!alive) return
-        const set = new Set<string>()
-        for (const k of Object.keys(mids || {})) set.add(k.replace(/^xyz:/, '').toUpperCase())
-        setXyzSet(set)
-      })
-      .catch(() => {
-        /* CORS / offline — fall back to main-dex resolution (empty set) */
-      })
-    return () => {
-      alive = false
-    }
-  }, [])
-
-  const coin = useMemo(() => resolveCoin(base, xyzSet), [base, xyzSet])
-
-  // synthetic showcase feed — keeps price levels stable for stretches (so each
-  // row flashes independently as its size changes) with a gentle upward drift.
-  useEffect(() => {
-    if (!demo || !base) return
-    const seed = demoSeedPrice(base)
-    const tickSz = demoTick(seed)
-    const dp = tickSz < 1 ? 3 : 1
-    let mid = seed
-    let frame = 0
-    const mkSizes = () =>
-      Array.from({ length: DEPTH }, (_, i) => +(rnd(0.4, 6) * (1 + i * 0.12)).toFixed(3))
-    const askSz = mkSizes()
-    const bidSz = mkSizes()
-    const emit = () => {
-      const asks: Level[] = askSz.map((sz, i) => ({ px: +(mid + tickSz * (i + 1)).toFixed(dp), sz }))
-      const bids: Level[] = bidSz.map((sz, i) => ({ px: +(mid - tickSz * (i + 1)).toFixed(dp), sz }))
-      setBook({ coin: `xyz:${base}`, bids, asks })
-    }
-    setStatus('live')
-    emit()
-    const id = setInterval(() => {
-      frame++
-      const n = 2 + Math.floor(Math.random() * 3)
-      for (let k = 0; k < n; k++) {
-        const arr = Math.random() < 0.5 ? askSz : bidSz
-        const i = Math.floor(Math.random() * DEPTH)
-        arr[i] = +Math.max(0.05, arr[i] * rnd(0.6, 1.5)).toFixed(3)
-      }
-      // gentle mean-reverting wiggle around the seed (NO unbounded drift, so the
-      // order book stays aligned with the cost/liq map + candle over a long run)
-      if (frame % 5 === 0) {
-        mid = +(mid + (seed - mid) * 0.3 + (Math.random() - 0.5) * tickSz * 2).toFixed(dp)
-      }
-      emit()
-    }, 130)
-    return () => clearInterval(id)
-  }, [demo, base])
 
   // live L2 stream
   const pending = useRef<BookState | null>(null)
   useEffect(() => {
-    if (!coin || demo) return
+    if (!coin) return
     let ws: WebSocket | null = null
     let raf: number | null = null
     let retry: ReturnType<typeof setTimeout> | null = null
@@ -142,19 +61,14 @@ export function OrderBook({ symbol, markPrice, demo = false }: OrderBookProps) {
 
     const connect = () => {
       setStatus('connecting')
-      ws = new WebSocket(HL_WS)
-      ws.onopen = () => {
-        ws?.send(JSON.stringify({ method: 'subscribe', subscription: { type: 'l2Book', coin } }))
-      }
+      ws = new WebSocket(`${BINANCE_WS}/${coin.toLowerCase()}@depth20@100ms`)
       ws.onmessage = (ev) => {
         try {
-          const msg = JSON.parse(ev.data)
-          if (msg.channel !== 'l2Book' || !msg.data) return
-          const lv = msg.data.levels
-          if (!Array.isArray(lv) || lv.length < 2) return
-          const toLevels = (arr: { px: string; sz: string }[]): Level[] =>
-            arr.slice(0, DEPTH).map((l) => ({ px: parseFloat(l.px), sz: parseFloat(l.sz) }))
-          pending.current = { coin: msg.data.coin, bids: toLevels(lv[0]), asks: toLevels(lv[1]) }
+          const msg = JSON.parse(ev.data) as { bids?: [string, string][]; asks?: [string, string][] }
+          if (!Array.isArray(msg.bids) || !Array.isArray(msg.asks)) return
+          const toLevels = (levels: [string, string][]): Level[] =>
+            levels.slice(0, DEPTH).map(([px, sz]) => ({ px: Number(px), sz: Number(sz) }))
+          pending.current = { coin, bids: toLevels(msg.bids), asks: toLevels(msg.asks) }
           setStatus('live')
         } catch {
           /* ignore malformed frame */
@@ -184,11 +98,6 @@ export function OrderBook({ symbol, markPrice, demo = false }: OrderBookProps) {
       closed = true
       if (raf) cancelAnimationFrame(raf)
       if (retry) clearTimeout(retry)
-      try {
-        ws?.send(JSON.stringify({ method: 'unsubscribe', subscription: { type: 'l2Book', coin } }))
-      } catch {
-        /* socket already gone */
-      }
       ws?.close()
     }
   }, [coin])
@@ -232,25 +141,25 @@ export function OrderBook({ symbol, markPrice, demo = false }: OrderBookProps) {
   return (
     <div style={{ fontFamily: 'var(--tm-mono)' }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
-        <span className="tm-px" style={{ fontSize: 11 }}>Order book</span>
-        <span className="tm-sc">L2 · {coin || base || '—'}</span>
+        <span className="tm-px" style={{ fontSize: 11 }}>{tt('orderBook')}</span>
+        <span className="tm-sc">Binance USDⓈ-M · {coin}</span>
         <span
           className="tm-sc"
           style={{ marginLeft: 'auto', color: status === 'live' ? 'var(--tm-up)' : 'var(--tm-muted)' }}
         >
-          {status === 'live' ? '● live' : status === 'connecting' ? '○ sync' : '○ down'}
+          {status === 'live' ? `● ${tt('live')}` : status === 'connecting' ? `○ ${tt('syncing')}` : `○ ${tt('down')}`}
         </span>
       </div>
 
       {!view ? (
-        <div className="tm-sc" style={{ padding: '16px 0' }}>Connecting to Hyperliquid…</div>
+        <div className="tm-sc" style={{ padding: '16px 0' }}>{language === 'zh' ? '正在连接 Binance 行情…' : 'Connecting to Binance market data…'}</div>
       ) : (
         <div style={{ fontSize: 11 }}>
           {/* column header */}
           <div className="tm-sc" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 4, marginBottom: 2 }}>
-            <span>price</span>
-            <span style={{ textAlign: 'right' }}>size</span>
-            <span style={{ textAlign: 'right' }}>cum $</span>
+            <span>{tt('price')}</span>
+            <span style={{ textAlign: 'right' }}>{tt('size')}</span>
+            <span style={{ textAlign: 'right' }}>{tt('cumulative')}</span>
           </div>
 
           {/* asks (red), best ask nearest the mid — keyed by PRICE so each level
@@ -273,7 +182,7 @@ export function OrderBook({ symbol, markPrice, demo = false }: OrderBookProps) {
             }}
           >
             <span className="tm-px" style={{ fontSize: 12, color: 'var(--tm-red)' }}>{fmtPx(view.mid)}</span>
-            <span className="tm-sc" style={{ marginLeft: 'auto' }}>spread {fmtPx(view.spread)} · {view.spreadBps.toFixed(1)}bps</span>
+            <span className="tm-sc" style={{ marginLeft: 'auto' }}>{tt('spread')} {fmtPx(view.spread)} · {view.spreadBps.toFixed(1)}bps</span>
           </div>
 
           {/* bids (green) — keyed by price, same independent-flash behavior */}

@@ -215,9 +215,10 @@ function vergexDetailQuery(params: VergexDetailRequest) {
 }
 
 export const dataApi = {
-  async getSymbols(exchange = 'hyperliquid-xyz'): Promise<SymbolListResponse> {
-    const result = await httpClient.get<SymbolListResponse>(
-      `${API_BASE}/symbols?exchange=${encodeURIComponent(exchange)}`
+  async getSymbols(exchange = 'binance'): Promise<SymbolListResponse> {
+    const result = await httpClient.request<SymbolListResponse>(
+      `${API_BASE}/symbols?exchange=${encodeURIComponent(exchange)}`,
+      { timeout: 20000, silent: true }
     )
     if (!result.success) throw new Error('Failed to fetch symbol list')
     return result.data || { exchange, symbols: [], count: 0 }
@@ -342,7 +343,7 @@ export const dataApi = {
   async getKlines(
     symbol: string,
     interval = '5m',
-    exchange = 'hyperliquid',
+    exchange = 'binance',
     limit = 60,
     silent?: boolean
   ): Promise<Kline[]> {
@@ -384,7 +385,11 @@ export const dataApi = {
     limit = 25,
     silent?: boolean
   ): Promise<SignalRankingResponse> {
-    const params = new URLSearchParams({ chain, marketType, limit: String(limit) })
+    const params = new URLSearchParams({
+      chain,
+      marketType,
+      limit: String(limit),
+    })
     if (aiModelId) params.set('ai_model_id', aiModelId)
     const result = await httpClient.request<SignalRankingResponse>(
       `${API_BASE}/vergex/signal-ranking?${params}`,

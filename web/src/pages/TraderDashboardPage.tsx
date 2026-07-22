@@ -442,7 +442,7 @@ export function TraderDashboardPage({
                     </div>
                     <div className="flex items-center gap-6 text-sm flex-wrap text-nofx-text-muted font-mono pl-2">
                         <span className="flex items-center gap-2">
-                            <span className="opacity-60">AI Model:</span>
+                            <span className="opacity-60">{t('traderDashboard.aiModel', language)}:</span>
                             <span
                                 className="font-bold px-2 py-0.5 rounded text-xs tracking-wide"
                                 style={{
@@ -459,7 +459,7 @@ export function TraderDashboardPage({
                         </span>
                         <span className="w-px h-3 bg-nofx-text/10 hidden md:block" />
                         <span className="flex items-center gap-2">
-                            <span className="opacity-60">Exchange:</span>
+                            <span className="opacity-60">{t('traderDashboard.exchange', language)}:</span>
                             <span className="text-nofx-text-main font-semibold">
                                 {getExchangeDisplayNameFromList(
                                     selectedTrader.exchange_id,
@@ -469,17 +469,17 @@ export function TraderDashboardPage({
                         </span>
                         <span className="w-px h-3 bg-nofx-text/10 hidden md:block" />
                         <span className="flex items-center gap-2">
-                            <span className="opacity-60">Strategy:</span>
+                            <span className="opacity-60">{t('traderDashboard.strategy', language)}:</span>
                             <span className="text-nofx-gold font-semibold tracking-wide">
-                                {selectedTrader.strategy_name || 'No Strategy'}
+                                {selectedTrader.strategy_name || t('traderDashboard.noStrategy', language)}
                             </span>
                         </span>
                         {status && (
                             <div className="hidden md:contents">
                                 <span className="w-px h-3 bg-nofx-text/10" />
-                                <span>Cycles: <span className="text-nofx-text-main">{status.call_count}</span></span>
+                                <span>{t('traderDashboard.cycles', language)}: <span className="text-nofx-text-main">{status.call_count}</span></span>
                                 <span className="w-px h-3 bg-nofx-text/10" />
-                                <span>Runtime: <span className="text-nofx-text-main">{status.runtime_minutes} min</span></span>
+                                <span>{t('traderDashboard.runtimeMinutes', language, { minutes: status.runtime_minutes })}</span>
                             </div>
                         )}
                     </div>
@@ -536,7 +536,7 @@ export function TraderDashboardPage({
                     <StatCard
                         title={t('positions', language)}
                         value={accountFailed && !account ? '--' : `${account?.position_count ?? '--'}`}
-                        unit="ACTIVE"
+                        unit={t('traderDashboard.active', language)}
                         subtitle={accountFailed && !account ? `${t('margin', language)}: --` : `${t('margin', language)}: ${account?.margin_used_pct?.toFixed(1) ?? '--'}%`}
                         icon="📊"
                         loading={!account && !accountFailed}

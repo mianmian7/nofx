@@ -99,7 +99,7 @@ type UpdateExchangeConfigRequest struct {
 
 // CreateExchangeRequest request structure for creating a new exchange account
 type CreateExchangeRequest struct {
-	ExchangeType               string `json:"exchange_type" binding:"required"` // "binance", "bybit", "okx", "hyperliquid", "aster", "lighter"
+	ExchangeType               string `json:"exchange_type" binding:"required"` // Hyperliquid disabled; other existing venues remain supported
 	AccountName                string `json:"account_name"`                     // User-defined account name
 	Enabled                    bool   `json:"enabled"`
 	APIKey                     string `json:"api_key"`
@@ -228,6 +228,14 @@ func (s *Server) handleUpdateExchangeConfigs(c *gin.Context) {
 		existing, err := s.store.Exchange().GetByID(userID, exchangeID)
 		if err != nil {
 			SafeInternalError(c, fmt.Sprintf("Load exchange %s", exchangeID), err)
+			return
+		}
+		if strings.EqualFold(existing.ExchangeType, "hyperliquid") {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":         "Hyperliquid exchange accounts are disabled; configure Binance Futures instead",
+				"error_key":     "exchange.hyperliquid_disabled",
+				"exchange_type": existing.ExchangeType,
+			})
 			return
 		}
 		effectiveAPIKey := strings.TrimSpace(exchangeData.APIKey)
@@ -379,9 +387,10 @@ func (s *Server) handleCreateExchange(c *gin.Context) {
 	}
 
 	// Validate exchange type
+	req.ExchangeType = strings.ToLower(strings.TrimSpace(req.ExchangeType))
 	validTypes := map[string]bool{
 		"binance": true, "bybit": true, "okx": true, "bitget": true,
-		"hyperliquid": true, "aster": true, "lighter": true, "gate": true, "kucoin": true, "indodax": true,
+		"aster": true, "lighter": true, "gate": true, "kucoin": true, "indodax": true,
 	}
 	if !validTypes[req.ExchangeType] {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid exchange type: %s", req.ExchangeType)})
@@ -482,7 +491,6 @@ func (s *Server) handleGetSupportedExchanges(c *gin.Context) {
 		{ExchangeType: "okx", Name: "OKX Futures", Type: "cex"},
 		{ExchangeType: "gate", Name: "Gate.io Futures", Type: "cex"},
 		{ExchangeType: "kucoin", Name: "KuCoin Futures", Type: "cex"},
-		{ExchangeType: "hyperliquid", Name: "Hyperliquid", Type: "dex"},
 		{ExchangeType: "aster", Name: "Aster DEX", Type: "dex"},
 		{ExchangeType: "lighter", Name: "LIGHTER DEX", Type: "dex"},
 		{ExchangeType: "alpaca", Name: "Alpaca (US Stocks)", Type: "stock"},

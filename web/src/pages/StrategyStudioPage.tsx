@@ -26,7 +26,9 @@ import type {
   RiskControlConfig,
   Strategy,
   StrategyConfig,
+  AIModel,
 } from '../types'
+import type { BacktestJob } from '../lib/api/strategies'
 import { launchAutopilot } from '../lib/launch/launchAutopilot'
 import type {
   MarketSymbol,
@@ -51,13 +53,13 @@ type Scope =
 type ListMode = 'claw402' | 'pool'
 
 const scopeOptions: Array<{ value: Scope; zh: string; en: string }> = [
-  { value: 'all', zh: 'All Claw402', en: 'All Claw402' },
-  { value: 'stock', zh: 'US Stocks', en: 'US Stocks' },
-  { value: 'crypto', zh: 'Crypto', en: 'Crypto' },
-  { value: 'commodity', zh: 'Commodities', en: 'Commodities' },
-  { value: 'index', zh: 'Indices', en: 'Indices' },
-  { value: 'forex', zh: 'FX', en: 'FX' },
-  { value: 'pre_ipo', zh: 'Pre-IPO', en: 'Pre-IPO' },
+  { value: 'all', zh: '全部', en: 'All' },
+  { value: 'stock', zh: '美股', en: 'US Stocks' },
+  { value: 'crypto', zh: '加密货币', en: 'Crypto' },
+  { value: 'commodity', zh: '商品', en: 'Commodities' },
+  { value: 'index', zh: '指数', en: 'Indices' },
+  { value: 'forex', zh: '外汇', en: 'FX' },
+  { value: 'pre_ipo', zh: '上市前', en: 'Pre-IPO' },
 ]
 
 const categoryPriority: Record<string, number> = {
@@ -71,10 +73,11 @@ const categoryPriority: Record<string, number> = {
 
 const timeframeOptions = ['5m', '15m', '30m', '1h', '4h', '1d']
 const barCountOptions = [20, 30, 50]
-const topNOptions = [5, 6, 7, 8, 9, 10]
 const detailBandOptions = ['5', '10', '15', '20']
 const claw402BoardLimit = 30
 const confidenceOptions = [65, 75, 82]
+const maxWatchlistAssets = 50
+const maxWatchlistCandidateAssets = 20
 
 const text = (language: string, zh: string, en: string) =>
   language === 'zh' ? zh : en
@@ -99,57 +102,57 @@ const profileOptions: Array<{
 }> = [
   {
     value: 'careful',
-    zh: 'Careful',
+    zh: '谨慎',
     en: 'Careful',
-    zhNote: 'Fewer trades, only aligned signals',
+    zhNote: '减少交易，只处理多项条件一致的机会',
     enNote: 'Fewer trades, only aligned signals',
     maxPositions: 1,
-    leverage: 10,
+    leverage: 2,
     confidence: 82,
     topN: 5,
     timeframe: '1h',
     bars: 30,
-    margin: 1.0,
+    margin: 0.3,
     promptZh:
-      'Careful mode: open only when the Claw402 board direction, Signal Lab, cost/liquidation heatmap and raw candles agree; wait on conflicts.',
+      '谨慎模式：只有趋势、动量、成交量和原始 K 线相互支持时才开仓；出现冲突时等待。',
     promptEn:
-      'Careful mode: open only when the Claw402 board direction, Signal Lab, cost/liquidation heatmap and raw candles agree; wait on conflicts.',
+      'Careful mode: open only when trend, momentum, volume and raw candles agree; wait on conflicts.',
   },
   {
     value: 'balanced',
-    zh: 'Balanced',
+    zh: '平衡',
     en: 'Balanced',
-    zhNote: 'Recommended balance of opportunity and risk',
+    zhNote: '在机会数量和风险之间保持平衡',
     enNote: 'Recommended balance of opportunity and risk',
     maxPositions: 2,
-    leverage: 10,
+    leverage: 3,
     confidence: 75,
     topN: 5,
     timeframe: '15m',
     bars: 30,
-    margin: 1.0,
+    margin: 0.5,
     promptZh:
-      'Balanced mode: prioritize top Claw402-ranked symbols when Signal Lab agrees with raw candles; use the liquidation heatmap for stop and target zones.',
+      '平衡模式：优先分析流动性较高的候选交易对，结合多周期趋势和原始 K 线设置止损与目标。',
     promptEn:
-      'Balanced mode: prioritize top Claw402-ranked symbols when Signal Lab agrees with raw candles; use the liquidation heatmap for stop and target zones.',
+      'Balanced mode: prioritize liquid candidates and combine multi-timeframe trend with raw candles for stops and targets.',
   },
   {
     value: 'active',
-    zh: 'Active',
+    zh: '积极',
     en: 'Active',
-    zhNote: 'Faster trend capture with more positions',
+    zhNote: '更快捕捉趋势，但仍限制仓位与风险',
     enNote: 'Faster trend capture with more positions',
     maxPositions: 3,
-    leverage: 10,
+    leverage: 5,
     confidence: 68,
     topN: 8,
     timeframe: '5m',
     bars: 50,
-    margin: 1.0,
+    margin: 0.7,
     promptZh:
-      'Active mode: follow strong Claw402 signals faster, but require Signal Lab confirmation, avoid crowded liquidation zones, and always set explicit stops.',
+      '积极模式：更快响应强趋势和放量行情，但必须设置明确止损，并避免在数据冲突时追单。',
     promptEn:
-      'Active mode: follow strong Claw402 signals faster, but require Signal Lab confirmation, avoid crowded liquidation zones, and always set explicit stops.',
+      'Active mode: react faster to strong trend and volume, but always set an explicit stop and avoid chasing conflicting data.',
   },
 ]
 
@@ -170,6 +173,7 @@ function getAIConfig(config: StrategyConfig): AIStrategyConfig | null {
 function defaultCoinSource(
   source?: Partial<CoinSourceConfig>
 ): CoinSourceConfig {
+  const sourceType = source?.source_type || 'binance_dynamic'
   const staticCoins = source?.static_coins || []
   const minVergexLimit =
     staticCoins.length > 0 ? Math.min(staticCoins.length, 10) : 10
@@ -178,8 +182,14 @@ function defaultCoinSource(
     10
   )
   return {
-    source_type: 'vergex_signal',
+    source_type: sourceType,
+    binance_dynamic_limit: Math.min(
+      Math.max(source?.binance_dynamic_limit || 10, 1),
+      10
+    ),
     static_coins: staticCoins,
+    watchlist: source?.watchlist || [],
+    use_watchlist: source?.use_watchlist || false,
     excluded_coins: [],
     use_ai500: false,
     ai500_limit: 0,
@@ -193,10 +203,19 @@ function defaultCoinSource(
     hyper_rank_category: source?.hyper_rank_category || 'all',
     hyper_rank_direction: 'gainers',
     hyper_rank_limit: 0,
-    vergex_limit: vergexLimit,
-    vergex_market_type: source?.vergex_market_type || 'all',
-    vergex_chain: source?.vergex_chain || 'hyperliquid',
-    vergex_liq_band: source?.vergex_liq_band || '',
+    vergex_limit: sourceType === 'vergex_signal' ? vergexLimit : undefined,
+    vergex_market_type:
+      sourceType === 'vergex_signal'
+        ? source?.vergex_market_type || 'all'
+        : undefined,
+    vergex_chain:
+      sourceType === 'vergex_signal'
+        ? source?.vergex_chain || 'hyperliquid'
+        : undefined,
+    vergex_liq_band:
+      sourceType === 'vergex_signal'
+        ? source?.vergex_liq_band || ''
+        : undefined,
   }
 }
 
@@ -238,19 +257,18 @@ function defaultIndicators(
 }
 
 function defaultRisk(risk?: Partial<RiskControlConfig>): RiskControlConfig {
-  const leverage =
-    risk?.altcoin_max_leverage || risk?.btc_eth_max_leverage || 10
+  const leverage = risk?.altcoin_max_leverage || risk?.btc_eth_max_leverage || 3
   return {
     max_positions: risk?.max_positions || 2,
     btc_eth_max_leverage: leverage,
     altcoin_max_leverage: leverage,
     btc_eth_max_position_value_ratio:
-      risk?.btc_eth_max_position_value_ratio || 10,
+      risk?.btc_eth_max_position_value_ratio || 1,
     altcoin_max_position_value_ratio:
-      risk?.altcoin_max_position_value_ratio || 10,
-    max_margin_usage: risk?.max_margin_usage || 1.0,
+      risk?.altcoin_max_position_value_ratio || 0.5,
+    max_margin_usage: risk?.max_margin_usage || 0.5,
     min_position_size: risk?.min_position_size || 12,
-    min_risk_reward_ratio: risk?.min_risk_reward_ratio || 3,
+    min_risk_reward_ratio: risk?.min_risk_reward_ratio || 2,
     min_confidence: risk?.min_confidence || 78,
   }
 }
@@ -280,6 +298,41 @@ function normalizeSymbol(symbol: string) {
     .toUpperCase()
     .replace(/^XYZ:/, '')
     .replace(/-USDC$/, '')
+}
+
+function normalizeWatchlistToken(symbol: string) {
+  return symbol
+    .trim()
+    .toUpperCase()
+    .replace(/^XYZ:/, '')
+    .replace(/-USDC$/, '')
+    .replace(/USDT$/, '')
+}
+
+function watchlistCandidateSymbols(symbols: string[]) {
+  return symbols
+    .map(normalizeWatchlistToken)
+    .filter(Boolean)
+    .slice(0, maxWatchlistCandidateAssets)
+    .map((symbol) => `${symbol}USDT`)
+}
+
+function resolveWatchlistAsset(symbol: string, pool: MarketSymbol[]) {
+  const requested = normalizeWatchlistToken(symbol)
+  const canonical = `${requested}USDT`
+  const asset = pool.find(
+    (item) => item.symbol.toUpperCase() === canonical.toUpperCase()
+  )
+  return {
+    requested,
+    canonical,
+    asset,
+  }
+}
+
+function formatWatchlistPrice(value?: number) {
+  if (typeof value !== 'number' || Number.isNaN(value)) return '—'
+  return `$${value.toFixed(value >= 1 ? 2 : 4)}`
 }
 
 function signalMarketType(item: VergexSignalItem) {
@@ -1001,6 +1054,7 @@ export function StrategyStudioPage() {
     null
   )
   const [symbols, setSymbols] = useState<MarketSymbol[]>([])
+  const [watchlistSymbols, setWatchlistSymbols] = useState<MarketSymbol[]>([])
   const [signals, setSignals] = useState<VergexSignalItem[]>([])
   const [detailSignal, setDetailSignal] = useState<VergexSignalItem | null>(
     null
@@ -1018,15 +1072,38 @@ export function StrategyStudioPage() {
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState('')
   const [detailLiqBand, setDetailLiqBand] = useState('15')
-  const [listMode, setListMode] = useState<ListMode>('claw402')
+  const [listMode, setListMode] = useState<ListMode>('pool')
+  const [scope, setScopeValue] = useState<Scope>('all')
+  const [staticInput, setStaticInput] = useState('')
+  const [watchlistInput, setWatchlistInput] = useState('')
+  const [watchlistLoading, setWatchlistLoading] = useState(false)
+  const [watchlistError, setWatchlistError] = useState('')
   const [hasChanges, setHasChanges] = useState(false)
+  const [models, setModels] = useState<AIModel[]>([])
+  const [backtestModelID, setBacktestModelID] = useState('')
+  const [backtestMode, setBacktestMode] = useState<'trend_v1' | 'ai_replay'>(
+    'trend_v1'
+  )
+  const [backtestSymbol, setBacktestSymbol] = useState('BTCUSDT')
+  const [backtestStart, setBacktestStart] = useState(() =>
+    new Date(Date.now() - 2 * 365 * 24 * 60 * 60 * 1000)
+      .toISOString()
+      .slice(0, 10)
+  )
+  const [backtestEnd, setBacktestEnd] = useState(() =>
+    new Date().toISOString().slice(0, 10)
+  )
+  const [backtestMaxCalls, setBacktestMaxCalls] = useState(12)
+  const [backtestJob, setBacktestJob] = useState<BacktestJob | null>(null)
+  const [backtestStarting, setBacktestStarting] = useState(false)
 
   const aiConfig = editingConfig?.ai_config || null
   const coinSource = aiConfig?.coin_source
   const indicators = aiConfig?.indicators
   const risk = aiConfig?.risk_control
   const selectedSymbols = coinSource?.static_coins || []
-  const scope = 'all' as Scope
+  const watchlist = coinSource?.watchlist || []
+  const watchlistCandidateMode = coinSource?.use_watchlist === true
   const activeProfile = profileFromRisk(risk)
 
   const signalMap = useMemo(() => {
@@ -1038,11 +1115,19 @@ export function StrategyStudioPage() {
   }, [signals])
 
   const visibleSymbols = useMemo(() => {
-    const tradefi = symbols.filter((item) => item.category !== 'crypto')
+    const candidateSymbols = watchlistCandidateMode
+      ? watchlistSymbols.filter((item) =>
+          watchlist.some(
+            (symbol) =>
+              normalizeWatchlistToken(symbol) ===
+              normalizeWatchlistToken(item.symbol)
+          )
+        )
+      : symbols
     const scoped =
       scope === 'all'
-        ? tradefi
-        : tradefi.filter((item) => item.category === scope)
+        ? candidateSymbols
+        : candidateSymbols.filter((item) => item.category === scope)
     return [...scoped].sort((a, b) => {
       const aSignal = signalMap.get(normalizeSymbol(a.symbol))
       const bSignal = signalMap.get(normalizeSymbol(b.symbol))
@@ -1051,7 +1136,14 @@ export function StrategyStudioPage() {
       if (aRank !== bRank) return aRank - bRank
       return (b.volume_24h || 0) - (a.volume_24h || 0)
     })
-  }, [scope, signalMap, symbols])
+  }, [
+    scope,
+    signalMap,
+    symbols,
+    watchlist,
+    watchlistCandidateMode,
+    watchlistSymbols,
+  ])
 
   const visibleSignalItems = useMemo(() => {
     const scoped =
@@ -1098,7 +1190,7 @@ export function StrategyStudioPage() {
     setSymbolsLoading(true)
     setSymbolsError('')
     try {
-      const result = await api.getSymbols('hyperliquid-xyz')
+      const result = await api.getSymbols('binance')
       setSymbols(result.symbols || [])
     } catch (err) {
       setSymbolsError(
@@ -1106,6 +1198,21 @@ export function StrategyStudioPage() {
       )
     } finally {
       setSymbolsLoading(false)
+    }
+  }, [])
+
+  const loadWatchlistSymbols = useCallback(async () => {
+    setWatchlistLoading(true)
+    setWatchlistError('')
+    try {
+      const result = await api.getSymbols('binance-tradifi')
+      setWatchlistSymbols(result.symbols || [])
+    } catch (err) {
+      setWatchlistError(
+        err instanceof Error ? err.message : 'Watchlist quotes unavailable'
+      )
+    } finally {
+      setWatchlistLoading(false)
     }
   }, [])
 
@@ -1123,6 +1230,25 @@ export function StrategyStudioPage() {
       )
     } finally {
       setSignalsLoading(false)
+    }
+  }, [token])
+
+  const loadModels = useCallback(async () => {
+    if (!token) return
+    try {
+      const configured = (await api.getModelConfigs()).filter(
+        (model) => model.enabled && model.has_api_key !== false
+      )
+      setModels(configured)
+      setBacktestModelID(
+        (current) =>
+          current ||
+          configured.find((model) => model.provider !== 'claw402')?.id ||
+          configured[0]?.id ||
+          ''
+      )
+    } catch {
+      setModels([])
     }
   }, [token])
 
@@ -1200,8 +1326,60 @@ export function StrategyStudioPage() {
   useEffect(() => {
     void loadStrategies()
     void loadSymbols()
-    void loadSignals()
-  }, [loadStrategies, loadSymbols, loadSignals])
+    void loadWatchlistSymbols()
+    void loadModels()
+  }, [loadModels, loadStrategies, loadSymbols, loadWatchlistSymbols])
+
+  useEffect(() => {
+    if (
+      !backtestJob ||
+      backtestJob.status === 'completed' ||
+      backtestJob.status === 'failed'
+    ) {
+      return
+    }
+    const timer = window.setTimeout(async () => {
+      try {
+        setBacktestJob(await api.getStrategyBacktest(backtestJob.id))
+      } catch (err) {
+        notify.error(
+          err instanceof Error ? err.message : 'Failed to refresh replay'
+        )
+      }
+    }, 2000)
+    return () => window.clearTimeout(timer)
+  }, [backtestJob])
+
+  const startBacktest = async () => {
+    if (!selectedStrategy) return
+    if (backtestMode === 'ai_replay' && !backtestModelID) return
+    setBacktestStarting(true)
+    try {
+      const job = await api.startStrategyBacktest(selectedStrategy.id, {
+        mode: backtestMode,
+        ai_model_id: backtestMode === 'ai_replay' ? backtestModelID : undefined,
+        symbol: normalizeSymbol(backtestSymbol),
+        timeframe:
+          backtestMode === 'trend_v1'
+            ? '4h'
+            : indicators?.klines.primary_timeframe || '15m',
+        start_time: new Date(`${backtestStart}T00:00:00Z`).toISOString(),
+        end_time: new Date(`${backtestEnd}T23:59:59Z`).toISOString(),
+        initial_balance: 1000,
+        fee_bps: 5,
+        slippage_bps: 2,
+        max_ai_calls: backtestMaxCalls,
+        confirm_ai_calls: backtestMode === 'ai_replay',
+      })
+      setBacktestJob(job)
+    } catch (err) {
+      notify.error(
+        err instanceof Error ? err.message : 'Failed to start replay'
+      )
+    } finally {
+      setBacktestStarting(false)
+    }
+  }
 
   const patchAI = (patch: Partial<AIStrategyConfig>) => {
     setEditingConfig((prev) => {
@@ -1260,7 +1438,10 @@ export function StrategyStudioPage() {
         ...defaultConfig.ai_config!,
         coin_source: defaultCoinSource({
           ...defaultConfig.ai_config?.coin_source,
+          source_type: 'binance_dynamic',
           static_coins: [],
+          use_watchlist: false,
+          binance_dynamic_limit: 10,
           hyper_rank_category: 'all',
           vergex_limit: 10,
           vergex_market_type: 'all',
@@ -1277,28 +1458,28 @@ export function StrategyStudioPage() {
         risk_control: defaultRisk({
           ...defaultConfig.ai_config?.risk_control,
           max_positions: 2,
-          btc_eth_max_leverage: 10,
-          altcoin_max_leverage: 10,
-          btc_eth_max_position_value_ratio: 10,
-          altcoin_max_position_value_ratio: 10,
-          max_margin_usage: 1.0,
+          btc_eth_max_leverage: 3,
+          altcoin_max_leverage: 3,
+          btc_eth_max_position_value_ratio: 1,
+          altcoin_max_position_value_ratio: 0.5,
+          max_margin_usage: 0.5,
           min_confidence: 78,
-          min_risk_reward_ratio: 3,
+          min_risk_reward_ratio: 2,
         }),
         custom_prompt:
-          'NOFX Autopilot reads the Claw402.ai board each cycle, fetches Signal Lab and cost/liquidation structure for every candidate, confirms with raw OHLCV candles, then trades only when the full-size setup is justified.',
+          'Rank the local Binance perpetual candidates by liquid market activity, confirm each setup with raw OHLCV candles, and trade only when the configured risk/reward and confidence requirements are met.',
         prompt_sections: undefined,
       }
       const created = await api.createStrategy({
         name: text(
           language,
-          'NOFX Claw402 Auto Strategy',
-          'NOFX Claw402 Auto Strategy'
+          'NOFX 本地动态策略',
+          'NOFX Local Dynamic Strategy'
         ),
         description: text(
           language,
-          'The single built-in strategy: read the Claw402.ai board, fetch per-symbol details, then trade with raw candles.',
-          'The single built-in strategy: read the Claw402.ai board, fetch per-symbol details, then trade with raw candles.'
+          '使用 Binance 公共永续合约行情动态筛选候选币，再由你配置的 AI 模型结合原始 K 线做决策。',
+          'Dynamically rank candidates from public Binance perpetual-market data, then let your configured AI model decide from raw candles.'
         ),
         config: defaultConfig,
       })
@@ -1364,50 +1545,21 @@ export function StrategyStudioPage() {
     }
   }
 
-  const buildUnifiedClaw402Config = (): StrategyConfig => {
+  const buildAutopilotConfig = (): StrategyConfig => {
     const base = simplifyConfig(editingConfig)
     base.language = language as 'zh' | 'en'
     base.ai_config = {
       ...base.ai_config!,
       coin_source: defaultCoinSource({
         ...base.ai_config?.coin_source,
-        static_coins: [],
-        hyper_rank_category: 'all',
-        vergex_limit: 10,
-        vergex_market_type: 'all',
-        vergex_chain: 'hyperliquid',
       }),
-      indicators: defaultIndicators({
-        ...base.ai_config?.indicators,
-        klines: {
-          primary_timeframe: '15m',
-          primary_count: 30,
-          enable_multi_timeframe: false,
-          selected_timeframes: ['15m'],
-        },
-      }),
-      risk_control: defaultRisk({
-        ...base.ai_config?.risk_control,
-        max_positions: 4,
-        btc_eth_max_leverage: 20,
-        altcoin_max_leverage: 20,
-        // 5× equity notional per position — 4 positions = 20x total account
-        // notional (full margin, ~5% liquidation cushion). Aggressive by
-        // operator choice; the 0.4 short-signal floor keeps the book balanced.
-        btc_eth_max_position_value_ratio: 5,
-        altcoin_max_position_value_ratio: 5,
-        max_margin_usage: 1.0,
-        min_confidence: 78,
-        min_risk_reward_ratio: 3,
-      }),
-      custom_prompt:
-        'Run NOFX Autopilot: use the Claw402.ai ranking as the candidate universe, verify each candidate with Signal Lab and cost/liquidation structure, confirm timing with raw OHLCV candles, and only open full-size 10x positions when the setup is strong enough.',
-      prompt_sections: undefined,
+      indicators: defaultIndicators(base.ai_config?.indicators),
+      risk_control: defaultRisk(base.ai_config?.risk_control),
     }
     return base
   }
 
-  const startUnifiedClaw402Agent = async () => {
+  const startAutopilot = async () => {
     if (!selectedStrategy) return
 
     setSaving(true)
@@ -1418,13 +1570,13 @@ export function StrategyStudioPage() {
       const outcome = await launchAutopilot({
         scanIntervalMinutes: 15,
         ensureStrategy: async () => {
-          const config = buildUnifiedClaw402Config()
+          const config = buildAutopilotConfig()
           setEditingConfig(config)
           await api.updateStrategy(selectedStrategy.id, {
             name: selectedStrategy.name,
             description:
               selectedStrategy.description ||
-              'Autonomous market selection powered by Claw402.ai Signal Lab, liquidation structure, and raw candles.',
+              'Local Binance dynamic candidates evaluated by the configured AI model.',
             config,
           })
           await api.activateStrategy(selectedStrategy.id)
@@ -1445,7 +1597,9 @@ export function StrategyStudioPage() {
       if (outcome.warning) {
         notify.warning(outcome.warning)
       }
-      notify.success('NOFX Autopilot started')
+      notify.success(
+        text(language, 'NOFX 自动交易已启动', 'NOFX Autopilot started')
+      )
       setHasChanges(false)
       await loadStrategies(selectedStrategy.id)
       navigate(buildDashboardPath(outcome.traderId))
@@ -1497,15 +1651,89 @@ export function StrategyStudioPage() {
     const nextLimit =
       next.length > 0
         ? Math.min(next.length, 10)
-        : Math.min(Math.max(coinSource?.vergex_limit || 5, 5), 10)
+        : Math.min(Math.max(coinSource?.binance_dynamic_limit || 10, 1), 10)
     patchCoinSource({
+      source_type: next.length > 0 ? 'static' : 'binance_dynamic',
       static_coins: next,
-      vergex_limit: nextLimit,
+      use_watchlist: false,
+      binance_dynamic_limit: nextLimit,
       vergex_market_type: 'all',
     })
   }
 
+  const addStaticSymbols = () => {
+    const additions = staticInput
+      .split(/[\s,，;；]+/)
+      .map(normalizeSymbol)
+      .filter(Boolean)
+    const next = Array.from(
+      new Set([...selectedSymbols.map(normalizeSymbol), ...additions])
+    ).slice(0, maxWatchlistCandidateAssets)
+    if (next.length === 0) return
+    patchCoinSource({
+      source_type: 'static',
+      static_coins: next,
+      use_watchlist: false,
+      binance_dynamic_limit: 10,
+    })
+    setListMode('pool')
+    setStaticInput('')
+  }
+
+  const addWatchlistSymbols = () => {
+    const additions = watchlistInput
+      .split(/[\s,，;；/]+/)
+      .map(normalizeWatchlistToken)
+      .filter(Boolean)
+    const next = Array.from(
+      new Set([...watchlist.map(normalizeWatchlistToken), ...additions])
+    ).slice(0, maxWatchlistAssets)
+    if (next.length === 0) return
+    patchCoinSource({
+      watchlist: next,
+      ...(watchlistCandidateMode
+        ? {
+            source_type: 'static' as const,
+            static_coins: watchlistCandidateSymbols(next),
+            use_watchlist: true,
+          }
+        : {}),
+    })
+    setWatchlistInput('')
+  }
+
+  const removeWatchlistSymbol = (symbol: string) => {
+    const target = normalizeWatchlistToken(symbol)
+    const next = watchlist.filter(
+      (item) => normalizeWatchlistToken(item) !== target
+    )
+    patchCoinSource({
+      watchlist: next,
+      ...(watchlistCandidateMode
+        ? {
+            source_type: 'static' as const,
+            static_coins: watchlistCandidateSymbols(next),
+            use_watchlist: next.length > 0,
+          }
+        : {}),
+    })
+  }
+
+  const enableWatchlistCandidates = () => {
+    const candidates = watchlistCandidateSymbols(watchlist)
+    if (candidates.length === 0) return
+    patchCoinSource({
+      source_type: 'static',
+      static_coins: candidates,
+      use_watchlist: true,
+      binance_dynamic_limit: 10,
+      vergex_market_type: 'all',
+    })
+    setListMode('pool')
+  }
+
   const setScope = (nextScope: Scope) => {
+    setScopeValue(nextScope)
     patchCoinSource({
       hyper_rank_category: nextScope,
       static_coins: [],
@@ -1599,14 +1827,14 @@ export function StrategyStudioPage() {
             <p className="mt-1 text-sm text-nofx-text-muted">
               {text(
                 language,
-                'Autonomous market selection powered by Claw402.ai Signal Lab, liquidation structure, and raw candles.',
-                'Autonomous market selection powered by Claw402.ai Signal Lab, liquidation structure, and raw candles.'
+                '默认使用 Binance 公开行情动态筛选候选交易对，再交给你配置的 AI 模型决定交易或等待。',
+                'Uses public Binance market data to build a dynamic candidate pool, then lets your configured AI model trade or wait.'
               )}
             </p>
           </div>
           <button
             type="button"
-            onClick={startUnifiedClaw402Agent}
+            onClick={startAutopilot}
             disabled={saving || !selectedStrategy}
             className="inline-flex items-center gap-2 rounded-lg bg-nofx-gold px-4 py-2 text-sm font-semibold text-nofx-bg hover:bg-nofx-gold-highlight"
           >
@@ -1615,15 +1843,15 @@ export function StrategyStudioPage() {
             ) : (
               <Bot className="h-4 w-4" />
             )}
-            {text(language, 'Launch Autopilot', 'Launch Autopilot')}
+            {text(language, '启动自动交易', 'Launch Autopilot')}
           </button>
         </div>
       </div>
 
-      <div className="grid min-h-[calc(100vh-137px)] grid-cols-1">
-        <aside className="hidden border-r border-[rgba(26,24,19,0.14)] bg-nofx-bg-deeper p-3">
+      <div className="grid min-h-[calc(100vh-137px)] grid-cols-1 lg:grid-cols-[280px_minmax(0,1fr)]">
+        <aside className="border-r border-[rgba(26,24,19,0.14)] bg-nofx-bg-deeper p-3">
           <div className="mb-2 px-2 text-xs font-medium uppercase tracking-wide text-nofx-text-muted">
-            {text(language, 'My strategies', 'My strategies')}
+            {text(language, '我的策略', 'My strategies')}
           </div>
           <div className="space-y-2">
             {strategies.map((strategy) => (
@@ -1664,7 +1892,7 @@ export function StrategyStudioPage() {
         <main className="overflow-y-auto p-5">
           {selectedStrategy && aiConfig && coinSource && indicators && risk ? (
             <div className="mx-auto max-w-7xl space-y-4">
-              <section className="hidden rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-lighter p-4">
+              <section className="rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-lighter p-4">
                 <div className="flex flex-wrap items-start justify-between gap-4">
                   <div className="min-w-0 flex-1">
                     <input
@@ -1700,7 +1928,7 @@ export function StrategyStudioPage() {
                       </div>
                     ) : null}
                   </div>
-                  <div className="hidden flex-wrap gap-2">
+                  <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
                       onClick={() => saveStrategy(true)}
@@ -1712,7 +1940,7 @@ export function StrategyStudioPage() {
                       ) : (
                         <Check className="h-4 w-4" />
                       )}
-                      {text(language, 'Save and use', 'Save and use')}
+                      {text(language, '保存并启用', 'Save and use')}
                     </button>
                     <button
                       type="button"
@@ -1725,7 +1953,7 @@ export function StrategyStudioPage() {
                       ) : (
                         <Save className="h-4 w-4" />
                       )}
-                      {text(language, 'Save', 'Save')}
+                      {text(language, '保存', 'Save')}
                     </button>
                     {!selectedStrategy.is_active ? (
                       <button
@@ -1734,7 +1962,7 @@ export function StrategyStudioPage() {
                         className="inline-flex items-center gap-2 rounded-lg border border-nofx-success/30 bg-nofx-success/10 px-3 py-2 text-sm text-nofx-success hover:bg-nofx-success/15"
                       >
                         <Check className="h-4 w-4" />
-                        {text(language, 'Activate only', 'Activate only')}
+                        {text(language, '仅启用', 'Activate only')}
                       </button>
                     ) : null}
                     {!selectedStrategy.is_active ? (
@@ -1744,11 +1972,448 @@ export function StrategyStudioPage() {
                         className="inline-flex items-center gap-2 rounded-lg border border-nofx-danger/25 bg-nofx-danger/10 px-3 py-2 text-sm text-nofx-danger hover:bg-nofx-danger/15"
                       >
                         <Trash2 className="h-4 w-4" />
-                        {text(language, 'Delete', 'Delete')}
+                        {text(language, '删除', 'Delete')}
                       </button>
                     ) : null}
                   </div>
                 </div>
+
+                <div className="mt-4 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
+                  <input
+                    value={staticInput}
+                    onChange={(event) => setStaticInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') addStaticSymbols()
+                    }}
+                    placeholder={text(
+                      language,
+                      '手动固定交易对，例如 BTCUSDT, ETHUSDT',
+                      'Pin symbols manually, e.g. BTCUSDT, ETHUSDT'
+                    )}
+                    className="rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={addStaticSymbols}
+                    disabled={!staticInput.trim()}
+                    className="rounded-lg border border-nofx-gold/30 bg-nofx-gold/10 px-4 py-2 text-sm font-semibold text-nofx-gold disabled:opacity-40"
+                  >
+                    {text(language, '设为固定交易对', 'Use fixed symbols')}
+                  </button>
+                </div>
+                <div className="mt-2 text-xs text-nofx-text-muted">
+                  {coinSource.source_type === 'binance_dynamic'
+                    ? text(
+                        language,
+                        `当前：Binance 本地动态 Top ${coinSource.binance_dynamic_limit || 10}`,
+                        `Current: Binance local dynamic Top ${coinSource.binance_dynamic_limit || 10}`
+                      )
+                    : coinSource.source_type === 'static'
+                      ? text(
+                          language,
+                          watchlistCandidateMode
+                            ? `当前：我的自选 ${selectedSymbols.length} 个 AI 候选`
+                            : `当前：固定 ${selectedSymbols.length} 个交易对`,
+                          watchlistCandidateMode
+                            ? `Current: ${selectedSymbols.length} watchlist AI candidates`
+                            : `Current: ${selectedSymbols.length} fixed symbols`
+                        )
+                      : text(
+                          language,
+                          '当前：Claw402/Vergex 可选付费信号板',
+                          'Current: optional paid Claw402/Vergex board'
+                        )}
+                </div>
+              </section>
+
+              <section className="rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-lighter p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2 text-sm font-semibold text-nofx-text">
+                      <Target className="h-4 w-4 text-nofx-gold" />
+                      {text(language, '我的自选', 'My watchlist')}
+                    </div>
+                    <div className="mt-1 max-w-3xl text-xs leading-5 text-nofx-text-muted">
+                      {text(
+                        language,
+                        '使用 Binance USDⓈ-M TradFi 永续公开行情。启用后，这些自选将成为 AI 每轮分析和交易决策的候选池；添加自选本身不会启动自动交易。',
+                        'Uses public Binance USDⓈ-M TradFi perpetual quotes. Once enabled, these symbols become the AI candidate pool for each cycle; adding symbols alone does not start automatic trading.'
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={enableWatchlistCandidates}
+                      disabled={watchlist.length === 0}
+                      className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold disabled:opacity-40 ${
+                        watchlistCandidateMode
+                          ? 'border-nofx-success/30 bg-nofx-success/10 text-nofx-success'
+                          : 'border-nofx-gold/30 bg-nofx-gold/10 text-nofx-gold'
+                      }`}
+                    >
+                      <Bot className="h-3.5 w-3.5" />
+                      {watchlistCandidateMode
+                        ? text(
+                            language,
+                            '正在作为 AI 候选池',
+                            'Active AI candidate pool'
+                          )
+                        : text(
+                            language,
+                            '启用为 AI 候选池',
+                            'Use as AI candidate pool'
+                          )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void loadWatchlistSymbols()}
+                      disabled={watchlistLoading}
+                      className="inline-flex items-center gap-2 rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-deeper px-3 py-2 text-xs text-nofx-text-muted hover:text-nofx-text disabled:opacity-50"
+                    >
+                      <RefreshCw
+                        className={`h-3.5 w-3.5 ${watchlistLoading ? 'animate-spin' : ''}`}
+                      />
+                      {text(language, '刷新行情', 'Refresh quotes')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void saveStrategy(
+                          false,
+                          undefined,
+                          text(language, '自选已保存', 'Watchlist saved')
+                        )
+                      }
+                      disabled={saving || !hasChanges}
+                      className="inline-flex items-center gap-2 rounded-lg border border-nofx-gold/30 bg-nofx-gold/10 px-3 py-2 text-xs font-semibold text-nofx-gold disabled:opacity-40"
+                    >
+                      <Save className="h-3.5 w-3.5" />
+                      {text(language, '保存自选', 'Save watchlist')}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-4 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
+                  <input
+                    value={watchlistInput}
+                    onChange={(event) => setWatchlistInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') addWatchlistSymbols()
+                    }}
+                    placeholder={text(
+                      language,
+                      '输入代码，可用斜杠、逗号或空格分隔',
+                      'Enter symbols separated by slash, comma, or space'
+                    )}
+                    className="rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={addWatchlistSymbols}
+                    disabled={!watchlistInput.trim()}
+                    className="inline-flex items-center justify-center gap-2 rounded-lg border border-nofx-gold/30 bg-nofx-gold/10 px-4 py-2 text-sm font-semibold text-nofx-gold disabled:opacity-40"
+                  >
+                    <Plus className="h-4 w-4" />
+                    {text(language, '添加到自选', 'Add to watchlist')}
+                  </button>
+                </div>
+
+                {watchlistError ? (
+                  <div className="mt-3 rounded-lg border border-nofx-danger/20 bg-nofx-danger/10 px-3 py-2 text-xs text-nofx-danger">
+                    {watchlistError}
+                  </div>
+                ) : null}
+
+                {watchlist.length > 0 ? (
+                  <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                    {watchlist.map((symbol) => {
+                      const resolved = resolveWatchlistAsset(
+                        symbol,
+                        watchlistSymbols
+                      )
+                      return (
+                        <div
+                          key={resolved.requested}
+                          className="rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-deeper p-3"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <div className="font-mono text-sm font-semibold text-nofx-text">
+                                {resolved.requested}
+                              </div>
+                              {resolved.asset ? (
+                                <div className="mt-1 text-[11px] text-nofx-success">
+                                  Binance USDⓈ-M TradFi ·{' '}
+                                  {resolved.asset.symbol}
+                                </div>
+                              ) : (
+                                <div className="mt-1 text-[11px] text-nofx-text-muted">
+                                  {text(
+                                    language,
+                                    'Binance TradFi 当前未上线',
+                                    'Unavailable on Binance TradFi'
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                            <button
+                              type="button"
+                              aria-label={text(
+                                language,
+                                `移除 ${resolved.requested}`,
+                                `Remove ${resolved.requested}`
+                              )}
+                              onClick={() =>
+                                removeWatchlistSymbol(resolved.requested)
+                              }
+                              className="rounded p-1 text-nofx-text-muted hover:bg-nofx-danger/10 hover:text-nofx-danger"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                          {resolved.asset ? (
+                            <div className="mt-3 flex items-end justify-between gap-2">
+                              <div className="text-xs text-nofx-text-muted">
+                                {categoryLabel(
+                                  resolved.asset.category,
+                                  language
+                                )}
+                              </div>
+                              <div className="font-mono text-base font-semibold text-nofx-text">
+                                {formatWatchlistPrice(
+                                  resolved.asset.mark_price
+                                )}
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <div className="mt-4 flex items-center gap-2 rounded-lg border border-dashed border-[rgba(26,24,19,0.18)] px-3 py-4 text-xs text-nofx-text-muted">
+                    <Shield className="h-4 w-4" />
+                    {text(
+                      language,
+                      '暂无自选；添加后只用于行情观察。',
+                      'No watchlist items yet; added symbols are for observation only.'
+                    )}
+                  </div>
+                )}
+              </section>
+
+              <section className="rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-lighter p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-nofx-text">
+                      {text(language, '历史 AI 回放', 'Historical AI replay')}
+                    </div>
+                    <div className="mt-1 max-w-3xl text-xs leading-5 text-nofx-text-muted">
+                      {text(
+                        language,
+                        '对所填交易对做单标的回放（不伪造历史候选榜）。默认使用可复现的趋势基准；也可切换为真实 AI 回放。所有信号在收盘后产生，按下一根 K 线开盘价成交，并包含手续费、滑点与强平。',
+                        'Single-symbol replay without inventing a historical candidate board. The default is a reproducible trend benchmark; real AI replay is optional. Every signal is made after close, filled at the next open, and includes fees, slippage, and liquidation.'
+                      )}
+                    </div>
+                  </div>
+                  {backtestJob &&
+                  backtestJob.status !== 'completed' &&
+                  backtestJob.status !== 'failed' ? (
+                    <span className="inline-flex items-center gap-2 rounded-md bg-nofx-gold/10 px-2 py-1 text-xs text-nofx-gold">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      {backtestJob.stage} · {backtestJob.decision_progress}/
+                      {backtestJob.max_ai_calls}
+                    </span>
+                  ) : null}
+                </div>
+
+                <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+                  <label className="text-xs text-nofx-text-muted">
+                    {text(language, '回放模式', 'Replay mode')}
+                    <select
+                      value={backtestMode}
+                      onChange={(event) => {
+                        const mode = event.target.value as
+                          | 'trend_v1'
+                          | 'ai_replay'
+                        setBacktestMode(mode)
+                        setBacktestStart(
+                          new Date(
+                            Date.now() -
+                              (mode === 'trend_v1' ? 2 * 365 : 4) *
+                                24 *
+                                60 *
+                                60 *
+                                1000
+                          )
+                            .toISOString()
+                            .slice(0, 10)
+                        )
+                      }}
+                      className="mt-1 w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
+                    >
+                      <option value="trend_v1">
+                        {text(
+                          language,
+                          '4h 趋势基准（可复现）',
+                          '4h trend benchmark'
+                        )}
+                      </option>
+                      <option value="ai_replay">
+                        {text(language, '真实 AI 回放', 'Real AI replay')}
+                      </option>
+                    </select>
+                  </label>
+                  <label
+                    className={`text-xs text-nofx-text-muted ${
+                      backtestMode === 'ai_replay' ? 'xl:col-span-2' : ''
+                    }`}
+                  >
+                    {text(language, 'AI 模型', 'AI model')}
+                    <select
+                      value={backtestModelID}
+                      onChange={(event) =>
+                        setBacktestModelID(event.target.value)
+                      }
+                      disabled={backtestMode !== 'ai_replay'}
+                      className="mt-1 w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text disabled:opacity-45"
+                    >
+                      <option value="">
+                        {text(language, '请选择已配置模型', 'Select a model')}
+                      </option>
+                      {models.map((model) => (
+                        <option key={model.id} value={model.id}>
+                          {model.name} · {model.provider}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="text-xs text-nofx-text-muted">
+                    {text(language, '交易对', 'Symbol')}
+                    <input
+                      value={backtestSymbol}
+                      onChange={(event) =>
+                        setBacktestSymbol(event.target.value.toUpperCase())
+                      }
+                      className="mt-1 w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
+                    />
+                  </label>
+                  <label className="text-xs text-nofx-text-muted">
+                    {text(language, '开始日期', 'Start date')}
+                    <input
+                      type="date"
+                      value={backtestStart}
+                      onChange={(event) => setBacktestStart(event.target.value)}
+                      className="mt-1 w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
+                    />
+                  </label>
+                  <label className="text-xs text-nofx-text-muted">
+                    {text(language, '结束日期', 'End date')}
+                    <input
+                      type="date"
+                      value={backtestEnd}
+                      onChange={(event) => setBacktestEnd(event.target.value)}
+                      className="mt-1 w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
+                    />
+                  </label>
+                  <label className="text-xs text-nofx-text-muted">
+                    {text(language, '最多模型调用', 'Max AI calls')}
+                    <input
+                      type="number"
+                      min={1}
+                      max={50}
+                      value={backtestMaxCalls}
+                      disabled={backtestMode !== 'ai_replay'}
+                      onChange={(event) =>
+                        setBacktestMaxCalls(
+                          Math.min(50, Math.max(1, Number(event.target.value)))
+                        )
+                      }
+                      className="mt-1 w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text disabled:opacity-45"
+                    />
+                  </label>
+                </div>
+
+                {backtestMode === 'trend_v1' ? (
+                  <div className="mt-3 rounded-lg border border-nofx-success/20 bg-nofx-success/10 px-3 py-2 text-xs leading-5 text-nofx-success">
+                    {text(
+                      language,
+                      '已冻结数据验证：4h EMA 50/200 + 100 根突破 + 3 ATR 止损 + 4R 目标，1x、单笔风险 1%。在 BTC/ETH/SOL 及未参与选参的 BNB/XRP/ADA 上均通过双倍成本分窗门槛。历史结果不保证未来收益，建议先长时间模拟盘。',
+                      'Frozen-data benchmark: 4h EMA 50/200 + 100-bar breakout + 3 ATR stop + 4R target, 1x and 1% risk per trade. It passed double-cost window gates on BTC/ETH/SOL and unseen BNB/XRP/ADA. Historical results do not guarantee future returns; paper trade first.'
+                    )}
+                  </div>
+                ) : null}
+
+                <button
+                  type="button"
+                  onClick={startBacktest}
+                  disabled={
+                    backtestStarting ||
+                    (backtestMode === 'ai_replay' && !backtestModelID) ||
+                    !backtestSymbol.trim() ||
+                    (backtestJob !== null &&
+                      backtestJob.status !== 'completed' &&
+                      backtestJob.status !== 'failed')
+                  }
+                  className="mt-3 inline-flex items-center gap-2 rounded-lg border border-nofx-gold/30 bg-nofx-gold/10 px-4 py-2 text-sm font-semibold text-nofx-gold disabled:opacity-40"
+                >
+                  {backtestStarting ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-4 w-4" />
+                  )}
+                  {backtestMode === 'ai_replay'
+                    ? text(language, '开始真实 AI 回放', 'Start real AI replay')
+                    : text(language, '运行趋势基准', 'Run trend benchmark')}
+                </button>
+
+                {backtestJob?.status === 'failed' ? (
+                  <div className="mt-3 rounded-lg border border-nofx-danger/20 bg-nofx-danger/10 px-3 py-2 text-sm text-nofx-danger">
+                    {backtestJob.error || 'Historical replay failed'}
+                  </div>
+                ) : null}
+
+                {backtestJob?.status === 'completed' && backtestJob.result ? (
+                  <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                    {[
+                      [
+                        text(language, '总收益', 'Total return'),
+                        `${backtestJob.result.total_return_pct.toFixed(2)}%`,
+                      ],
+                      [
+                        text(language, '最大回撤', 'Max drawdown'),
+                        `${backtestJob.result.max_drawdown_pct.toFixed(2)}%`,
+                      ],
+                      [
+                        text(language, '交易次数', 'Trades'),
+                        String(backtestJob.result.trade_count),
+                      ],
+                      [
+                        text(language, '胜率', 'Win rate'),
+                        `${backtestJob.result.win_rate_pct.toFixed(1)}%`,
+                      ],
+                      [
+                        backtestJob.mode === 'ai_replay'
+                          ? text(language, '模型调用', 'AI calls')
+                          : text(language, '处理 K 线', 'Candles processed'),
+                        String(backtestJob.result.decision_calls),
+                      ],
+                    ].map(([label, value]) => (
+                      <div
+                        key={label}
+                        className="rounded-lg bg-nofx-bg-deeper px-3 py-3"
+                      >
+                        <div className="text-xs text-nofx-text-muted">
+                          {label}
+                        </div>
+                        <div className="mt-1 font-mono text-lg font-semibold text-nofx-text">
+                          {value}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </section>
 
               <section className="rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-lighter p-4">
@@ -1756,204 +2421,135 @@ export function StrategyStudioPage() {
                   <div>
                     <div className="flex items-center gap-2 text-sm font-semibold text-nofx-text">
                       <Sparkles className="h-4 w-4 text-nofx-gold" />
-                      Signal Board
+                      {text(language, '候选交易对来源', 'Candidate sources')}
                     </div>
                     <div className="mt-1 text-xs text-nofx-text-muted">
-                      Live Claw402.ai ranking · Signal Lab · liquidation map
+                      {text(
+                        language,
+                        '默认使用 Binance 本地动态候选；Claw402/Vergex 信号板仅在你主动选择时加载。',
+                        'Binance local dynamic candidates are the default; Claw402/Vergex loads only when explicitly selected.'
+                      )}
                     </div>
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
                       onClick={() => {
-                        if (signals.length === 0) {
-                          void loadSignals()
-                        } else {
-                          setListMode('claw402')
-                        }
+                        setListMode('pool')
+                        patchCoinSource({
+                          source_type: 'binance_dynamic',
+                          static_coins: [],
+                          use_watchlist: false,
+                          binance_dynamic_limit: 10,
+                        })
+                        void loadSymbols()
                       }}
-                      disabled={signalsLoading}
-                      className={`hidden items-center gap-2 rounded-lg border px-3 py-2 text-xs disabled:opacity-50 ${
-                        listMode === 'claw402'
-                          ? 'border-nofx-gold bg-nofx-gold/10 text-nofx-gold'
-                          : 'border-[rgba(26,24,19,0.14)] text-nofx-text-muted hover:text-nofx-text'
-                      }`}
-                    >
-                      <Sparkles className="h-3.5 w-3.5" />
-                      {signals.length === 0
-                        ? 'Load Claw402 board'
-                        : 'Claw402 board'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setListMode('pool')}
                       disabled={symbolsLoading}
-                      className={`hidden items-center gap-2 rounded-lg border px-3 py-2 text-xs disabled:opacity-50 ${
-                        listMode === 'pool'
-                          ? 'border-[rgba(26,24,19,0.24)] bg-nofx-bg-deeper text-nofx-text'
+                      className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs disabled:opacity-50 ${
+                        listMode === 'pool' &&
+                        coinSource.source_type === 'binance_dynamic'
+                          ? 'border-nofx-gold bg-nofx-gold/10 text-nofx-gold'
                           : 'border-[rgba(26,24,19,0.14)] text-nofx-text-muted hover:text-nofx-text'
                       }`}
                     >
                       <RefreshCw
                         className={`h-3.5 w-3.5 ${symbolsLoading ? 'animate-spin' : ''}`}
                       />
-                      Symbol pool
+                      {text(language, 'Binance 动态候选', 'Binance dynamic')}
                     </button>
                     <button
                       type="button"
                       onClick={() => {
-                        void loadSignals()
+                        enableWatchlistCandidates()
+                        void loadWatchlistSymbols()
                       }}
-                      disabled={signalsLoading}
+                      disabled={watchlistLoading || watchlist.length === 0}
+                      className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs disabled:opacity-50 ${
+                        listMode === 'pool' && watchlistCandidateMode
+                          ? 'border-nofx-gold bg-nofx-gold/10 text-nofx-gold'
+                          : 'border-[rgba(26,24,19,0.14)] text-nofx-text-muted hover:text-nofx-text'
+                      }`}
+                    >
+                      <Target className="h-3.5 w-3.5" />
+                      {text(language, '我的自选候选', 'My watchlist')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (listMode === 'claw402') {
+                          void loadSignals()
+                        } else if (watchlistCandidateMode) {
+                          void loadWatchlistSymbols()
+                        } else {
+                          void loadSymbols()
+                        }
+                      }}
+                      disabled={signalsLoading || symbolsLoading}
                       className="inline-flex items-center gap-2 rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-deeper px-3 py-2 text-xs text-nofx-text-muted hover:text-nofx-text disabled:opacity-50"
                     >
                       <RefreshCw
                         className={`h-3.5 w-3.5 ${signalsLoading ? 'animate-spin' : ''}`}
                       />
-                      Refresh
+                      {text(language, '刷新', 'Refresh')}
                     </button>
                     {selectedSymbols.length > 0 ? (
                       <button
                         type="button"
                         onClick={() =>
                           patchCoinSource({
+                            source_type: 'binance_dynamic',
                             static_coins: [],
+                            use_watchlist: false,
+                            binance_dynamic_limit: 10,
                             vergex_market_type: 'all',
                           })
                         }
-                        className="hidden rounded-lg border border-[rgba(26,24,19,0.14)] px-3 py-2 text-xs text-nofx-text-muted hover:text-nofx-text"
+                        className="inline-flex rounded-lg border border-[rgba(26,24,19,0.14)] px-3 py-2 text-xs text-nofx-text-muted hover:text-nofx-text"
                       >
-                        Clear selected
+                        {text(language, '清除固定选择', 'Clear selected')}
                       </button>
                     ) : null}
                   </div>
                 </div>
 
-                <div className="hidden mb-4 flex-wrap gap-2">
-                  {scopeOptions.map((option) => {
-                    const signalCount =
-                      option.value === 'all'
-                        ? signals.length
-                        : signals.filter(
-                            (item) => item.category === option.value
-                          ).length
-                    const poolCount =
-                      option.value === 'all'
-                        ? symbols.filter((item) => item.category !== 'crypto')
-                            .length
-                        : symbols.filter(
-                            (item) => item.category === option.value
-                          ).length
-                    const count =
-                      listMode === 'claw402' ? signalCount : poolCount
-                    return (
-                      <button
-                        key={option.value}
-                        type="button"
-                        onClick={() => setScope(option.value)}
-                        className={`rounded-lg border px-3 py-2 text-xs transition ${
-                          scope === option.value
-                            ? 'border-nofx-gold bg-nofx-gold/10 text-nofx-gold'
-                            : 'border-[rgba(26,24,19,0.14)] bg-nofx-bg-deeper text-nofx-text-muted hover:text-nofx-text'
-                        }`}
-                      >
-                        {option.en}
-                        {count > 0 ? (
-                          <span className="ml-2 opacity-70">{count}</span>
-                        ) : null}
-                      </button>
-                    )
-                  })}
-                </div>
-
-                <div className="hidden mb-4 gap-3 md:grid-cols-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      patchCoinSource({
-                        static_coins: [],
-                        vergex_market_type: 'all',
-                      })
-                      setListMode('claw402')
-                      if (signals.length === 0) {
-                        void loadSignals()
-                      }
-                    }}
-                    className={`rounded-lg border p-4 text-left transition ${
-                      selectedSymbols.length === 0
-                        ? 'border-nofx-success bg-nofx-success/10'
-                        : 'border-[rgba(26,24,19,0.14)] bg-nofx-bg-deeper hover:border-[rgba(26,24,19,0.24)]'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="text-sm font-semibold text-nofx-text">
-                        Follow Claw402.ai board dynamically
-                      </div>
-                      {selectedSymbols.length === 0 ? (
-                        <Check className="h-4 w-4 text-nofx-success" />
-                      ) : null}
-                    </div>
-                    <div className="mt-2 text-xs text-nofx-text-muted">
-                      At runtime, trade the current range Top{' '}
-                      {coinSource.vergex_limit || 5}; the board refreshes each
-                      cycle.
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setListMode('claw402')
-                      if (signals.length === 0) {
-                        void loadSignals()
-                      }
-                    }}
-                    className={`rounded-lg border p-4 text-left transition ${
-                      selectedSymbols.length > 0
-                        ? 'border-nofx-gold bg-nofx-gold/10'
-                        : 'border-[rgba(26,24,19,0.14)] bg-nofx-bg-deeper hover:border-[rgba(26,24,19,0.24)]'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="text-sm font-semibold text-nofx-text">
-                        Pinned universe
-                      </div>
-                      {selectedSymbols.length > 0 ? (
-                        <Check className="h-4 w-4 text-nofx-gold" />
-                      ) : null}
-                    </div>
-                    <div className="mt-2 text-xs text-nofx-text-muted">
-                      {selectedSymbols.length > 0
-                        ? `${selectedSymbols.length} symbols fixed; trade only these.`
-                        : 'Autopilot uses the live Claw402 board by default.'}
-                    </div>
-                  </button>
-                </div>
-
-                <div className="hidden mb-4 flex-wrap items-center gap-3">
-                  <span className="text-sm text-nofx-text-muted">
-                    {selectedSymbols.length > 0
-                      ? `${selectedSymbols.length} selected`
-                      : `Without manual picks, runtime uses Claw402.ai Top ${coinSource.vergex_limit || 5} in this range`}
-                  </span>
-                  {selectedSymbols.length === 0 ? (
-                    <select
-                      value={coinSource.vergex_limit || 5}
-                      onChange={(event) =>
-                        patchCoinSource({
-                          vergex_limit: Math.max(Number(event.target.value), 5),
-                        })
-                      }
-                      className="rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
-                    >
-                      {topNOptions.map((value) => (
-                        <option key={value} value={value}>
-                          Top {value}
-                        </option>
-                      ))}
-                    </select>
-                  ) : null}
-                </div>
+                {listMode === 'claw402' ? (
+                  <div className="mb-4 flex flex-wrap gap-2">
+                    {scopeOptions.map((option) => {
+                      const signalCount =
+                        option.value === 'all'
+                          ? signals.length
+                          : signals.filter(
+                              (item) => item.category === option.value
+                            ).length
+                      const poolCount =
+                        option.value === 'all'
+                          ? symbols.filter((item) => item.category !== 'crypto')
+                              .length
+                          : symbols.filter(
+                              (item) => item.category === option.value
+                            ).length
+                      const count =
+                        listMode === 'claw402' ? signalCount : poolCount
+                      return (
+                        <button
+                          key={option.value}
+                          type="button"
+                          onClick={() => setScope(option.value)}
+                          className={`rounded-lg border px-3 py-2 text-xs transition ${
+                            scope === option.value
+                              ? 'border-nofx-gold bg-nofx-gold/10 text-nofx-gold'
+                              : 'border-[rgba(26,24,19,0.14)] bg-nofx-bg-deeper text-nofx-text-muted hover:text-nofx-text'
+                          }`}
+                        >
+                          {text(language, option.zh, option.en)}
+                          {count > 0 ? (
+                            <span className="ml-2 opacity-70">{count}</span>
+                          ) : null}
+                        </button>
+                      )
+                    })}
+                  </div>
+                ) : null}
 
                 {symbolsError || signalsError ? (
                   <div className="mb-4 rounded-lg border border-nofx-gold/20 bg-nofx-gold/10 px-3 py-2 text-xs text-nofx-gold">
@@ -2025,7 +2621,9 @@ export function StrategyStudioPage() {
                               </span>
                             </div>
                             <div className="mt-4 flex items-center justify-between gap-3 border-t border-[rgba(26,24,19,0.14)] pt-3 text-[11px] uppercase tracking-wide text-nofx-text-muted">
-                              <span>{categoryLabel(item.category, 'en')}</span>
+                              <span>
+                                {categoryLabel(item.category, language)}
+                              </span>
                               <span>{signalMarketType(item)}</span>
                             </div>
                           </div>
@@ -2158,7 +2756,11 @@ export function StrategyStudioPage() {
                 signals.length > 0 &&
                 visibleSignalItems.length === 0 ? (
                   <div className="rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-deeper px-3 py-3 text-sm text-nofx-text-muted">
-                    No Claw402 markets available.
+                    {text(
+                      language,
+                      'Claw402/Vergex 当前没有可用市场。',
+                      'No Claw402/Vergex markets available.'
+                    )}
                   </div>
                 ) : null}
 
@@ -2166,18 +2768,22 @@ export function StrategyStudioPage() {
                 visibleSymbols.length === 0 &&
                 !symbolsLoading ? (
                   <div className="rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-deeper px-3 py-3 text-sm text-nofx-text-muted">
-                    No markets available.
+                    {text(
+                      language,
+                      'Binance 动态候选暂不可用，请稍后刷新。',
+                      'Binance dynamic candidates are unavailable; refresh later.'
+                    )}
                   </div>
                 ) : null}
               </section>
 
-              <details className="hidden rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-deeper p-4">
+              <details className="rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-deeper p-4">
                 <summary className="cursor-pointer text-sm font-semibold text-nofx-text">
-                  {text(language, 'Advanced settings', 'Advanced settings')}
+                  {text(language, '高级设置', 'Advanced settings')}
                 </summary>
                 <div className="mt-4 rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-lighter p-4">
                   <div className="mb-3 text-sm font-semibold text-nofx-text">
-                    {text(language, 'Trading style', 'Trading style')}
+                    {text(language, '交易风格', 'Trading style')}
                   </div>
                   <div className="flex flex-wrap gap-2">
                     {profileOptions.map((profile) => (

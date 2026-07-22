@@ -12,24 +12,26 @@ import (
 
 // Hard limits to prevent token explosion in AI requests
 const (
-	MaxCandidateCoins = 10
-	MaxPositions      = 8
-	MaxTimeframes     = 4
-	MinKlineCount     = 10
-	MaxKlineCount     = 30
-	MinLeverage       = 1
-	MaxBTCETHLeverage = 20
-	MaxAltLeverage    = 20
-	MinPositionRatio  = 0.5
-	MaxPositionRatio  = 10.0
-	MinRiskReward     = 1.0
-	MaxRiskReward     = 10.0
-	MinMarginUsage    = 0.1
-	MaxMarginUsage    = 1.0
-	MinPositionSize   = 10.0
-	MaxPositionSize   = 1000.0
-	MinConfidence     = 50
-	MaxConfidence     = 100
+	MaxCandidateCoins       = 10
+	MaxStaticCandidateCoins = 20
+	MaxWatchlistAssets      = 50
+	MaxPositions            = 8
+	MaxTimeframes           = 4
+	MinKlineCount           = 10
+	MaxKlineCount           = 30
+	MinLeverage             = 1
+	MaxBTCETHLeverage       = 20
+	MaxAltLeverage          = 20
+	MinPositionRatio        = 0.5
+	MaxPositionRatio        = 10.0
+	MinRiskReward           = 1.0
+	MaxRiskReward           = 10.0
+	MinMarginUsage          = 0.1
+	MaxMarginUsage          = 1.0
+	MinPositionSize         = 10.0
+	MaxPositionSize         = 1000.0
+	MinConfidence           = 50
+	MaxConfidence           = 100
 )
 
 // ClampLimits enforces product-level limits on strategy config to prevent token overflow.
@@ -49,10 +51,16 @@ func (c *StrategyConfig) ClampLimits() {
 	if c.CoinSource.VergexLimit > MaxCandidateCoins {
 		c.CoinSource.VergexLimit = MaxCandidateCoins
 	}
+	if c.CoinSource.BinanceDynamicLimit > MaxCandidateCoins {
+		c.CoinSource.BinanceDynamicLimit = MaxCandidateCoins
+	}
 
 	// Clamp static coins
-	if len(c.CoinSource.StaticCoins) > MaxCandidateCoins {
-		c.CoinSource.StaticCoins = c.CoinSource.StaticCoins[:MaxCandidateCoins]
+	if len(c.CoinSource.StaticCoins) > MaxStaticCandidateCoins {
+		c.CoinSource.StaticCoins = c.CoinSource.StaticCoins[:MaxStaticCandidateCoins]
+	}
+	if len(c.CoinSource.Watchlist) > MaxWatchlistAssets {
+		c.CoinSource.Watchlist = c.CoinSource.Watchlist[:MaxWatchlistAssets]
 	}
 
 	// Clamp kline count
@@ -140,13 +148,44 @@ func (c *StrategyConfig) ClampLimits() {
 func (c *StrategyConfig) NormalizeProductSchema() {
 	c.StrategyType = normalizeStrategyType(c.StrategyType)
 	c.CoinSource.StaticCoins = normalizeSymbols(c.CoinSource.StaticCoins)
+	c.CoinSource.Watchlist = normalizeSymbols(c.CoinSource.Watchlist)
 	c.CoinSource.ExcludedCoins = normalizeSymbols(c.CoinSource.ExcludedCoins)
+	if c.CoinSource.UseWatchlist {
+		c.CoinSource.SourceType = "static"
+		if len(c.CoinSource.StaticCoins) == 0 {
+			c.CoinSource.StaticCoins = binanceWatchlistCandidates(c.CoinSource.Watchlist)
+		}
+	}
 	c.CoinSource.SourceType = normalizeCoinSourceType(c.CoinSource.SourceType)
 	if c.CoinSource.SourceType == "" {
 		c.CoinSource.SourceType = inferCoinSourceType(c.CoinSource)
 	}
+	if c.CoinSource.SourceType == "static" {
+		c.CoinSource.StaticCoins = binanceUSDTContracts(c.CoinSource.StaticCoins)
+		if len(c.CoinSource.StaticCoins) == 0 {
+			c.CoinSource.SourceType = "binance_dynamic"
+		}
+	}
 
 	switch c.CoinSource.SourceType {
+	case "binance_dynamic":
+		c.CoinSource.UseWatchlist = false
+		c.CoinSource.UseAI500 = false
+		c.CoinSource.UseOITop = false
+		c.CoinSource.UseOILow = false
+		c.CoinSource.UseHyperAll = false
+		c.CoinSource.UseHyperMain = false
+		c.CoinSource.HyperMainLimit = 0
+		c.CoinSource.HyperRankCategory = ""
+		c.CoinSource.HyperRankDirection = ""
+		c.CoinSource.HyperRankLimit = 0
+		c.CoinSource.VergexLimit = 0
+		c.CoinSource.VergexMarketType = ""
+		c.CoinSource.VergexChain = ""
+		c.CoinSource.VergexLiqBand = ""
+		if c.CoinSource.BinanceDynamicLimit <= 0 {
+			c.CoinSource.BinanceDynamicLimit = MaxCandidateCoins
+		}
 	case "ai500":
 		c.CoinSource.UseAI500 = true
 		c.CoinSource.UseOITop = false
@@ -233,28 +272,11 @@ func (c *StrategyConfig) NormalizeProductSchema() {
 			c.CoinSource.VergexChain = "hyperliquid"
 		}
 	default:
-		c.CoinSource.SourceType = "vergex_signal"
 		c.CoinSource.UseAI500 = false
 		c.CoinSource.UseOITop = false
 		c.CoinSource.UseOILow = false
 		c.CoinSource.UseHyperAll = false
 		c.CoinSource.UseHyperMain = false
-		minLimit := 10
-		if len(c.CoinSource.StaticCoins) > 0 {
-			minLimit = len(c.CoinSource.StaticCoins)
-			if minLimit > MaxCandidateCoins {
-				minLimit = MaxCandidateCoins
-			}
-		}
-		if c.CoinSource.VergexLimit < minLimit {
-			c.CoinSource.VergexLimit = minLimit
-		}
-		if c.CoinSource.VergexMarketType == "" {
-			c.CoinSource.VergexMarketType = "all"
-		}
-		if c.CoinSource.VergexChain == "" {
-			c.CoinSource.VergexChain = "hyperliquid"
-		}
 	}
 
 	c.Indicators.Klines.PrimaryTimeframe = normalizeTimeframe(c.Indicators.Klines.PrimaryTimeframe)
@@ -290,13 +312,17 @@ func normalizeCoinSourceType(value string) string {
 	case strings.Contains(compact, "oilow") || strings.Contains(value, "oi low") || strings.Contains(value, "lowest open interest") || strings.Contains(value, "low open interest"):
 		return "oi_low"
 	case strings.Contains(compact, "hyperrank"):
-		return "hyper_rank"
+		return "binance_dynamic"
+	case strings.Contains(compact, "binance") && (strings.Contains(compact, "dynamic") || strings.Contains(compact, "local")):
+		return "binance_dynamic"
+	case strings.Contains(compact, "localdynamic") || strings.Contains(value, "local dynamic"):
+		return "binance_dynamic"
 	case strings.Contains(compact, "vergex") || strings.Contains(compact, "claw402") || strings.Contains(compact, "dynamicranking") || strings.Contains(value, "dynamic board") || strings.Contains(value, "gainers board") || strings.Contains(value, "signal board"):
-		return "vergex_signal"
+		return "binance_dynamic"
 	case strings.Contains(compact, "hyperall"):
-		return "hyper_all"
+		return "binance_dynamic"
 	case strings.Contains(compact, "hypermain"):
-		return "hyper_main"
+		return "binance_dynamic"
 	case strings.Contains(value, "static") || strings.Contains(value, "fixed"):
 		return "static"
 	default:
@@ -315,15 +341,15 @@ func inferCoinSourceType(source CoinSourceConfig) string {
 	case source.UseOILow:
 		return "oi_low"
 	case source.UseHyperAll:
-		return "hyper_all"
+		return "binance_dynamic"
 	case source.UseHyperMain:
-		return "hyper_main"
+		return "binance_dynamic"
 	case source.VergexLimit > 0 || source.VergexMarketType != "" || source.VergexChain != "" || source.VergexLiqBand != "":
-		return "vergex_signal"
+		return "binance_dynamic"
 	case source.HyperRankCategory != "" || source.HyperRankDirection != "" || source.HyperRankLimit > 0:
-		return "hyper_rank"
+		return "binance_dynamic"
 	default:
-		return "vergex_signal"
+		return "binance_dynamic"
 	}
 }
 
@@ -340,6 +366,50 @@ func normalizeSymbols(values []string) []string {
 		out = append(out, value)
 	}
 	return out
+}
+
+func binanceWatchlistCandidates(values []string) []string {
+	values = normalizeSymbols(values)
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.HasPrefix(value, "XYZ:") || strings.HasSuffix(value, "-USDC") || strings.ContainsAny(value, ":-_/ ") {
+			continue
+		}
+		if !strings.HasSuffix(value, "USDT") {
+			value += "USDT"
+		}
+		if isBinanceUSDTContract(value) {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func binanceUSDTContracts(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if isBinanceUSDTContract(value) {
+			out = append(out, strings.ToUpper(strings.TrimSpace(value)))
+		}
+	}
+	return out
+}
+
+func isBinanceUSDTContract(value string) bool {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	if !strings.HasSuffix(value, "USDT") || strings.HasPrefix(value, "XYZ:") || strings.ContainsAny(value, ":-_/ ") {
+		return false
+	}
+	base := strings.TrimSuffix(value, "USDT")
+	if base == "" {
+		return false
+	}
+	for _, r := range base {
+		if (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeTimeframes(values []string) []string {
@@ -789,10 +859,17 @@ type PromptSectionsConfig struct {
 
 // CoinSourceConfig coin source configuration
 type CoinSourceConfig struct {
-	// source type shown in the product editor: "static" | "ai500" | "oi_top" | "oi_low"
+	// source type shown in the product editor. binance_dynamic is the local,
+	// public-market default and does not use paid signal providers.
 	SourceType string `json:"source_type"`
+	// Binance public-market candidate count, ranked by 24h quote volume.
+	BinanceDynamicLimit int `json:"binance_dynamic_limit,omitempty"`
 	// static coin list (used when source_type = "static")
 	StaticCoins []string `json:"static_coins,omitempty"`
+	// User-selected Binance USDⓈ-M symbols. When UseWatchlist is true these are
+	// normalized to USDT contracts and become the strategy's static AI candidate pool.
+	Watchlist    []string `json:"watchlist,omitempty"`
+	UseWatchlist bool     `json:"use_watchlist,omitempty"`
 	// excluded coins list (filtered out from all sources)
 	ExcludedCoins []string `json:"excluded_coins,omitempty"`
 	// whether to use AI500 coin pool
@@ -960,20 +1037,18 @@ func GetDefaultStrategyConfig(lang string) StrategyConfig {
 	config := StrategyConfig{
 		Language: normalizedLang,
 		CoinSource: CoinSourceConfig{
-			SourceType:        "vergex_signal",
-			UseAI500:          false,
-			AI500Limit:        3,
-			UseOITop:          false,
-			OITopLimit:        3,
-			UseOILow:          false,
-			OILowLimit:        3,
-			UseHyperAll:       false,
-			UseHyperMain:      false,
-			HyperMainLimit:    30,
-			HyperRankCategory: "all",
-			VergexLimit:       10,
-			VergexMarketType:  "all",
-			VergexChain:       "hyperliquid",
+			SourceType:          "binance_dynamic",
+			BinanceDynamicLimit: MaxCandidateCoins,
+			UseAI500:            false,
+			AI500Limit:          3,
+			UseOITop:            false,
+			OITopLimit:          3,
+			UseOILow:            false,
+			OILowLimit:          3,
+			UseHyperAll:         false,
+			UseHyperMain:        false,
+			HyperMainLimit:      30,
+			HyperRankCategory:   "all",
 		},
 		Indicators: IndicatorConfig{
 			Klines: KlineConfig{
@@ -997,8 +1072,8 @@ func GetDefaultStrategyConfig(lang string) StrategyConfig {
 			RSIPeriods:        []int{7, 14},
 			ATRPeriods:        []int{14},
 			BOLLPeriods:       []int{20},
-			// Hyperliquid strategies must use native Hyperliquid market data by default.
-			// NofxOS datasets do not cover all Hyperliquid XYZ assets, so keep them off.
+			// External ranking datasets are opt-in. The default local dynamic
+			// strategy uses exchange public data and raw candles only.
 			NofxOSAPIKey:           "",
 			EnableQuantData:        false,
 			EnableQuantOI:          false,
@@ -1014,43 +1089,43 @@ func GetDefaultStrategyConfig(lang string) StrategyConfig {
 			PriceRankingLimit:      10,
 		},
 		RiskControl: RiskControlConfig{
-			MaxPositions:                 4,   // Room for ~2 long + 2 short (CODE ENFORCED)
-			BTCETHMaxLeverage:            20,  // BTC/ETH exchange leverage (AI guided)
-			AltcoinMaxLeverage:           20,  // TradeFi exchange leverage (AI guided)
-			BTCETHMaxPositionValueRatio:  5.0, // Per-position notional = equity × 5; 4 positions = 20x total (full margin, ~5% liquidation cushion — aggressive by operator choice)
-			AltcoinMaxPositionValueRatio: 5.0, // Per-position notional = equity × 5; 4 positions = 20x total (full margin, ~5% liquidation cushion — aggressive by operator choice)
-			MaxMarginUsage:               1.0, // Claw402 Autopilot intentionally uses full margin when opening
-			MinPositionSize:              12,  // Min 12 USDT per position (CODE ENFORCED)
-			MinRiskRewardRatio:           3.0, // Min 3:1 profit/loss ratio (AI guided)
-			MinConfidence:                78,  // Min 78% confidence (AI guided)
+			MaxPositions:                 3,
+			BTCETHMaxLeverage:            3,
+			AltcoinMaxLeverage:           3,
+			BTCETHMaxPositionValueRatio:  1.0,
+			AltcoinMaxPositionValueRatio: 0.5,
+			MaxMarginUsage:               0.5,
+			MinPositionSize:              12,
+			MinRiskRewardRatio:           2.0,
+			MinConfidence:                75,
 		},
 	}
 
 	if lang == "zh" {
 		config.PromptSections = PromptSectionsConfig{
-			RoleDefinition: `# You are the NOFX Claw402 auto-trader
+			RoleDefinition: `# 你是 NOFX 交易决策助手
 
-Trade only the Hyperliquid tradable instruments returned by this cycle's Claw402.ai/Vergex board. The candidate pool comes from Claw402.ai/Vergex; before opening a position, you must combine Signal Lab, cost/liquidation heatmap and raw candles.`,
-			TradingFrequency: `# Trading Frequency
+只分析本轮程序提供的候选交易对和已有持仓。候选池默认来自 Binance 公开行情的本地动态筛选；候选排名只定义分析范围，不构成开仓理由。`,
+			TradingFrequency: `# 交易频率
 
-- Prioritize waiting for high-quality opportunities; you do not need to trade every cycle.
-- Manage existing positions first, then consider opening new ones.
-- Do not churn in and out of the same symbol in one cycle.`,
-			EntryStandards: `# Entry Standards
+- 优先等待高质量机会，不需要每个周期都交易。
+- 先管理已有持仓，再考虑新开仓。
+- 不要在同一周期反复开平同一交易对。`,
+			EntryStandards: `# 入场标准
 
-Open a position only when Claw402 Signal Lab, cost/liquidation heatmap and raw candles broadly agree. The Claw402 ranking is only the candidate pool, not a standalone buy reason. Wait by default when any key data is missing or contradictory.`,
-			DecisionProcess: `# Decision Process
+只有在趋势、动量、成交量、风险收益比和原始 K 线结构相互支持时才开仓。关键数据缺失或互相矛盾时默认等待。`,
+			DecisionProcess: `# 决策流程
 
-1. Check existing positions first: decide take profit, stop loss or hold.
-2. Pull this cycle's candidates from the Claw402 board, and for each candidate read Claw402 Ranking, Signal Lab and Cost/Liquidation Heatmap.
-3. Use raw candles to confirm entry, stop loss and take profit.
-4. Output concise reasoning and strict JSON.`,
+1. 先检查已有持仓：决定止盈、止损或继续持有。
+2. 逐个分析本轮候选交易对的多周期行情和原始 K 线。
+3. 明确入场依据、止损、止盈和仓位风险。
+4. 输出简洁理由和严格 JSON。`,
 		}
 	} else {
 		config.PromptSections = PromptSectionsConfig{
-			RoleDefinition: `# You are the NOFX Claw402 auto-trader
+			RoleDefinition: `# You are the NOFX trading decision assistant
 
-Trade Hyperliquid Claw402-ranked instruments only. The candidate pool comes from Claw402.ai/Vergex; before opening a position, combine Signal Lab, cost/liquidation heatmap and raw candles.`,
+Analyze only the candidate symbols and existing positions supplied for this cycle. By default the candidate pool is built locally from public Binance market data; ranking defines the analysis universe and is never an entry reason by itself.`,
 			TradingFrequency: `# Trading Frequency
 
 - Wait for quality; you do not need to trade every cycle.
@@ -1058,12 +1133,12 @@ Trade Hyperliquid Claw402-ranked instruments only. The candidate pool comes from
 - Do not churn in and out of the same symbol in one cycle.`,
 			EntryStandards: `# Entry Standards
 
-Open only when Claw402 Signal Lab, cost/liquidation heatmap and raw candles broadly agree. Ranking defines the candidate pool, not a standalone entry reason. Wait when key data is missing or contradictory.`,
+Open only when trend, momentum, volume, risk/reward and raw-candle structure broadly agree. Wait when key data is missing or contradictory.`,
 			DecisionProcess: `# Decision Process
 
 1. Check current positions first: take profit, stop loss or hold.
-2. Pull this cycle's Claw402 board and read Claw402 Ranking, Signal Lab and Cost/Liquidation Heatmap for each candidate.
-3. Use raw candles to confirm entry, stop and target.
+2. Analyze each candidate using the supplied multi-timeframe market data and raw candles.
+3. Confirm entry, stop, target and position risk.
 4. Output concise reasoning and strict JSON.`,
 		}
 	}

@@ -15,7 +15,7 @@ const (
 
 // GetKlinesRange fetches K-line series within specified time range (closed interval), returns data sorted by time in ascending order.
 func GetKlinesRange(symbol string, timeframe string, start, end time.Time) ([]Kline, error) {
-	symbol = Normalize(symbol)
+	symbol = NormalizeForExchange("binance", symbol)
 	normTF, err := NormalizeTimeframe(timeframe)
 	if err != nil {
 		return nil, err
@@ -101,4 +101,40 @@ func GetKlinesRange(symbol string, timeframe string, start, end time.Time) ([]Kl
 	}
 
 	return all, nil
+}
+
+// BuildHistoricalData converts an already-fetched, closed-candle prefix into
+// the same market.Data shape used by the live prompt builder. It performs no
+// network calls, which is essential for a look-ahead-free historical replay.
+func BuildHistoricalData(symbol, timeframe string, klines []Kline, count int) *Data {
+	data := &Data{
+		Symbol:        Normalize(symbol),
+		TimeframeData: make(map[string]*TimeframeSeriesData),
+	}
+	if len(klines) == 0 {
+		return data
+	}
+	if count <= 0 || count > len(klines) {
+		count = len(klines)
+	}
+	data.CurrentPrice = klines[len(klines)-1].Close
+	data.CurrentEMA20 = calculateEMA(klines, 20)
+	data.CurrentMACD = calculateMACD(klines)
+	data.CurrentRSI7 = calculateRSI(klines, 7)
+	data.TimeframeData[timeframe] = calculateTimeframeSeries(klines, timeframe, count)
+	return data
+}
+
+// FilterClosedKlines removes a currently-forming candle. Historical replays
+// must never expose a high, low, close, or volume value that was not known at
+// the decision timestamp.
+func FilterClosedKlines(klines []Kline, cutoff time.Time) []Kline {
+	cutoffMs := cutoff.UnixMilli()
+	closed := make([]Kline, 0, len(klines))
+	for _, kline := range klines {
+		if kline.CloseTime <= cutoffMs {
+			closed = append(closed, kline)
+		}
+	}
+	return closed
 }

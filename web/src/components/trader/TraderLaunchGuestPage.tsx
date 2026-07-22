@@ -2,17 +2,24 @@ import { Link } from 'react-router-dom'
 import {
   ArrowRight,
   CheckCircle2,
-  CircleDollarSign,
-  Download,
   ExternalLink,
   KeyRound,
   ShieldCheck,
   Wallet,
   Zap,
 } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 import { ROUTES } from '../../router/paths'
 
-const setupSteps = [
+const setupSteps: Array<{
+  title: string
+  detail: string
+  icon: LucideIcon
+  action: string
+  to?: string
+  returnUrl?: string
+  href?: string
+}> = [
   {
     title: 'Create your NOFX account',
     detail:
@@ -22,37 +29,37 @@ const setupSteps = [
     to: ROUTES.register,
   },
   {
-    title: 'Fund the AI fee wallet',
+    title: 'Connect your AI model',
     detail:
-      'NOFX prepares a Base USDC wallet for Claw402.ai data and model calls. This wallet is separate from trading collateral.',
-    icon: CircleDollarSign,
-    action: 'Open deposit QR',
+      'Use your own OpenAI-compatible, DeepSeek, Claude, Gemini, Qwen, or other configured provider.',
+    icon: Zap,
+    action: 'Configure model',
     to: ROUTES.login,
-    returnUrl: `${ROUTES.traders}?setup=claw402`,
+    returnUrl: `${ROUTES.traders}?setup=model`,
   },
   {
-    title: 'Authorize Hyperliquid',
+    title: 'Connect an exchange',
     detail:
-      'Connect your trading wallet, approve the NOFX Agent, and approve the builder fee. Funds remain in your Hyperliquid account.',
+      'Choose a supported exchange account. Exchange-specific permissions and balances are checked before launch.',
     icon: Wallet,
     action: 'Connect exchange',
     to: ROUTES.login,
-    returnUrl: `${ROUTES.traders}?setup=hyperliquid`,
+    returnUrl: `${ROUTES.traders}?setup=exchange`,
   },
   {
-    title: 'Deposit trading USDC',
+    title: 'Review and launch',
     detail:
-      'Add USDC on Hyperliquid, then start NOFX Autopilot. The strategy is created and launched automatically.',
+      'Confirm the local dynamic strategy, conservative risk limits, exchange balance, and model before starting.',
     icon: Zap,
-    action: 'Open Hyperliquid',
-    href: 'https://app.hyperliquid.xyz/',
+    action: 'Open NOFX',
+    to: ROUTES.login,
   },
 ]
 
 const pipeline = [
-  'Read the live Claw402.ai board, with US stocks prioritized before crypto.',
-  'Fetch Signal Lab and cost/liquidation heatmap details for each candidate.',
-  'Confirm with raw OHLCV candles, then trade full-size 10x only when the setup is strong enough.',
+  'Rank liquid Binance perpetual candidates from public market data every cycle.',
+  'Pass the candidates and raw OHLCV candles to the AI model you configured.',
+  'Trade only above the confidence and risk/reward thresholds, with bounded 3x defaults.',
 ]
 
 export function TraderLaunchGuestPage() {
@@ -69,9 +76,8 @@ export function TraderLaunchGuestPage() {
               One strategy. Four setup steps. Then it trades.
             </h1>
             <p className="mt-5 max-w-2xl text-base leading-7 text-nofx-text-muted">
-              NOFX runs a single Claw402-driven strategy: board, per-market
-              details, liquidation structure, candles, execution. No strategy
-              picker, no manual symbol picking required.
+              NOFX uses public Binance market data for dynamic candidates, then
+              sends closed candles to the AI model you configured, then executes only on Binance Futures.
             </p>
             <div className="mt-7 flex flex-col gap-3 sm:flex-row">
               <Link
@@ -79,7 +85,7 @@ export function TraderLaunchGuestPage() {
                 onClick={() =>
                   sessionStorage.setItem(
                     'returnUrl',
-                    `${ROUTES.traders}?setup=claw402`
+                    `${ROUTES.traders}?setup=model`
                   )
                 }
                 className="inline-flex items-center justify-center gap-2 rounded-xl bg-nofx-gold px-5 py-3 text-sm font-bold text-white transition hover:bg-nofx-gold/90"
@@ -166,50 +172,22 @@ export function TraderLaunchGuestPage() {
               No trading wallet yet?
             </div>
             <p className="mt-3 text-sm leading-6 text-nofx-text-muted">
-              NOFX does not need your main-wallet private key. Install or unlock
-              an EVM wallet, fund Hyperliquid with USDC, then authorize the NOFX
-              Agent after sign-in.
+              Create a Binance USDⓈ-M Futures API key with trading permission,
+              no withdrawal permission, and an IP allowlist for this server.
             </p>
           </div>
           <div className="grid gap-3 lg:grid-cols-3">
-            <a
-              href="https://rabby.io/"
-              target="_blank"
-              rel="noreferrer"
-              className="group rounded-xl border border-nofx-gold/20 bg-nofx-bg-deeper p-4 transition hover:border-nofx-gold/30 hover:bg-nofx-gold/[0.06]"
-            >
-              <Download className="mb-3 h-4 w-4 text-nofx-gold" />
-              <div className="font-semibold text-nofx-text">Install Rabby</div>
-              <p className="mt-2 text-sm leading-6 text-nofx-text-muted">
-                Create or import an EVM wallet before connecting to Hyperliquid.
-              </p>
-            </a>
-            <a
-              href="https://metamask.io/download/"
-              target="_blank"
-              rel="noreferrer"
-              className="group rounded-xl border border-nofx-gold/20 bg-nofx-bg-deeper p-4 transition hover:border-nofx-gold/30 hover:bg-nofx-gold/[0.06]"
-            >
-              <ExternalLink className="mb-3 h-4 w-4 text-nofx-gold" />
-              <div className="font-semibold text-nofx-text">MetaMask</div>
-              <p className="mt-2 text-sm leading-6 text-nofx-text-muted">
-                Already use MetaMask? Unlock it, then continue setup inside
-                NOFX.
-              </p>
-            </a>
-            <a
-              href="https://app.hyperliquid.xyz/"
-              target="_blank"
-              rel="noreferrer"
-              className="group rounded-xl border border-nofx-gold/20 bg-nofx-gold/10 p-4 transition hover:bg-nofx-gold/15"
-            >
-              <ExternalLink className="mb-3 h-4 w-4 text-nofx-gold" />
-              <div className="font-semibold text-nofx-text">Open Hyperliquid</div>
-              <p className="mt-2 text-sm leading-6 text-nofx-text-muted">
-                Deposit USDC there. Trading funds stay in your Hyperliquid
-                account.
-              </p>
-            </a>
+            {[
+              ['API key', 'Create a dedicated Binance Futures API key.'],
+              ['Permissions', 'Enable futures trading and keep withdrawals disabled.'],
+              ['IP allowlist', 'Restrict the key to the NOFX server public IP.'],
+            ].map(([title, detail]) => (
+              <div key={title} className="rounded-xl border border-nofx-gold/20 bg-nofx-bg-deeper p-4">
+                <ShieldCheck className="mb-3 h-4 w-4 text-nofx-gold" />
+                <div className="font-semibold text-nofx-text">{title}</div>
+                <p className="mt-2 text-sm leading-6 text-nofx-text-muted">{detail}</p>
+              </div>
+            ))}
           </div>
         </section>
 

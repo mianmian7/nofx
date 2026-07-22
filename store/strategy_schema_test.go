@@ -123,7 +123,7 @@ func TestStrategyConfigNormalizeProductSchemaForLLMLabels(t *testing.T) {
 	}
 }
 
-func TestStrategyConfigNormalizeProductSchemaForVergexSignal(t *testing.T) {
+func TestStrategyConfigMigratesVergexSignalToBinanceDynamic(t *testing.T) {
 	cfg := GetDefaultStrategyConfig("zh")
 	cfg.CoinSource = CoinSourceConfig{
 		SourceType: "Claw402 Vergex signal board",
@@ -131,21 +131,48 @@ func TestStrategyConfigNormalizeProductSchemaForVergexSignal(t *testing.T) {
 
 	cfg.NormalizeProductSchema()
 
-	if cfg.CoinSource.SourceType != "vergex_signal" {
-		t.Fatalf("source_type = %q, want vergex_signal", cfg.CoinSource.SourceType)
+	if cfg.CoinSource.SourceType != "binance_dynamic" {
+		t.Fatalf("source_type = %q, want binance_dynamic", cfg.CoinSource.SourceType)
 	}
-	if cfg.CoinSource.VergexLimit != 10 {
-		t.Fatalf("vergex_limit = %d, want 10", cfg.CoinSource.VergexLimit)
-	}
-	if cfg.CoinSource.VergexMarketType != "all" {
-		t.Fatalf("vergex_market_type = %q, want all", cfg.CoinSource.VergexMarketType)
-	}
-	if cfg.CoinSource.VergexChain != "hyperliquid" {
-		t.Fatalf("vergex_chain = %q, want hyperliquid", cfg.CoinSource.VergexChain)
+	if cfg.CoinSource.VergexLimit != 0 || cfg.CoinSource.VergexMarketType != "" || cfg.CoinSource.VergexChain != "" {
+		t.Fatalf("migrated source retained Vergex settings: %+v", cfg.CoinSource)
 	}
 }
 
-func TestStrategyConfigNormalizeProductSchemaForVergexSignalLimits(t *testing.T) {
+func TestStrategyConfigNormalizeProductSchemaForBinanceDynamic(t *testing.T) {
+	cfg := GetDefaultStrategyConfig("zh")
+	cfg.CoinSource.SourceType = "Binance local dynamic"
+	cfg.CoinSource.BinanceDynamicLimit = 0
+
+	cfg.NormalizeProductSchema()
+
+	if cfg.CoinSource.SourceType != "binance_dynamic" {
+		t.Fatalf("source_type = %q, want binance_dynamic", cfg.CoinSource.SourceType)
+	}
+	if cfg.CoinSource.BinanceDynamicLimit != MaxCandidateCoins {
+		t.Fatalf("binance_dynamic_limit = %d, want %d", cfg.CoinSource.BinanceDynamicLimit, MaxCandidateCoins)
+	}
+}
+
+func TestTradFiWatchlistBuildsBinanceUSDTContracts(t *testing.T) {
+	cfg := GetDefaultStrategyConfig("zh")
+	cfg.CoinSource.UseWatchlist = true
+	cfg.CoinSource.Watchlist = []string{
+		" skhynix ", "KORU", "SKHY", "SAMSUNG", "SOXL", "DRAM", "EWY",
+		"WDC", "MU", "SNDK", "QQQ", "SPY", "XAU", "samsung",
+	}
+
+	cfg.ClampLimits()
+
+	if cfg.CoinSource.SourceType != "static" {
+		t.Fatalf("source_type = %q, want static", cfg.CoinSource.SourceType)
+	}
+	if len(cfg.CoinSource.StaticCoins) < 9 || cfg.CoinSource.StaticCoins[8] != "MUUSDT" {
+		t.Fatalf("watchlist did not build Binance TradFi contracts: %+v", cfg.CoinSource.StaticCoins)
+	}
+}
+
+func TestStrategyConfigNormalizeProductSchemaRemovesVergexSignal(t *testing.T) {
 	t.Run("dynamic board keeps the one built-in strategy candidate depth", func(t *testing.T) {
 		cfg := GetDefaultStrategyConfig("zh")
 		cfg.CoinSource = CoinSourceConfig{
@@ -158,8 +185,8 @@ func TestStrategyConfigNormalizeProductSchemaForVergexSignalLimits(t *testing.T)
 
 		cfg.NormalizeProductSchema()
 
-		if cfg.CoinSource.VergexLimit != 10 {
-			t.Fatalf("vergex_limit = %d, want 10", cfg.CoinSource.VergexLimit)
+		if cfg.CoinSource.SourceType != "binance_dynamic" || cfg.CoinSource.VergexLimit != 0 {
+			t.Fatalf("Vergex source was not migrated: %+v", cfg.CoinSource)
 		}
 	})
 
@@ -173,11 +200,8 @@ func TestStrategyConfigNormalizeProductSchemaForVergexSignalLimits(t *testing.T)
 
 		cfg.NormalizeProductSchema()
 
-		if cfg.CoinSource.VergexLimit != 2 {
-			t.Fatalf("vergex_limit = %d, want 2", cfg.CoinSource.VergexLimit)
-		}
-		if got := cfg.CoinSource.StaticCoins; len(got) != 2 || got[0] != "XYZ:NVDA" || got[1] != "XYZ:AAPL" {
-			t.Fatalf("static_coins = %+v, want normalized xyz symbols", got)
+		if cfg.CoinSource.SourceType != "binance_dynamic" || cfg.CoinSource.VergexLimit != 0 {
+			t.Fatalf("Vergex source was not migrated: %+v", cfg.CoinSource)
 		}
 	})
 }
