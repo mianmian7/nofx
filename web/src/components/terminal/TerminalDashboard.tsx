@@ -13,6 +13,10 @@ import type {
   PositionHistoryResponse,
   PaperPerformance,
   PaperClosedTrade,
+  PaperFundingPayment,
+  PaperFundingStatus,
+  PaperPendingOrder,
+  PaperOrderEvent,
 } from '../../types'
 import { OrchestrationTopology } from './OrchestrationTopology'
 import { OrderBook } from './OrderBook'
@@ -53,6 +57,8 @@ export function PaperTradingBanner({
 }) {
   const closedNet = performance?.total_pnl ?? paper.realized_pnl
   const allFees = performance?.total_fees ?? paper.fees
+  const makerFees = performance?.maker_fees ?? paper.maker_fees ?? 0
+  const takerFees = performance?.taker_fees ?? paper.taker_fees ?? allFees
   return (
     <div
       data-testid="paper-trading-banner"
@@ -78,11 +84,121 @@ export function PaperTradingBanner({
         占用保证金 {fmtUsd(paper.used_margin)} · 权益 {fmtUsd(paper.equity)} ·
         平仓净收益 {fmtUsd(closedNet, true)} · 未实现{' '}
         {fmtUsd(paper.unrealized_pnl, true)} · Paper 总费用（含当前持仓入场费）{' '}
-        {fmtUsd(allFees)} · 已平仓{' '}
+        {fmtUsd(allFees)}（Maker {fmtUsd(makerFees)} / Taker {fmtUsd(takerFees)}
+        ）· 挂单 {paper.pending_orders ?? 0} · 已平仓{' '}
         {performance?.total_trades ?? paper.closed_trades} · 胜率{' '}
         {(performance?.win_rate ?? paper.win_rate).toFixed(1)}% · 最大回撤{' '}
         {(performance?.max_drawdown_pct ?? paper.max_drawdown).toFixed(2)}%
+        {' · '}Funding 净额 {fmtUsd(paper.funding_net ?? 0, true)}
       </span>
+    </div>
+  )
+}
+
+export function PaperMakerPanel({
+  pendingOrders,
+  events,
+  makerFees,
+  takerFees,
+}: {
+  pendingOrders?: PaperPendingOrder[]
+  events?: PaperOrderEvent[]
+  makerFees: number
+  takerFees: number
+}) {
+  const recent =
+    events && events.length > 0 ? events[events.length - 1] : undefined
+  const statusLabel = (status: string) => {
+    if (status === 'PARTIALLY_FILLED') return '部分成交'
+    if (status === 'FILLED') return '已成交'
+    if (status === 'CANCELED') return '已撤单'
+    return '挂单中'
+  }
+  return (
+    <div
+      data-testid="paper-maker-panel"
+      className="tm-mono"
+      style={{
+        margin: '6px 14px 0',
+        padding: '7px 10px',
+        border: '1px solid var(--tm-hair)',
+        display: 'flex',
+        gap: 14,
+        flexWrap: 'wrap',
+        fontSize: 10,
+        color: 'var(--tm-ink-2)',
+      }}
+    >
+      <strong style={{ color: 'var(--tm-ink)' }}>PAPER MAKER FIRST</strong>
+      <span>
+        手续费 Maker {fmtUsd(makerFees)} · Taker {fmtUsd(takerFees)}
+      </span>
+      <span>当前挂单 {pendingOrders?.length ?? 0}</span>
+      {(pendingOrders ?? []).slice(0, 3).map((order) => (
+        <span key={order.order_id}>
+          <b>{order.symbol}</b> {order.action} · {statusLabel(order.status)}{' '}
+          {order.filled_quantity.toLocaleString()}/
+          {order.quantity.toLocaleString()}
+          {' @ '}
+          {order.limit_price.toLocaleString()}
+        </span>
+      ))}
+      {recent && (
+        <span>
+          最近事件 #{recent.order_id} {recent.symbol} ·{' '}
+          {statusLabel(recent.status)}
+          {recent.reason ? ` (${recent.reason})` : ''}
+        </span>
+      )}
+    </div>
+  )
+}
+
+export function PaperFundingPanel({
+  statuses,
+  payments,
+}: {
+  statuses?: PaperFundingStatus[]
+  payments?: PaperFundingPayment[]
+}) {
+  const recent =
+    payments && payments.length > 0 ? payments[payments.length - 1] : undefined
+  if ((!statuses || statuses.length === 0) && !recent) return null
+  return (
+    <div
+      data-testid="paper-funding-panel"
+      className="tm-mono"
+      style={{
+        margin: '6px 14px 0',
+        padding: '7px 10px',
+        border: '1px solid var(--tm-hair)',
+        display: 'flex',
+        gap: 14,
+        flexWrap: 'wrap',
+        fontSize: 10,
+        color: 'var(--tm-ink-2)',
+      }}
+    >
+      <strong style={{ color: 'var(--tm-ink)' }}>PAPER FUNDING</strong>
+      {(statuses ?? []).map((status) => (
+        <span key={status.symbol}>
+          <b>{status.symbol}</b> 当前 {(status.funding_rate * 100).toFixed(4)}%
+          · 下次结算{' '}
+          {new Date(status.next_funding_time).toLocaleString('zh-CN', {
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false,
+          })}
+        </span>
+      ))}
+      {recent && (
+        <span>
+          最近 Funding {fmtUsd(recent.wallet_delta, true)} · {recent.symbol}{' '}
+          {recent.side}
+        </span>
+      )}
     </div>
   )
 }
@@ -473,10 +589,30 @@ export function TerminalDashboard({
         style={{ maxWidth: 1280, margin: '0 auto', border: 'none' }}
       >
         {status?.execution_mode === 'paper' && status.paper && (
-          <PaperTradingBanner
-            paper={status.paper}
-            performance={status.paper_performance}
-          />
+          <>
+            <PaperTradingBanner
+              paper={status.paper}
+              performance={status.paper_performance}
+            />
+            <PaperMakerPanel
+              pendingOrders={status.paper_pending_orders}
+              events={status.paper_order_events}
+              makerFees={
+                status.paper_performance?.maker_fees ??
+                status.paper.maker_fees ??
+                0
+              }
+              takerFees={
+                status.paper_performance?.taker_fees ??
+                status.paper.taker_fees ??
+                status.paper.fees
+              }
+            />
+            <PaperFundingPanel
+              statuses={status.paper_funding_status}
+              payments={status.paper_recent_funding}
+            />
+          </>
         )}
         {/* runtime health banner — AI fee wallet dry / safe mode would otherwise
             only be visible in server logs while the bot silently idles */}

@@ -26,12 +26,16 @@ type BinanceFuturesTestSuite struct {
 	mockServer                *httptest.Server
 	leverageSymbols           *[]string
 	orderSymbols              *[]string
+	orderTimeInForces         *[]string
+	orderPositionSides        *[]string
 }
 
 // NewBinanceFuturesTestSuite Creates Binance Futures test suite
 func NewBinanceFuturesTestSuite(t *testing.T) *BinanceFuturesTestSuite {
 	var leverageSymbols []string
 	var orderSymbols []string
+	var orderTimeInForces []string
+	var orderPositionSides []string
 	// Create mock HTTP server
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Return different mock responses based on URL path
@@ -198,6 +202,8 @@ func NewBinanceFuturesTestSuite(t *testing.T) *BinanceFuturesTestSuite {
 		case path == "/fapi/v1/order" && r.Method == "POST":
 			symbol := r.FormValue("symbol")
 			orderSymbols = append(orderSymbols, symbol)
+			orderTimeInForces = append(orderTimeInForces, r.FormValue("timeInForce"))
+			orderPositionSides = append(orderPositionSides, r.FormValue("positionSide"))
 			if symbol == "" {
 				symbol = "BTCUSDT"
 			}
@@ -306,10 +312,12 @@ func NewBinanceFuturesTestSuite(t *testing.T) *BinanceFuturesTestSuite {
 	baseSuite := testutil.NewTraderTestSuite(t, traderInstance)
 
 	return &BinanceFuturesTestSuite{
-		TraderTestSuite: baseSuite,
-		mockServer:      mockServer,
-		leverageSymbols: &leverageSymbols,
-		orderSymbols:    &orderSymbols,
+		TraderTestSuite:    baseSuite,
+		mockServer:         mockServer,
+		leverageSymbols:    &leverageSymbols,
+		orderSymbols:       &orderSymbols,
+		orderTimeInForces:  &orderTimeInForces,
+		orderPositionSides: &orderPositionSides,
 	}
 }
 
@@ -328,6 +336,27 @@ func (s *BinanceFuturesTestSuite) Cleanup() {
 // TestFuturesTrader_InterfaceCompliance tests interface compliance
 func TestFuturesTrader_InterfaceCompliance(t *testing.T) {
 	var _ types.Trader = (*FuturesTrader)(nil)
+	var _ types.MakerOrderTrader = (*FuturesTrader)(nil)
+}
+
+func TestPlaceMakerOrderUsesGTXAndRequestedPositionSide(t *testing.T) {
+	suite := NewBinanceFuturesTestSuite(t)
+	defer suite.Cleanup()
+
+	maker := suite.Trader.(types.MakerOrderTrader)
+	_, err := maker.PlaceMakerOrder(&types.LimitOrderRequest{
+		Symbol: "MUUSDT", Side: "SELL", PositionSide: "LONG",
+		Price: 100, Quantity: 1, PostOnly: true, ReduceOnly: true,
+	})
+	if err != nil {
+		t.Fatalf("PlaceMakerOrder: %v", err)
+	}
+	if got := (*suite.orderTimeInForces)[len(*suite.orderTimeInForces)-1]; got != "GTX" {
+		t.Fatalf("timeInForce = %q, want GTX", got)
+	}
+	if got := (*suite.orderPositionSides)[len(*suite.orderPositionSides)-1]; got != "LONG" {
+		t.Fatalf("positionSide = %q, want LONG", got)
+	}
 }
 
 // TestFuturesTrader_CommonInterface runs all common interface tests using test suite

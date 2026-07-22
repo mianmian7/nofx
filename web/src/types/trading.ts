@@ -20,13 +20,23 @@ export interface SystemStatus {
     realized_pnl: number
     unrealized_pnl: number
     fees: number
+    maker_fees?: number
+    taker_fees?: number
     open_positions: number
+    pending_orders?: number
     closed_trades: number
     wins: number
     win_rate: number
     max_drawdown: number
+    funding_net?: number
+    funding_paid?: number
+    funding_received?: number
   }
   paper_performance?: PaperPerformance
+  paper_recent_funding?: PaperFundingPayment[]
+  paper_funding_status?: PaperFundingStatus[]
+  paper_pending_orders?: PaperPendingOrder[]
+  paper_order_events?: PaperOrderEvent[]
   strategy_type?: 'ai_trading' | 'grid_trading'
   grid_symbol?: string
   /** Runtime health: true when AI failed repeatedly and no new positions open. */
@@ -36,6 +46,63 @@ export interface SystemStatus {
   ai_wallet_status?: 'ok' | 'low' | 'empty' | 'unknown'
   ai_wallet_balance_usdc?: number
   ai_wallet_checked_at?: string
+}
+
+export interface PaperFundingPayment {
+  id: string
+  symbol: string
+  side: string
+  quantity: number
+  mark_price: number
+  funding_rate: number
+  funding_time: number
+  payment: number
+  wallet_delta: number
+  applied_at: string
+}
+
+export interface PaperFundingStatus {
+  symbol: string
+  funding_rate: number
+  mark_price: number
+  index_price: number
+  next_funding_time: number
+  updated_at: string
+}
+
+export interface PaperPendingOrder {
+  order_id: number
+  symbol: string
+  action: string
+  side: string
+  limit_price: number
+  quantity: number
+  filled_quantity: number
+  remaining_quantity: number
+  position_size_usd: number
+  leverage: number
+  stop_loss?: number
+  take_profit?: number
+  reduce_only: boolean
+  status: string
+  reprice_count: number
+  created_at: string
+  updated_at: string
+  expires_at: string
+}
+
+export interface PaperOrderEvent {
+  order_id: number
+  replacement_order_id?: number
+  symbol: string
+  action: string
+  status: string
+  reason?: string
+  limit_price: number
+  quantity: number
+  filled_quantity?: number
+  is_maker: boolean
+  time: string
 }
 
 export interface PaperClosedTrade {
@@ -66,6 +133,8 @@ export interface PaperPerformance {
   total_pnl: number
   /** All Paper fills, including entry fees for positions that remain open. */
   total_fees: number
+  maker_fees?: number
+  taker_fees?: number
   /** Fees belonging only to completed Paper trades. */
   closed_trade_fees: number
   avg_win: number

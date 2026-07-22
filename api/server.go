@@ -29,6 +29,7 @@ type Server struct {
 	telegramReloadCh          chan<- struct{} // signal Telegram bot to reload
 	authLimiter               *ipRateLimiter  // per-IP throttle for login/register
 	backtestJobs              *backtestJobStore
+	depthMarketClient         depthMarketClient
 }
 
 // NewServer Creates API server
@@ -176,6 +177,7 @@ func (s *Server) setupRoutes() {
 
 		// Market data (no authentication required)
 		s.route(api, "GET", "/klines", "Candlestick data (?symbol=&interval=&limit=)", s.handleKlines)
+		s.route(api, "GET", "/depth", "Binance Futures order-book snapshot (?symbol=&limit=5|10|20)", s.handleDepth)
 		s.route(api, "GET", "/symbols", "Available trading symbols", s.handleSymbols)
 
 		// Public strategy market (no authentication required)

@@ -56,13 +56,6 @@ func (at *AutoTrader) checkTotalPositionLimit(symbol string, additionalValue flo
 
 // placeGridLimitOrder places a limit order for grid trading
 func (at *AutoTrader) placeGridLimitOrder(d *kernel.Decision, side string) error {
-	// Check if trader supports GridTrader interface
-	gridTrader, ok := at.trader.(GridTrader)
-	if !ok {
-		// Fallback to adapter
-		gridTrader = NewGridTraderAdapter(at.trader)
-	}
-
 	gridConfig := at.config.StrategyConfig.GridConfig
 
 	// CRITICAL: Validate and cap quantity to prevent excessive position sizes
@@ -129,7 +122,21 @@ func (at *AutoTrader) placeGridLimitOrder(d *kernel.Decision, side string) error
 		ClientID:   fmt.Sprintf("grid-%d-%d", d.LevelIndex, time.Now().UnixNano()%1000000),
 	}
 
-	result, err := gridTrader.PlaceLimitOrder(req)
+	var result *LimitOrderResult
+	var err error
+	if gridConfig.UseMakerOnly {
+		makerTrader, ok := at.trader.(MakerOrderTrader)
+		if !ok {
+			return fmt.Errorf("maker-only is not supported by exchange %s; refusing to emulate post-only with conditional orders", at.exchange)
+		}
+		result, err = makerTrader.PlaceMakerOrder(req)
+	} else {
+		gridTrader, ok := at.trader.(GridTrader)
+		if !ok {
+			gridTrader = NewGridTraderAdapter(at.trader)
+		}
+		result, err = gridTrader.PlaceLimitOrder(req)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to place limit order: %w", err)
 	}

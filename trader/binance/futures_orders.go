@@ -6,6 +6,7 @@ import (
 	"nofx/logger"
 	"nofx/trader/types"
 	"strconv"
+	"strings"
 
 	"github.com/adshao/go-binance/v2/futures"
 )
@@ -416,6 +417,25 @@ func (t *FuturesTrader) CancelAllOrders(symbol string) error {
 // PlaceLimitOrder places a limit order for grid trading
 // This implements the GridTrader interface for FuturesTrader
 func (t *FuturesTrader) PlaceLimitOrder(req *types.LimitOrderRequest) (*types.LimitOrderResult, error) {
+	return t.placeLimitOrder(req, false)
+}
+
+// PlaceMakerOrder submits a Binance USD-M post-only limit order. GTX is the
+// exchange-level guarantee: Binance cancels/rejects the order instead of
+// allowing it to take liquidity when it would cross the book.
+func (t *FuturesTrader) PlaceMakerOrder(req *types.LimitOrderRequest) (*types.LimitOrderResult, error) {
+	if req == nil {
+		return nil, fmt.Errorf("maker order request is required")
+	}
+	makerReq := *req
+	makerReq.PostOnly = true
+	return t.placeLimitOrder(&makerReq, true)
+}
+
+func (t *FuturesTrader) placeLimitOrder(req *types.LimitOrderRequest, requirePostOnly bool) (*types.LimitOrderResult, error) {
+	if req == nil {
+		return nil, fmt.Errorf("limit order request is required")
+	}
 	// Format quantity to correct precision
 	quantityStr, err := t.FormatQuantity(req.Symbol, req.Quantity)
 	if err != nil {
@@ -439,12 +459,26 @@ func (t *FuturesTrader) PlaceLimitOrder(req *types.LimitOrderRequest) (*types.Li
 	var side futures.SideType
 	var positionSide futures.PositionSideType
 
-	if req.Side == "BUY" {
+	if strings.EqualFold(req.Side, "BUY") {
 		side = futures.SideTypeBuy
-		positionSide = futures.PositionSideTypeLong
 	} else {
 		side = futures.SideTypeSell
+	}
+	switch strings.ToUpper(req.PositionSide) {
+	case "LONG":
+		positionSide = futures.PositionSideTypeLong
+	case "SHORT":
 		positionSide = futures.PositionSideTypeShort
+	default:
+		if side == futures.SideTypeBuy {
+			positionSide = futures.PositionSideTypeLong
+		} else {
+			positionSide = futures.PositionSideTypeShort
+		}
+	}
+	timeInForce := futures.TimeInForceTypeGTC
+	if requirePostOnly || req.PostOnly {
+		timeInForce = futures.TimeInForceTypeGTX
 	}
 
 	// Build order service with broker ID
@@ -453,7 +487,7 @@ func (t *FuturesTrader) PlaceLimitOrder(req *types.LimitOrderRequest) (*types.Li
 		Side(side).
 		PositionSide(positionSide).
 		Type(futures.OrderTypeLimit).
-		TimeInForce(futures.TimeInForceTypeGTC).
+		TimeInForce(timeInForce).
 		Quantity(quantityStr).
 		Price(priceStr).
 		NewClientOrderID(getBrOrderID())
@@ -464,8 +498,8 @@ func (t *FuturesTrader) PlaceLimitOrder(req *types.LimitOrderRequest) (*types.Li
 		return nil, fmt.Errorf("failed to place limit order: %w", err)
 	}
 
-	logger.Infof("✓ [Grid] Placed limit order: %s %s %s @ %s, qty=%s, orderID=%d",
-		req.Symbol, req.Side, positionSide, priceStr, quantityStr, order.OrderID)
+	logger.Infof("✓ [Limit] Placed order: %s %s %s @ %s, qty=%s, tif=%s, orderID=%d",
+		req.Symbol, req.Side, positionSide, priceStr, quantityStr, timeInForce, order.OrderID)
 
 	return &types.LimitOrderResult{
 		OrderID:      fmt.Sprintf("%d", order.OrderID),

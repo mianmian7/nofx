@@ -87,6 +87,10 @@ func (at *AutoTrader) GetStatus() map[string]interface{} {
 		result["paper"] = at.paperBroker.Snapshot()
 		result["paper_performance"] = at.paperBroker.Performance()
 		result["paper_recent_fills"] = at.paperBroker.RecentFills(20)
+		result["paper_recent_funding"] = at.paperBroker.RecentFundingPayments(20)
+		result["paper_funding_status"] = at.paperBroker.FundingStatuses()
+		result["paper_pending_orders"] = at.paperBroker.PendingOrders()
+		result["paper_order_events"] = at.paperBroker.RecentOrderEvents(20)
 		result["paper_notice"] = "Simulation only; no real exchange orders are sent"
 	}
 

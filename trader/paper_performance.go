@@ -34,6 +34,8 @@ type PaperPerformance struct {
 	SharpeRatio     float64            `json:"sharpe_ratio"`
 	TotalPnL        float64            `json:"total_pnl"`
 	TotalFees       float64            `json:"total_fees"`
+	MakerFees       float64            `json:"maker_fees"`
+	TakerFees       float64            `json:"taker_fees"`
 	ClosedTradeFees float64            `json:"closed_trade_fees"`
 	AvgWin          float64            `json:"avg_win"`
 	AvgLoss         float64            `json:"avg_loss"`
@@ -56,18 +58,50 @@ func reconstructPaperPerformance(fills []PaperFill, initialBalance float64) Pape
 		}
 		return fills[i].Time.Before(fills[j].Time)
 	})
-	pending := make(map[string][]PaperFill)
+	type aggregate struct {
+		entryOrderID int64
+		exitOrderID  int64
+		symbol       string
+		side         string
+		leverage     int
+		entryQty     float64
+		entryValue   float64
+		entryFee     float64
+		entryTime    time.Time
+		exitQty      float64
+		exitValue    float64
+		exitFee      float64
+		exitTime     time.Time
+		realizedPnL  float64
+		closeReason  string
+	}
+	pending := make(map[string]*aggregate)
 	closedChronological := make([]PaperClosedTrade, 0)
 	performance := PaperPerformance{}
 	for _, fill := range fills {
 		performance.TotalFees += fill.Fee
+		if fill.IsMaker {
+			performance.MakerFees += fill.Fee
+		} else {
+			performance.TakerFees += fill.Fee
+		}
 		side, opening := paperOpenSide(fill.Action)
 		if opening {
 			if fill.Side != "" {
 				side = strings.ToLower(fill.Side)
 			}
 			key := fill.Symbol + ":" + side
-			pending[key] = append(pending[key], fill)
+			trade := pending[key]
+			if trade == nil {
+				trade = &aggregate{
+					entryOrderID: fill.OrderID, symbol: fill.Symbol, side: side,
+					leverage: fill.Leverage, entryTime: fill.Time,
+				}
+				pending[key] = trade
+			}
+			trade.entryQty += fill.Quantity
+			trade.entryValue += fill.Price * fill.Quantity
+			trade.entryFee += fill.Fee
 			continue
 		}
 		side, closing := paperCloseSide(fill.Action)
@@ -77,28 +111,39 @@ func reconstructPaperPerformance(fills []PaperFill, initialBalance float64) Pape
 		if fill.Side != "" {
 			side = strings.ToLower(fill.Side)
 		} else if side == "" {
-			side = solePendingPaperSide(pending, fill.Symbol)
+			side = solePendingPaperAggregateSide(pending, fill.Symbol)
 		}
 		if side == "" {
 			continue
 		}
 		key := fill.Symbol + ":" + side
-		entries := pending[key]
-		if len(entries) == 0 {
+		trade := pending[key]
+		if trade == nil || trade.entryQty <= 0 {
 			continue
 		}
-		entry := entries[0]
-		pending[key] = entries[1:]
-		trade := PaperClosedTrade{
-			EntryOrderID: entry.OrderID, ExitOrderID: fill.OrderID,
-			Symbol: fill.Symbol, Side: side, Quantity: fill.Quantity,
-			EntryPrice: entry.Price, ExitPrice: fill.Price,
-			EntryTime: entry.Time, ExitTime: fill.Time,
-			Leverage: entry.Leverage,
-			EntryFee: entry.Fee, ExitFee: fill.Fee, Fee: entry.Fee + fill.Fee,
-			RealizedPnL: fill.RealizedPnL, CloseReason: fill.Action,
+		trade.exitOrderID = fill.OrderID
+		trade.exitQty += fill.Quantity
+		trade.exitValue += fill.Price * fill.Quantity
+		trade.exitFee += fill.Fee
+		trade.exitTime = fill.Time
+		trade.realizedPnL += fill.RealizedPnL
+		trade.closeReason = fill.Action
+		complete := fill.Status == "" || fill.Status == "FILLED" || trade.exitQty >= trade.entryQty-1e-12
+		if !complete {
+			continue
 		}
-		closedChronological = append(closedChronological, trade)
+		closedChronological = append(closedChronological, PaperClosedTrade{
+			EntryOrderID: trade.entryOrderID, ExitOrderID: trade.exitOrderID,
+			Symbol: trade.symbol, Side: trade.side, Quantity: trade.exitQty,
+			EntryPrice: trade.entryValue / trade.entryQty,
+			ExitPrice:  trade.exitValue / trade.exitQty,
+			EntryTime:  trade.entryTime, ExitTime: trade.exitTime,
+			Leverage: trade.leverage,
+			EntryFee: trade.entryFee, ExitFee: trade.exitFee,
+			Fee:         trade.entryFee + trade.exitFee,
+			RealizedPnL: trade.realizedPnL, CloseReason: trade.closeReason,
+		})
+		delete(pending, key)
 	}
 	populatePaperPerformance(&performance, closedChronological, initialBalance)
 	performance.ClosedTrades = make([]PaperClosedTrade, len(closedChronological))
@@ -106,6 +151,20 @@ func reconstructPaperPerformance(fills []PaperFill, initialBalance float64) Pape
 		performance.ClosedTrades[len(closedChronological)-1-i] = closedChronological[i]
 	}
 	return performance
+}
+
+func solePendingPaperAggregateSide[T any](pending map[string]*T, symbol string) string {
+	found := ""
+	for _, side := range []string{"long", "short"} {
+		if pending[symbol+":"+side] == nil {
+			continue
+		}
+		if found != "" {
+			return ""
+		}
+		found = side
+	}
+	return found
 }
 
 func paperOpenSide(action string) (string, bool) {

@@ -676,61 +676,21 @@ export const translations = {
 
     // ===== GETTING STARTED =====
 
-
-
-
-
-
     // ===== INSTALLATION =====
-
-
-
-
-
 
     // ===== CONFIGURATION =====
 
-
-
-
-
-
     // ===== TRADING =====
-
-
-
-
-
-
-
 
     // ===== TECHNICAL ISSUES =====
 
-
-
-
-
-
-
-
     // ===== SECURITY =====
-
-
-
 
     // ===== FEATURES =====
 
-
-
     // ===== AI MODELS =====
 
-
-
-
     // ===== CONTRIBUTING =====
-
-
-
 
     // Web Crypto Environment Check
     environmentCheck: {
@@ -1150,6 +1110,10 @@ export const translations = {
       live: 'Live',
       syncing: 'Syncing',
       down: 'Offline',
+      updateMode: 'Order book update mode',
+      smooth: 'Smooth',
+      realtimeUpdates: 'Realtime updates',
+      realtimeShort: 'Realtime',
       loadingCostLiq: 'Loading cost/liquidation map…',
       mark: 'Mark',
       positionCount: '{positions} positions / {levels} liq. levels',
@@ -2015,61 +1979,21 @@ export const translations = {
 
     // ===== 入门指南 =====
 
-
-
-
-
-
     // ===== 安装部署 =====
-
-
-
-
-
 
     // ===== 配置设置 =====
 
-
-
-
-
-
     // ===== 交易相关 =====
-
-
-
-
-
-
-
 
     // ===== 技术问题 =====
 
-
-
-
-
-
-
-
     // ===== 安全相关 =====
-
-
-
 
     // ===== 功能介绍 =====
 
-
-
     // ===== AI 模型 =====
 
-
-
-
     // ===== 参与贡献 =====
-
-
-
 
     // Web Crypto Environment Check
     environmentCheck: {
@@ -2378,7 +2302,8 @@ export const translations = {
       cycle: '轮次',
       aiWalletEmpty: 'AI 费用钱包的 USDC 已用尽，决策当前无法执行。',
       aiWalletLow: 'AI 费用钱包余额较低（{balance} USDC），请尽快充值。',
-      aiWalletDeposit: '请向 Claw402 钱包充值 Base USDC，交易智能体会自动恢复。',
+      aiWalletDeposit:
+        '请向 Claw402 钱包充值 Base USDC，交易智能体会自动恢复。',
       safeMode: '安全模式：AI 连续失败，系统已停止开立新仓位。',
       aiLive: '交易智能体已启动。',
       aiLiveDesc:
@@ -2452,7 +2377,8 @@ export const translations = {
       longLiq: '多头强平',
       shortLiq: '空头强平',
       costLine: '成本线',
-      noCostLiqData: '{symbol} 暂无成本/强平热力图（加密货币主 DEX 市场不提供此数据）。',
+      noCostLiqData:
+        '{symbol} 暂无成本/强平热力图（加密货币主 DEX 市场不提供此数据）。',
       orderBook: '订单簿',
       noNetFlowData: '暂无净流入数据（需要 Claw402 付费数据）。',
       noClosedTradeSample: '暂无已平仓交易。',
@@ -2472,6 +2398,10 @@ export const translations = {
       live: '实时',
       syncing: '同步中',
       down: '离线',
+      updateMode: '订单簿更新模式',
+      smooth: '平滑',
+      realtimeUpdates: '实时更新',
+      realtimeShort: '实时',
       loadingCostLiq: '正在加载成本/强平热力图…',
       mark: '标记价',
       positionCount: '{positions} 个仓位 / {levels} 个强平价位',
@@ -3645,63 +3575,156 @@ export const translations = {
       stopped: 'Berhenti',
       cycle: 'Siklus',
       aiWalletEmpty: 'USDC dompet biaya AI habis — keputusan gagal.',
-      aiWalletLow: 'Saldo dompet biaya AI rendah ({balance} USDC) — segera isi ulang.',
-      aiWalletDeposit: 'Setor Base USDC ke dompet Claw402; trader akan pulih otomatis.',
-      safeMode: 'Mode aman: AI gagal berulang kali sehingga posisi baru tidak dibuka.',
+      aiWalletLow:
+        'Saldo dompet biaya AI rendah ({balance} USDC) — segera isi ulang.',
+      aiWalletDeposit:
+        'Setor Base USDC ke dompet Claw402; trader akan pulih otomatis.',
+      safeMode:
+        'Mode aman: AI gagal berulang kali sehingga posisi baru tidak dibuka.',
       aiLive: 'AI Anda aktif.',
-      aiLiveDesc: 'AI membaca seluruh pasar sebelum bertindak. Keputusan pertama biasanya muncul di log eksekusi dalam satu atau dua menit.',
-      model: 'Model', strategy: 'Strategi', leverage: 'Leverage', scan: 'Pemindaian',
-      universe: 'Semesta', positions: 'Posisi', nextCycle: 'Siklus berikutnya',
-      equity: 'Ekuitas', totalPnl: 'Total P/L · termasuk belum terealisasi',
-      realizedPnl: 'P/L terealisasi · trade ditutup', profitFactor: 'Faktor profit',
-      maxDrawdown: 'Drawdown maksimum', trades: 'Trade', win: 'Menang', loss: 'Kalah',
-      gross: 'Kotor', fees: 'Biaya', net: 'Bersih', sharpePerTrade: 'Sharpe/trade',
-      avgWinLoss: 'Rata-rata menang/kalah', orchestrationTopology: 'Topologi orkestrasi',
-      orchestrationTopologyDesc: 'Arus → sinyal → keputusan → eksekusi → posisi',
-      flow: 'Arus', signal: 'Sinyal', decision: 'Keputusan', execute: 'Eksekusi', hold: 'Tahan',
-      currentPositions: 'Posisi saat ini', currentPositionsDesc: 'Posisi saat ini · live',
-      open: 'Terbuka', symbol: 'Simbol', sideLeverage: 'Sisi · lev.', entry: 'Entry',
-      size: 'Ukuran', pnl: 'P/L', returnPct: 'Imbal hasil %', long: 'Long', short: 'Short',
-      noOpenPositions: 'Tidak ada posisi terbuka.', recentTrades: 'Trade terbaru',
-      recentTradesDesc: 'Penutupan terbaru · simbol / sisi / durasi / P/L', side: 'Sisi',
-      holdTime: 'Durasi', closed: 'Ditutup', noClosedTrades: 'Belum ada trade ditutup.',
+      aiLiveDesc:
+        'AI membaca seluruh pasar sebelum bertindak. Keputusan pertama biasanya muncul di log eksekusi dalam satu atau dua menit.',
+      model: 'Model',
+      strategy: 'Strategi',
+      leverage: 'Leverage',
+      scan: 'Pemindaian',
+      universe: 'Semesta',
+      positions: 'Posisi',
+      nextCycle: 'Siklus berikutnya',
+      equity: 'Ekuitas',
+      totalPnl: 'Total P/L · termasuk belum terealisasi',
+      realizedPnl: 'P/L terealisasi · trade ditutup',
+      profitFactor: 'Faktor profit',
+      maxDrawdown: 'Drawdown maksimum',
+      trades: 'Trade',
+      win: 'Menang',
+      loss: 'Kalah',
+      gross: 'Kotor',
+      fees: 'Biaya',
+      net: 'Bersih',
+      sharpePerTrade: 'Sharpe/trade',
+      avgWinLoss: 'Rata-rata menang/kalah',
+      orchestrationTopology: 'Topologi orkestrasi',
+      orchestrationTopologyDesc:
+        'Arus → sinyal → keputusan → eksekusi → posisi',
+      flow: 'Arus',
+      signal: 'Sinyal',
+      decision: 'Keputusan',
+      execute: 'Eksekusi',
+      hold: 'Tahan',
+      currentPositions: 'Posisi saat ini',
+      currentPositionsDesc: 'Posisi saat ini · live',
+      open: 'Terbuka',
+      symbol: 'Simbol',
+      sideLeverage: 'Sisi · lev.',
+      entry: 'Entry',
+      size: 'Ukuran',
+      pnl: 'P/L',
+      returnPct: 'Imbal hasil %',
+      long: 'Long',
+      short: 'Short',
+      noOpenPositions: 'Tidak ada posisi terbuka.',
+      recentTrades: 'Trade terbaru',
+      recentTradesDesc: 'Penutupan terbaru · simbol / sisi / durasi / P/L',
+      side: 'Sisi',
+      holdTime: 'Durasi',
+      closed: 'Ditutup',
+      noClosedTrades: 'Belum ada trade ditutup.',
       marketNetInflow: 'Arus masuk bersih pasar',
-      marketNetInflowDesc: 'Arus masuk bersih pasar · {window} · Vergex', markets: 'Pasar',
-      bySymbol: 'Per simbol', bySymbolDesc: 'Riwayat simbol · trade / menang / P/L',
-      tradesWin: '{trades} trade · {win}% menang', noSymbolHistory: 'Belum ada riwayat simbol.',
-      edgeProfile: 'Profil keunggulan', edgeProfileDesc: 'Bersih per durasi dan sisi · setelah biaya',
-      executionLog: 'Log eksekusi', executionLogDesc: 'Keputusan dan fill AI per siklus',
-      noExecutionEvents: 'Belum ada peristiwa eksekusi.', signalMatrix: 'Matriks sinyal',
-      signalMatrixDesc: 'Matriks sinyal · Vergex', noSignalData: 'Tidak ada data sinyal (Claw402).',
-      riskRadar: 'Radar risiko', riskRadarDesc: 'Pemeriksaan risiko posisi live',
-      noRiskData: 'Tidak ada data risiko live.', costLiqMap: 'Peta biaya / likuidasi',
-      longCost: 'Biaya long', shortCost: 'Biaya short', longLiq: 'Likuidasi long',
-      shortLiq: 'Likuidasi short', costLine: 'Garis biaya',
-      noCostLiqData: 'Tidak ada peta biaya/likuidasi untuk {symbol}.', orderBook: 'Buku order',
-      noNetFlowData: 'Tidak ada data arus bersih (pembayaran Claw402 diperlukan).',
+      marketNetInflowDesc: 'Arus masuk bersih pasar · {window} · Vergex',
+      markets: 'Pasar',
+      bySymbol: 'Per simbol',
+      bySymbolDesc: 'Riwayat simbol · trade / menang / P/L',
+      tradesWin: '{trades} trade · {win}% menang',
+      noSymbolHistory: 'Belum ada riwayat simbol.',
+      edgeProfile: 'Profil keunggulan',
+      edgeProfileDesc: 'Bersih per durasi dan sisi · setelah biaya',
+      executionLog: 'Log eksekusi',
+      executionLogDesc: 'Keputusan dan fill AI per siklus',
+      noExecutionEvents: 'Belum ada peristiwa eksekusi.',
+      signalMatrix: 'Matriks sinyal',
+      signalMatrixDesc: 'Matriks sinyal · Vergex',
+      noSignalData: 'Tidak ada data sinyal (Claw402).',
+      riskRadar: 'Radar risiko',
+      riskRadarDesc: 'Pemeriksaan risiko posisi live',
+      noRiskData: 'Tidak ada data risiko live.',
+      costLiqMap: 'Peta biaya / likuidasi',
+      longCost: 'Biaya long',
+      shortCost: 'Biaya short',
+      longLiq: 'Likuidasi long',
+      shortLiq: 'Likuidasi short',
+      costLine: 'Garis biaya',
+      noCostLiqData: 'Tidak ada peta biaya/likuidasi untuk {symbol}.',
+      orderBook: 'Buku order',
+      noNetFlowData:
+        'Tidak ada data arus bersih (pembayaran Claw402 diperlukan).',
       noClosedTradeSample: 'Belum ada trade ditutup.',
-      ok: 'OK', throttle: 'Dibatasi', risk: 'Risiko', bullish: 'Bullish',
-      bearish: 'Bearish', neutral: 'Netral', clickToSwitch: 'Klik untuk beralih',
-      signals: 'Sinyal', netInflow: 'Arus bersih', buySell: 'Beli / jual', price: 'Harga',
-      netFlowLegend: 'Arus bersih = pembelian bersih {window} · hijau/merah = porsi beli/jual · trade = jumlah · harga = harga terakhir',
-      live: 'Live', syncing: 'Sinkronisasi', down: 'Offline',
-      loadingCostLiq: 'Memuat peta biaya/likuidasi…', mark: 'Mark',
+      ok: 'OK',
+      throttle: 'Dibatasi',
+      risk: 'Risiko',
+      bullish: 'Bullish',
+      bearish: 'Bearish',
+      neutral: 'Netral',
+      clickToSwitch: 'Klik untuk beralih',
+      signals: 'Sinyal',
+      netInflow: 'Arus bersih',
+      buySell: 'Beli / jual',
+      price: 'Harga',
+      netFlowLegend:
+        'Arus bersih = pembelian bersih {window} · hijau/merah = porsi beli/jual · trade = jumlah · harga = harga terakhir',
+      live: 'Live',
+      syncing: 'Sinkronisasi',
+      down: 'Offline',
+      updateMode: 'Mode pembaruan buku order',
+      smooth: 'Halus',
+      realtimeUpdates: 'Pembaruan waktu nyata',
+      realtimeShort: 'Realtime',
+      loadingCostLiq: 'Memuat peta biaya/likuidasi…',
+      mark: 'Mark',
       positionCount: '{positions} posisi / {levels} level likuidasi',
-      connectingHyperliquid: 'Menghubungkan ke Hyperliquid…', cumulative: 'Kumulatif $',
-      spread: 'Spread', lastClosedSummary: '{sample} penutupan terakhir · {takeaway}',
+      connectingHyperliquid: 'Menghubungkan ke Hyperliquid…',
+      cumulative: 'Kumulatif $',
+      spread: 'Spread',
+      lastClosedSummary: '{sample} penutupan terakhir · {takeaway}',
       edgeRow: '{trades} trade · {win}% menang · biaya ${fees}',
-      market: 'Pasar', liveCandles: 'Candle live', bars: 'Bar',
-      loadingMarket: 'Memuat pasar…', noAction: 'Tanpa aksi', actions: '{count} aksi', fault: 'Gangguan',
-      flat: 'Datar', longLean: 'Condong long', shortLean: 'Condong short', balanced: 'Seimbang',
-      risky: 'Berisiko', high: 'Tinggi', safe: 'Aman', tight: 'Ketat', ample: 'Cukup',
-      concentrated: 'Terkonsentrasi', spreadOut: 'Tersebar', calm: 'Tenang', deep: 'Dalam',
-      caution: 'Waspada', full: 'Penuh', room: 'Tersedia', netExposure: 'Eksposur bersih',
-      marginUsed: 'Margin terpakai', concentration: 'Konsentrasi', drawdown: 'Drawdown',
-      unrealizedPnl: 'P/L belum terealisasi', average: 'Rata-rata',
-      peakCap: '/ puncak {peak} · batas {cap}', ofEquity: 'Dari ekuitas',
-      topPositionShare: 'Porsi posisi terbesar', peakDrawdown: 'Drawdown puncak', heldCap: 'Ditahan / batas',
-      longHoldEdge: 'Keunggulan terkonsentrasi pada durasi ≥ 1j ({long} vs {short} di bawah 1j)',
-      shortHoldEdge: 'Durasi pendek unggul pada sampel ini ({short} vs {long} ≥ 1j)',
+      market: 'Pasar',
+      liveCandles: 'Candle live',
+      bars: 'Bar',
+      loadingMarket: 'Memuat pasar…',
+      noAction: 'Tanpa aksi',
+      actions: '{count} aksi',
+      fault: 'Gangguan',
+      flat: 'Datar',
+      longLean: 'Condong long',
+      shortLean: 'Condong short',
+      balanced: 'Seimbang',
+      risky: 'Berisiko',
+      high: 'Tinggi',
+      safe: 'Aman',
+      tight: 'Ketat',
+      ample: 'Cukup',
+      concentrated: 'Terkonsentrasi',
+      spreadOut: 'Tersebar',
+      calm: 'Tenang',
+      deep: 'Dalam',
+      caution: 'Waspada',
+      full: 'Penuh',
+      room: 'Tersedia',
+      netExposure: 'Eksposur bersih',
+      marginUsed: 'Margin terpakai',
+      concentration: 'Konsentrasi',
+      drawdown: 'Drawdown',
+      unrealizedPnl: 'P/L belum terealisasi',
+      average: 'Rata-rata',
+      peakCap: '/ puncak {peak} · batas {cap}',
+      ofEquity: 'Dari ekuitas',
+      topPositionShare: 'Porsi posisi terbesar',
+      peakDrawdown: 'Drawdown puncak',
+      heldCap: 'Ditahan / batas',
+      longHoldEdge:
+        'Keunggulan terkonsentrasi pada durasi ≥ 1j ({long} vs {short} di bawah 1j)',
+      shortHoldEdge:
+        'Durasi pendek unggul pada sampel ini ({short} vs {long} ≥ 1j)',
     },
 
     aiTradersToast: {

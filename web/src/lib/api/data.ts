@@ -20,6 +20,14 @@ export interface Kline {
   closeTime: number
 }
 
+export interface BinanceDepthSnapshot {
+  lastUpdateId: number
+  E?: number
+  T?: number
+  bids: [string, string][]
+  asks: [string, string][]
+}
+
 // Vergex net-flow market ranking (GET /api/vergex/flow-markets). Numeric fields
 // arrive as strings from the upstream API.
 export interface FlowMarketItem {
@@ -358,6 +366,20 @@ export const dataApi = {
       { silent }
     )
     if (!result.success) throw new Error('Failed to fetch klines')
+    return result.data!
+  },
+
+  async getDepth(
+    symbol: string,
+    limit: 5 | 10 | 20 = 20,
+    silent?: boolean
+  ): Promise<BinanceDepthSnapshot> {
+    const params = new URLSearchParams({ symbol, limit: String(limit) })
+    const result = await httpClient.request<BinanceDepthSnapshot>(
+      `${API_BASE}/depth?${params}`,
+      { silent }
+    )
+    if (!result.success) throw new Error('Failed to fetch Binance depth')
     return result.data!
   },
 

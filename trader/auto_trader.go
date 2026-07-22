@@ -124,8 +124,9 @@ type AutoTraderConfig struct {
 	Claw402WalletKey string
 
 	// Scan configuration
-	ScanInterval             time.Duration // Scan interval (recommended 15 minutes)
-	PaperRiskMonitorInterval time.Duration // Paper-only mark/SL/TP/liquidation refresh interval
+	ScanInterval                time.Duration // Scan interval (recommended 15 minutes)
+	PaperRiskMonitorInterval    time.Duration // Paper-only mark/SL/TP/liquidation refresh interval
+	PaperFundingMonitorInterval time.Duration // Paper-only funding snapshot/settlement cadence
 
 	// Account configuration
 	InitialBalance float64 // Initial balance (for P&L calculation, must be set manually)
@@ -197,6 +198,9 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 	// Set default values
 	if config.PaperRiskMonitorInterval <= 0 {
 		config.PaperRiskMonitorInterval = 5 * time.Second
+	}
+	if config.PaperFundingMonitorInterval <= 0 {
+		config.PaperFundingMonitorInterval = time.Minute
 	}
 	if config.ID == "" {
 		config.ID = "default_trader"
@@ -287,7 +291,12 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 			config.InitialBalance = 10_000
 		}
 		priceSource := &binancePaperPriceSource{client: market.NewAPIClient()}
-		paperConfig := PaperBrokerConfig{InitialBalance: config.InitialBalance, TakerFeeBPS: 5, SlippageBPS: 2}
+		paperConfig := PaperBrokerConfig{
+			InitialBalance: config.InitialBalance,
+			MakerFirst: true, MakerFeeBPS: 2, TakerFeeBPS: 5, SlippageBPS: 2,
+			MakerTimeout: 15 * time.Second, MakerMaxReprices: 2,
+			FundingSource: priceSource,
+		}
 		if st != nil {
 			paperBroker, err = NewPersistentPaperBroker(paperConfig, priceSource, st.Paper(), config.ID)
 		} else {
@@ -500,6 +509,8 @@ func (at *AutoTrader) Run() error {
 
 	// Start drawdown monitoring
 	at.startDrawdownMonitor()
+	at.runPaperFundingStartupCatchup()
+	at.startPaperFundingMonitor()
 	at.startPaperRiskMonitor()
 
 	// Start Lighter order sync if using Lighter exchange

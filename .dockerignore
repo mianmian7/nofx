@@ -23,10 +23,6 @@ nofx_test
 *.so
 *.dylib
 
-# Test files
-*_test.go
-test_*
-
 # Documentation
 *.md
 !README.md
@@ -47,3 +43,12 @@ web/dist/
 tmp/
 temp/
 *.tmp
+
+# Local validation artifacts (never needed by backend/frontend builds)
+.playwright-cli/
+output/
+screenshots/
+.cache/
+coverage/
+playwright-report/
+test-results/

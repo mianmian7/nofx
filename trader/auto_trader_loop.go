@@ -441,7 +441,11 @@ func canonicalUniverseSymbolForBase(ctx *kernel.Context, base string) string {
 func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 	if at.executionMode == ExecutionModePaper && at.paperBroker != nil {
 		if err := at.paperBroker.RefreshOpenPositions(); err != nil {
-			return nil, fmt.Errorf("failed to refresh paper positions: %w", err)
+			if CanContinueWithCachedPaperMarks(err) {
+				at.logWarnf("⚠️ Paper position refresh using bounded cached marks: %v", err)
+			} else {
+				return nil, fmt.Errorf("failed to refresh paper positions: %w", err)
+			}
 		}
 	}
 	// 1. Get account information

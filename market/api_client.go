@@ -18,13 +18,24 @@ import (
 
 const (
 	baseURL                = "https://fapi.binance.com"
-	binanceRequestTimeout  = 4 * time.Second
-	binanceRetryDelay      = 150 * time.Millisecond
-	binanceMaxAttempts     = 2
+	binanceRequestTimeout  = 6 * time.Second
+	binanceRetryDelay      = 200 * time.Millisecond
+	binanceMaxAttempts     = 3
 	binanceExchangeInfoTTL = 15 * time.Minute
 	binanceDynamicFreshTTL = 30 * time.Second
 	binanceDynamicStaleTTL = 15 * time.Minute
 )
+
+var binancePublicTransport = func() *http.Transport {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConns = 100
+	transport.MaxIdleConnsPerHost = 20
+	transport.MaxConnsPerHost = 40
+	transport.IdleConnTimeout = 90 * time.Second
+	transport.TLSHandshakeTimeout = 5 * time.Second
+	transport.ResponseHeaderTimeout = 5 * time.Second
+	return transport
+}()
 
 var binanceExchangeInfoCache struct {
 	sync.Mutex
@@ -39,12 +50,14 @@ var binanceDynamicTickerCache struct {
 }
 
 type APIClient struct {
-	client *http.Client
+	client  *http.Client
+	baseURL string
 }
 
 func NewAPIClient() *APIClient {
 	client := &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout:   10 * time.Second,
+		Transport: binancePublicTransport,
 	}
 
 	hookRes := hook.HookExec[hook.SetHttpClientResult](hook.SET_HTTP_CLIENT, client)
@@ -54,8 +67,151 @@ func NewAPIClient() *APIClient {
 	}
 
 	return &APIClient{
-		client: client,
+		client:  client,
+		baseURL: baseURL,
 	}
+}
+
+func NewAPIClientWithBaseURL(binanceBaseURL string) *APIClient {
+	client := NewAPIClient()
+	client.baseURL = strings.TrimRight(binanceBaseURL, "/")
+	return client
+}
+
+func (c *APIClient) GetDepth(symbol string, limit int) (*BinanceDepthSnapshot, error) {
+	if limit != 5 && limit != 10 && limit != 20 {
+		return nil, fmt.Errorf("binance depth limit must be 5, 10, or 20")
+	}
+	var err error
+	symbol, err = NormalizeBinanceSymbol(symbol)
+	if err != nil {
+		return nil, err
+	}
+	var depth BinanceDepthSnapshot
+	path := binancePath("/fapi/v1/depth", url.Values{"symbol": {symbol}, "limit": {strconv.Itoa(limit)}})
+	if err := c.getBinanceJSON(path, &depth); err != nil {
+		return nil, err
+	}
+	return &depth, nil
+}
+
+func (c *APIClient) GetFundingSnapshot(symbol string) (*FundingSnapshot, error) {
+	var err error
+	symbol, err = NormalizeBinanceSymbol(symbol)
+	if err != nil {
+		return nil, err
+	}
+	var raw struct {
+		Symbol          string `json:"symbol"`
+		MarkPrice       string `json:"markPrice"`
+		IndexPrice      string `json:"indexPrice"`
+		LastFundingRate string `json:"lastFundingRate"`
+		NextFundingTime int64  `json:"nextFundingTime"`
+		Time            int64  `json:"time"`
+	}
+	path := binancePath("/fapi/v1/premiumIndex", url.Values{"symbol": {symbol}})
+	if err := c.getBinanceJSON(path, &raw); err != nil {
+		return nil, err
+	}
+	markPrice, err := strconv.ParseFloat(raw.MarkPrice, 64)
+	if err != nil {
+		return nil, fmt.Errorf("parse Binance funding mark price: %w", err)
+	}
+	indexPrice, err := strconv.ParseFloat(raw.IndexPrice, 64)
+	if err != nil {
+		return nil, fmt.Errorf("parse Binance funding index price: %w", err)
+	}
+	rate, err := strconv.ParseFloat(raw.LastFundingRate, 64)
+	if err != nil {
+		return nil, fmt.Errorf("parse Binance funding rate: %w", err)
+	}
+	return &FundingSnapshot{
+		Symbol: raw.Symbol, MarkPrice: markPrice, IndexPrice: indexPrice,
+		Rate: rate, NextFundingTime: raw.NextFundingTime, Time: raw.Time,
+	}, nil
+}
+
+func (c *APIClient) GetFundingHistory(symbol string, startTime, endTime int64) ([]FundingEvent, error) {
+	var err error
+	symbol, err = NormalizeBinanceSymbol(symbol)
+	if err != nil {
+		return nil, err
+	}
+	events := make([]FundingEvent, 0)
+	for cursor := startTime; cursor <= endTime; {
+		var raw []struct {
+			Symbol      string `json:"symbol"`
+			FundingRate string `json:"fundingRate"`
+			FundingTime int64  `json:"fundingTime"`
+			MarkPrice   string `json:"markPrice"`
+		}
+		path := binancePath("/fapi/v1/fundingRate", url.Values{
+			"symbol": {symbol}, "startTime": {strconv.FormatInt(cursor, 10)},
+			"endTime": {strconv.FormatInt(endTime, 10)}, "limit": {"1000"},
+		})
+		if err := c.getBinanceJSON(path, &raw); err != nil {
+			return nil, err
+		}
+		maxFundingTime := cursor - 1
+		for _, item := range raw {
+			rate, err := strconv.ParseFloat(item.FundingRate, 64)
+			if err != nil {
+				return nil, fmt.Errorf("parse Binance funding rate at %d: %w", item.FundingTime, err)
+			}
+			markPrice := 0.0
+			if item.MarkPrice != "" {
+				markPrice, err = strconv.ParseFloat(item.MarkPrice, 64)
+				if err != nil {
+					return nil, fmt.Errorf("parse Binance funding mark price at %d: %w", item.FundingTime, err)
+				}
+			}
+			events = append(events, FundingEvent{
+				Symbol: item.Symbol, Rate: rate, FundingTime: item.FundingTime, MarkPrice: markPrice,
+			})
+			if item.FundingTime > maxFundingTime {
+				maxFundingTime = item.FundingTime
+			}
+		}
+		if len(raw) < 1000 || maxFundingTime < cursor || maxFundingTime >= endTime {
+			break
+		}
+		cursor = maxFundingTime + 1
+	}
+	sort.SliceStable(events, func(i, j int) bool { return events[i].FundingTime < events[j].FundingTime })
+	return events, nil
+}
+
+func (c *APIClient) GetFundingInfo(symbol string) (*FundingInfo, error) {
+	var err error
+	symbol, err = NormalizeBinanceSymbol(symbol)
+	if err != nil {
+		return nil, err
+	}
+	var raw []struct {
+		Symbol                   string `json:"symbol"`
+		AdjustedFundingRateCap   string `json:"adjustedFundingRateCap"`
+		AdjustedFundingRateFloor string `json:"adjustedFundingRateFloor"`
+		FundingIntervalHours     int    `json:"fundingIntervalHours"`
+	}
+	path := binancePath("/fapi/v1/fundingInfo", url.Values{"symbol": {symbol}})
+	if err := c.getBinanceJSON(path, &raw); err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("Binance funding info for %s not found", symbol)
+	}
+	capRate, err := strconv.ParseFloat(raw[0].AdjustedFundingRateCap, 64)
+	if err != nil {
+		return nil, fmt.Errorf("parse Binance funding rate cap: %w", err)
+	}
+	floorRate, err := strconv.ParseFloat(raw[0].AdjustedFundingRateFloor, 64)
+	if err != nil {
+		return nil, fmt.Errorf("parse Binance funding rate floor: %w", err)
+	}
+	return &FundingInfo{
+		Symbol: raw[0].Symbol, RateCap: capRate, RateFloor: floorRate,
+		IntervalHours: raw[0].FundingIntervalHours,
+	}, nil
 }
 
 func (c *APIClient) GetExchangeInfo() (*ExchangeInfo, error) {
@@ -89,8 +245,12 @@ func (c *APIClient) Get24hrTickers() ([]Ticker24hr, error) {
 // public endpoint. Binance symbols are normalized without consulting any
 // Hyperliquid/XYZ asset registry.
 func (c *APIClient) GetKlines(symbol, interval string, limit int) ([]Kline, error) {
-	symbol = NormalizeForExchange("binance", symbol)
-	interval, err := NormalizeTimeframe(interval)
+	var err error
+	symbol, err = NormalizeBinanceSymbol(symbol)
+	if err != nil {
+		return nil, err
+	}
+	interval, err = NormalizeTimeframe(interval)
 	if err != nil {
 		return nil, err
 	}
@@ -101,8 +261,9 @@ func (c *APIClient) GetKlines(symbol, interval string, limit int) ([]Kline, erro
 		limit = binanceMaxKlineLimit
 	}
 
-	path := fmt.Sprintf("/fapi/v1/klines?symbol=%s&interval=%s&limit=%d",
-		url.QueryEscape(symbol), url.QueryEscape(interval), limit)
+	path := binancePath("/fapi/v1/klines", url.Values{
+		"symbol": {symbol}, "interval": {interval}, "limit": {strconv.Itoa(limit)},
+	})
 	var raw [][]json.RawMessage
 	if err := c.getBinanceJSON(path, &raw); err != nil {
 		return nil, err
@@ -162,7 +323,11 @@ func GetBinanceKlines(symbol, interval string, limit int) ([]Kline, error) {
 }
 
 func (c *APIClient) getBinanceJSON(path string, target any) error {
-	url := fmt.Sprintf("%s%s", baseURL, path)
+	clientBaseURL := c.baseURL
+	if clientBaseURL == "" {
+		clientBaseURL = baseURL
+	}
+	url := fmt.Sprintf("%s%s", clientBaseURL, path)
 	var lastErr error
 	for attempt := 1; attempt <= binanceMaxAttempts; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), binanceRequestTimeout)
@@ -184,8 +349,7 @@ func (c *APIClient) getBinanceJSON(path string, target any) error {
 					return err
 				}
 			} else if decodeErr := json.Unmarshal(body, target); decodeErr != nil {
-				cancel()
-				return decodeErr
+				err = decodeErr
 			} else {
 				cancel()
 				return nil
@@ -194,7 +358,7 @@ func (c *APIClient) getBinanceJSON(path string, target any) error {
 		cancel()
 		lastErr = err
 		if attempt < binanceMaxAttempts {
-			time.Sleep(binanceRetryDelay)
+			time.Sleep(binanceRetryDelay * time.Duration(1<<(attempt-1)))
 		}
 	}
 	return lastErr
@@ -342,31 +506,13 @@ func (c *APIClient) GetBinanceDynamicSymbols(limit int) ([]string, error) {
 }
 
 func (c *APIClient) GetCurrentPrice(symbol string) (float64, error) {
-	symbol = NormalizeForExchange("binance", symbol)
-	url := fmt.Sprintf("%s/fapi/v1/ticker/price", baseURL)
-	req, err := http.NewRequest("GET", url, nil)
+	symbol, err := NormalizeBinanceSymbol(symbol)
 	if err != nil {
 		return 0, err
 	}
-
-	q := req.URL.Query()
-	q.Add("symbol", symbol)
-	req.URL.RawQuery = q.Encode()
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, err
-	}
-
 	var ticker PriceTicker
-	err = json.Unmarshal(body, &ticker)
-	if err != nil {
+	path := binancePath("/fapi/v1/ticker/price", url.Values{"symbol": {symbol}})
+	if err := c.getBinanceJSON(path, &ticker); err != nil {
 		return 0, err
 	}
 
@@ -376,4 +522,11 @@ func (c *APIClient) GetCurrentPrice(symbol string) (float64, error) {
 	}
 
 	return price, nil
+}
+
+func binancePath(endpoint string, query url.Values) string {
+	if len(query) == 0 {
+		return endpoint
+	}
+	return endpoint + "?" + query.Encode()
 }

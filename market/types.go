@@ -113,6 +113,37 @@ type PriceTicker struct {
 	Price  string `json:"price"`
 }
 
+type BinanceDepthSnapshot struct {
+	LastUpdateID    int64      `json:"lastUpdateId"`
+	EventTime       int64      `json:"E,omitempty"`
+	TransactionTime int64      `json:"T,omitempty"`
+	Bids            [][]string `json:"bids"`
+	Asks            [][]string `json:"asks"`
+}
+
+type FundingSnapshot struct {
+	Symbol          string  `json:"symbol"`
+	MarkPrice       float64 `json:"mark_price"`
+	IndexPrice      float64 `json:"index_price"`
+	Rate            float64 `json:"funding_rate"`
+	NextFundingTime int64   `json:"next_funding_time"`
+	Time            int64   `json:"time"`
+}
+
+type FundingEvent struct {
+	Symbol      string  `json:"symbol"`
+	Rate        float64 `json:"funding_rate"`
+	FundingTime int64   `json:"funding_time"`
+	MarkPrice   float64 `json:"mark_price"`
+}
+
+type FundingInfo struct {
+	Symbol        string  `json:"symbol"`
+	RateCap       float64 `json:"rate_cap"`
+	RateFloor     float64 `json:"rate_floor"`
+	IntervalHours int     `json:"interval_hours"`
+}
+
 type Ticker24hr struct {
 	Symbol             string `json:"symbol"`
 	LastPrice          string `json:"lastPrice"`

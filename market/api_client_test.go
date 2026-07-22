@@ -4,10 +4,60 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestGetDepthUsesNormalizedBinanceSymbolAndPreservesTickStrings(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/fapi/v1/depth" {
+			t.Fatalf("path = %q", req.URL.Path)
+		}
+		if got := req.URL.Query().Get("symbol"); got != "MUUSDT" {
+			t.Fatalf("symbol = %q, want MUUSDT", got)
+		}
+		if got := req.URL.Query().Get("limit"); got != "20" {
+			t.Fatalf("limit = %q, want 20", got)
+		}
+		_, _ = io.WriteString(w, `{"lastUpdateId":42,"E":1784650000000,"T":1784650000001,"bids":[["4119.06","15.874"]],"asks":[["4119.07","1.590"]]}`)
+	}))
+	defer server.Close()
+
+	depth, err := NewAPIClientWithBaseURL(server.URL).GetDepth("MUUSDT", 20)
+	if err != nil {
+		t.Fatalf("GetDepth: %v", err)
+	}
+	if depth.LastUpdateID != 42 || depth.Bids[0][0] != "4119.06" || depth.Asks[0][0] != "4119.07" {
+		t.Fatalf("depth = %#v", depth)
+	}
+}
+
+func TestGetCurrentPriceRetriesTransientReadFailure(t *testing.T) {
+	calls := 0
+	client := &APIClient{
+		baseURL: "https://binance.test",
+		client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			if calls == 1 {
+				return nil, io.ErrUnexpectedEOF
+			}
+			if got := req.URL.Query().Get("symbol"); got != "SOXLUSDT" {
+				t.Fatalf("symbol = %q, want SOXLUSDT", got)
+			}
+			return binanceJSONResponse(`{"symbol":"SOXLUSDT","price":"147.51"}`), nil
+		})},
+	}
+
+	price, err := client.GetCurrentPrice("SOXLUSDT")
+	if err != nil {
+		t.Fatalf("GetCurrentPrice: %v", err)
+	}
+	if price != 147.51 || calls != 2 {
+		t.Fatalf("price/calls = %v/%d, want 147.51/2", price, calls)
+	}
+}
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 

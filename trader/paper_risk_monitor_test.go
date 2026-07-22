@@ -2,6 +2,7 @@ package trader
 
 import (
 	"errors"
+	"io"
 	"sync"
 	"testing"
 	"time"
@@ -32,6 +33,18 @@ type mutablePaperPriceSource struct {
 	mu    sync.RWMutex
 	price float64
 	calls int
+}
+
+type switchablePaperPriceSource struct {
+	price float64
+	err   error
+}
+
+func (s *switchablePaperPriceSource) GetMarketPrice(string) (float64, error) {
+	if s.err != nil {
+		return 0, s.err
+	}
+	return s.price, nil
 }
 
 func (s *mutablePaperPriceSource) GetMarketPrice(string) (float64, error) {
@@ -266,6 +279,66 @@ func TestPaperRefreshAttemptsEveryOpenSymbolAfterOnePriceError(t *testing.T) {
 	prices.mu.Unlock()
 	if calls != 2 {
 		t.Fatalf("price refresh calls = %d, want every 2 open symbols attempted", calls)
+	}
+}
+
+func TestPaperRefreshUsesFreshCachedMarkButFailsClosedAfterTTL(t *testing.T) {
+	now := time.Date(2026, 7, 22, 15, 0, 0, 0, time.UTC)
+	prices := &switchablePaperPriceSource{price: 100}
+	broker, err := NewPaperBroker(PaperBrokerConfig{
+		InitialBalance: 1_000,
+		Clock:          func() time.Time { return now },
+		MarkStaleTTL:   30 * time.Second,
+	}, prices)
+	if err != nil {
+		t.Fatalf("NewPaperBroker: %v", err)
+	}
+	if _, err := broker.ExecuteDecision(&kernel.Decision{
+		Symbol: "MUUSDT", Action: "open_long", PositionSizeUSD: 300, Leverage: 3,
+	}); err != nil {
+		t.Fatalf("open_long: %v", err)
+	}
+	prices.err = io.ErrUnexpectedEOF
+
+	now = now.Add(10 * time.Second)
+	err = broker.RefreshOpenPositions()
+	if err == nil || !CanContinueWithCachedPaperMarks(err) {
+		t.Fatalf("fresh-cache refresh error = %v, want non-fatal cached-mark warning", err)
+	}
+
+	now = now.Add(21 * time.Second)
+	err = broker.RefreshOpenPositions()
+	if err == nil || CanContinueWithCachedPaperMarks(err) {
+		t.Fatalf("expired-cache refresh error = %v, want fail-closed error", err)
+	}
+}
+
+func TestPaperTradingContextContinuesOnTransientPriceFailureWithinTTL(t *testing.T) {
+	now := time.Date(2026, 7, 22, 15, 0, 0, 0, time.UTC)
+	prices := &switchablePaperPriceSource{price: 100}
+	broker, err := NewPaperBroker(PaperBrokerConfig{
+		InitialBalance: 1_000,
+		Clock:          func() time.Time { return now },
+		MarkStaleTTL:   30 * time.Second,
+	}, prices)
+	if err != nil {
+		t.Fatalf("NewPaperBroker: %v", err)
+	}
+	if _, err := broker.ExecuteDecision(&kernel.Decision{
+		Symbol: "MUUSDT", Action: "open_long", PositionSizeUSD: 300, Leverage: 3,
+	}); err != nil {
+		t.Fatalf("open_long: %v", err)
+	}
+	prices.err = io.ErrUnexpectedEOF
+	now = now.Add(10 * time.Second)
+	at := newMonitorTestAutoTrader(ExecutionModePaper, broker, time.Hour)
+
+	ctx, err := at.buildTradingContext()
+	if err != nil {
+		t.Fatalf("buildTradingContext should continue with fresh cached mark: %v", err)
+	}
+	if len(ctx.Positions) != 1 || ctx.Positions[0].MarkPrice != 100 {
+		t.Fatalf("positions = %#v, want cached MUUSDT mark 100", ctx.Positions)
 	}
 }
 

@@ -2806,12 +2806,12 @@ export function StrategyStudioPage() {
                   <div className="rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-lighter p-4">
                     <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-nofx-text">
                       <Sparkles className="h-4 w-4 text-nofx-gold" />
-                      {text(language, 'Raw candles', 'Raw candles')}
+                      {text(language, '原始 K 线', 'Raw candles')}
                     </div>
                     <div className="space-y-4">
                       <div>
                         <div className="mb-2 text-xs text-nofx-text-muted">
-                          {text(language, 'Timeframe', 'Timeframe')}
+                          {text(language, '时间周期', 'Timeframe')}
                         </div>
                         <div className="flex flex-wrap gap-2">
                           {timeframeOptions.map((timeframe) => (
@@ -2833,7 +2833,7 @@ export function StrategyStudioPage() {
                       </div>
                       <div>
                         <div className="mb-2 text-xs text-nofx-text-muted">
-                          {text(language, 'Bars', 'Bars')}
+                          {text(language, 'K 线数量', 'Bars')}
                         </div>
                         <div className="flex flex-wrap gap-2">
                           {barCountOptions.map((count) => (
@@ -2860,14 +2860,14 @@ export function StrategyStudioPage() {
                       <Shield className="h-4 w-4 text-nofx-success" />
                       {text(
                         language,
-                        'Trading parameters',
+                        '交易参数',
                         'Trading parameters'
                       )}
                     </div>
                     <div className="grid gap-4 sm:grid-cols-3">
                       <label className="space-y-2">
                         <span className="text-xs text-nofx-text-muted">
-                          {text(language, 'Max positions', 'Max positions')}
+                          {text(language, '最大持仓数', 'Max positions')}
                         </span>
                         <select
                           value={risk.max_positions}
@@ -2887,7 +2887,7 @@ export function StrategyStudioPage() {
                       </label>
                       <label className="space-y-2">
                         <span className="text-xs text-nofx-text-muted">
-                          {text(language, 'Leverage', 'Leverage')}
+                          {text(language, '杠杆', 'Leverage')}
                         </span>
                         <select
                           value={risk.altcoin_max_leverage}
@@ -2907,7 +2907,7 @@ export function StrategyStudioPage() {
                         <span className="text-xs text-nofx-text-muted">
                           {text(
                             language,
-                            'Entry confidence',
+                            '入场置信度',
                             'Entry confidence'
                           )}
                         </span>
@@ -2933,7 +2933,7 @@ export function StrategyStudioPage() {
 
                 <div className="mt-4 rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-lighter p-4">
                   <div className="mb-2 text-sm font-semibold text-nofx-text">
-                    {text(language, 'Strategy note', 'Strategy note')}
+                    {text(language, '策略备注', 'Strategy note')}
                   </div>
                   <textarea
                     value={aiConfig.custom_prompt || ''}
@@ -2942,7 +2942,7 @@ export function StrategyStudioPage() {
                     }
                     placeholder={text(
                       language,
-                      'Example: only trade clean trends; skip entries when board signals conflict with candles.',
+                      '例如：只交易清晰趋势；当候选信号与 K 线冲突时跳过入场。',
                       'Example: only trade clean trends; skip entries when board signals conflict with candles.'
                     )}
                     className="h-28 w-full resize-none rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text outline-none placeholder:text-nofx-text-muted/50"

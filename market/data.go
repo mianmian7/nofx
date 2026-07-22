@@ -14,7 +14,8 @@ import (
 )
 
 // FundingRateCache is the funding rate cache structure
-// Binance Funding Rate only updates every 8 hours, using 1-hour cache can significantly reduce API calls
+// Binance funding intervals vary by symbol. This cache is only for the current
+// rate shown to the AI; Paper settlement uses timestamped funding events.
 type FundingRateCache struct {
 	Rate      float64
 	UpdatedAt time.Time
@@ -290,8 +291,7 @@ func getOpenInterestData(symbol string) (*OIData, error) {
 
 // getFundingRate retrieves funding rate (optimized: uses 1-hour cache)
 func getFundingRate(symbol string) (float64, error) {
-	// Check cache (1-hour validity)
-	// Funding Rate only updates every 8 hours, 1-hour cache is very reasonable
+	// Check the short-lived display cache. Do not infer settlement intervals from it.
 	if cached, ok := fundingRateMap.Load(symbol); ok {
 		cache := cached.(*FundingRateCache)
 		if time.Since(cache.UpdatedAt) < frCacheTTL {
@@ -300,36 +300,11 @@ func getFundingRate(symbol string) (float64, error) {
 		}
 	}
 
-	// Cache expired or doesn't exist, call API
-	url := fmt.Sprintf("https://fapi.binance.com/fapi/v1/premiumIndex?symbol=%s", symbol)
-
-	apiClient := NewAPIClient()
-	resp, err := apiClient.client.Get(url)
+	snapshot, err := NewAPIClient().GetFundingSnapshot(symbol)
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, err
-	}
-
-	var result struct {
-		Symbol          string `json:"symbol"`
-		MarkPrice       string `json:"markPrice"`
-		IndexPrice      string `json:"indexPrice"`
-		LastFundingRate string `json:"lastFundingRate"`
-		NextFundingTime int64  `json:"nextFundingTime"`
-		InterestRate    string `json:"interestRate"`
-		Time            int64  `json:"time"`
-	}
-
-	if err := json.Unmarshal(body, &result); err != nil {
-		return 0, err
-	}
-
-	rate, _ := strconv.ParseFloat(result.LastFundingRate, 64)
+	rate := snapshot.Rate
 
 	// Update cache
 	fundingRateMap.Store(symbol, &FundingRateCache{
@@ -595,6 +570,25 @@ func NormalizeForExchange(exchange, symbol string) string {
 		return normalized + "USDT"
 	}
 	return Normalize(symbol)
+}
+
+// NormalizeBinanceSymbol validates a single Binance contract identifier before
+// adding the USDT quote suffix. Query fragments and other delimiters are never
+// accepted as part of a symbol.
+func NormalizeBinanceSymbol(symbol string) (string, error) {
+	normalized := strings.ToUpper(strings.TrimSpace(symbol))
+	if normalized == "" || len(normalized) > 40 {
+		return "", fmt.Errorf("invalid Binance symbol %q", symbol)
+	}
+	for _, char := range normalized {
+		if (char < 'A' || char > 'Z') && (char < '0' || char > '9') {
+			return "", fmt.Errorf("invalid Binance symbol %q", symbol)
+		}
+	}
+	if !strings.HasSuffix(normalized, "USDT") {
+		normalized += "USDT"
+	}
+	return normalized, nil
 }
 
 // parseFloat parses float value

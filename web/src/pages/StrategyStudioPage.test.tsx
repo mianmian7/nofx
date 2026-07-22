@@ -97,6 +97,32 @@ describe('StrategyStudioPage initial data policy', () => {
     ).not.toBeInTheDocument()
   })
 
+  it('renders every advanced setting label in Chinese', async () => {
+    render(
+      <MemoryRouter>
+        <StrategyStudioPage />
+      </MemoryRouter>
+    )
+
+    fireEvent.click(await screen.findByText('高级设置'))
+
+    expect(screen.getByText('原始 K 线')).toBeVisible()
+    expect(screen.getByText('时间周期')).toBeVisible()
+    expect(screen.getByText('K 线数量')).toBeVisible()
+    expect(screen.getByText('交易参数')).toBeVisible()
+    expect(screen.getByText('最大持仓数')).toBeVisible()
+    expect(screen.getByText('杠杆')).toBeVisible()
+    expect(screen.getByText('入场置信度')).toBeVisible()
+    expect(screen.getByText('策略备注')).toBeVisible()
+    expect(
+      screen.getByPlaceholderText(
+        '例如：只交易清晰趋势；当候选信号与 K 线冲突时跳过入场。'
+      )
+    ).toBeVisible()
+    expect(screen.queryByText('Raw candles')).not.toBeInTheDocument()
+    expect(screen.queryByText('Trading parameters')).not.toBeInTheDocument()
+  })
+
   it('labels deterministic replay work as processed candles instead of AI calls', async () => {
     apiMocks.startStrategyBacktest.mockResolvedValue({
       id: 'job-1',

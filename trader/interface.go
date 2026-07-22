@@ -15,6 +15,7 @@ type (
 	LimitOrderRequest = types.LimitOrderRequest
 	LimitOrderResult  = types.LimitOrderResult
 	GridTrader        = types.GridTrader
+	MakerOrderTrader  = types.MakerOrderTrader
 )
 
 // GridTraderAdapter wraps a basic Trader to provide GridTrader interface
