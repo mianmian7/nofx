@@ -2,6 +2,7 @@ package trader
 
 import (
 	"fmt"
+	"math"
 	"nofx/kernel"
 	"nofx/logger"
 	"nofx/market"
@@ -32,6 +33,11 @@ func (at *AutoTrader) executeDecisionWithRecord(decision *kernel.Decision, actio
 				return err
 			}
 			actionRecord.Leverage = decision.Leverage
+		}
+	}
+	if at.executionMode == ExecutionModePaper && (decision.Action == "open_long" || decision.Action == "open_short") {
+		if err := at.enforceOpenRiskBudget(decision); err != nil {
+			return err
 		}
 	}
 	if at.executionMode == ExecutionModePaper {
@@ -95,6 +101,74 @@ func clampDecisionToExchangeLeverageLimit(decision *kernel.Decision, provider le
 	return nil
 }
 
+func numericBalanceField(balance map[string]interface{}, key string) float64 {
+	if value, ok := balance[key].(float64); ok && !math.IsNaN(value) && !math.IsInf(value, 0) {
+		return value
+	}
+	return 0
+}
+
+// enforceOpenRiskBudget is shared by Paper and Live. It applies the selected
+// per-position sizing model and the portfolio-wide configured margin ceiling.
+func (at *AutoTrader) enforceOpenRiskBudget(decision *kernel.Decision) error {
+	if at.config.StrategyConfig == nil {
+		return nil
+	}
+	if decision.Leverage <= 0 {
+		return fmt.Errorf("leverage must be greater than 0: %d", decision.Leverage)
+	}
+	account := at.trader
+	if at.executionMode == ExecutionModePaper {
+		if at.paperBroker == nil {
+			return fmt.Errorf("paper broker is not configured")
+		}
+		account = at.paperBroker
+	}
+	positions, err := account.GetPositions()
+	if err != nil {
+		return fmt.Errorf("failed to verify positions for margin budget: %w", err)
+	}
+	if err := at.enforceMaxPositions(len(positions)); err != nil {
+		return err
+	}
+	for _, pos := range positions {
+		if pos["symbol"] == decision.Symbol && pos["side"] == strings.TrimPrefix(decision.Action, "open_") {
+			return fmt.Errorf("%s already has %s position", decision.Symbol, pos["side"])
+		}
+	}
+	balance, err := account.GetBalance()
+	if err != nil {
+		return fmt.Errorf("failed to verify balance for margin budget: %w", err)
+	}
+	equity := numericBalanceField(balance, "totalEquity")
+	if equity <= 0 {
+		equity = numericBalanceField(balance, "totalWalletBalance")
+	}
+	available := numericBalanceField(balance, "availableBalance")
+	if equity <= 0 || available < 0 {
+		return fmt.Errorf("invalid account values for margin budget: equity %.2f available %.2f", equity, available)
+	}
+
+	adjusted, capped := at.enforcePositionValueRatio(decision.PositionSizeUSD, equity, decision.Symbol, decision.Leverage)
+	if capped {
+		decision.PositionSizeUSD = adjusted
+	}
+	risk := at.config.StrategyConfig.RiskControl
+	committed := numericBalanceField(balance, "totalInitialMargin") + numericBalanceField(balance, "totalOpenOrderInitialMargin")
+	if committed <= 0 && equity > available {
+		committed = equity - available
+	}
+	remaining := equity*risk.MaxMarginUsage - committed
+	if remaining <= 0 {
+		return fmt.Errorf("max margin usage %.0f%% reached", risk.MaxMarginUsage*100)
+	}
+	marginFactor := marginOverheadFactor/float64(decision.Leverage) + takerFeeRate
+	maxByPortfolio := remaining / marginFactor
+	if decision.PositionSizeUSD > maxByPortfolio {
+		decision.PositionSizeUSD = maxByPortfolio * positionSizeSafetyFactor
+	}
+	return at.enforceMinPositionSize(decision.PositionSizeUSD)
+}
 func validateExecutionSymbol(exchange, symbol string) error {
 	exchange = strings.ToLower(strings.TrimSpace(exchange))
 	if exchange == "hyperliquid" {
@@ -171,9 +245,17 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 	}
 
 	at.applyAutopilotFullSizeOpen(decision, equity)
+	if provider, ok := at.trader.(leverageLimitProvider); ok {
+		if err := clampDecisionToExchangeLeverageLimit(decision, provider); err != nil {
+			return err
+		}
+	}
+	if err := at.enforceOpenRiskBudget(decision); err != nil {
+		return err
+	}
 
 	// [CODE ENFORCED] Position Value Ratio Check: position_value <= equity × ratio
-	adjustedPositionSize, wasCapped := at.enforcePositionValueRatio(decision.PositionSizeUSD, equity, decision.Symbol)
+	adjustedPositionSize, wasCapped := at.enforcePositionValueRatio(decision.PositionSizeUSD, equity, decision.Symbol, decision.Leverage)
 	if wasCapped {
 		decision.PositionSizeUSD = adjustedPositionSize
 	}
@@ -287,9 +369,17 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 	}
 
 	at.applyAutopilotFullSizeOpen(decision, equity)
+	if provider, ok := at.trader.(leverageLimitProvider); ok {
+		if err := clampDecisionToExchangeLeverageLimit(decision, provider); err != nil {
+			return err
+		}
+	}
+	if err := at.enforceOpenRiskBudget(decision); err != nil {
+		return err
+	}
 
 	// [CODE ENFORCED] Position Value Ratio Check: position_value <= equity × ratio
-	adjustedPositionSize, wasCapped := at.enforcePositionValueRatio(decision.PositionSizeUSD, equity, decision.Symbol)
+	adjustedPositionSize, wasCapped := at.enforcePositionValueRatio(decision.PositionSizeUSD, equity, decision.Symbol, decision.Leverage)
 	if wasCapped {
 		decision.PositionSizeUSD = adjustedPositionSize
 	}

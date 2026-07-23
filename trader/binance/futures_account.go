@@ -31,9 +31,11 @@ func (t *FuturesTrader) GetBalance() (map[string]interface{}, error) {
 
 	result := make(map[string]interface{})
 	for field, value := range map[string]string{
-		"totalWalletBalance":    account.TotalWalletBalance,
-		"availableBalance":      account.AvailableBalance,
-		"totalUnrealizedProfit": account.TotalUnrealizedProfit,
+		"totalWalletBalance":          account.TotalWalletBalance,
+		"availableBalance":            account.AvailableBalance,
+		"totalUnrealizedProfit":       account.TotalUnrealizedProfit,
+		"totalInitialMargin":          account.TotalInitialMargin,
+		"totalOpenOrderInitialMargin": account.TotalOpenOrderInitialMargin,
 	} {
 		parsed, parseErr := types.ParseFloatField(field, value)
 		if parseErr != nil {

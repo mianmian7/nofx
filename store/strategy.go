@@ -15,7 +15,7 @@ const (
 	MaxCandidateCoins       = 10
 	MaxStaticCandidateCoins = 20
 	MaxWatchlistAssets      = 50
-	MaxPositions            = 8
+	MaxPositions            = 20
 	MaxTimeframes           = 4
 	MinKlineCount           = 10
 	MaxKlineCount           = 50
@@ -24,13 +24,15 @@ const (
 	MaxAltLeverage          = 125
 	MinPositionRatio        = 0.5
 	MaxPositionRatio        = 10.0
+	MinPositionMarginRatio  = 0.01
+	MaxPositionMarginRatio  = 1.0
 	MinRiskReward           = 1.0
 	MaxRiskReward           = 10.0
 	MinMarginUsage          = 0.1
 	MaxMarginUsage          = 1.0
 	MinPositionSize         = 10.0
 	MaxPositionSize         = 1000.0
-	MinConfidence           = 50
+	MinConfidence           = 1
 	MaxConfidence           = 100
 )
 
@@ -114,6 +116,20 @@ func (c *StrategyConfig) ClampLimits() {
 	if c.RiskControl.AltcoinMaxPositionValueRatio > MaxPositionRatio {
 		c.RiskControl.AltcoinMaxPositionValueRatio = MaxPositionRatio
 	}
+	if c.RiskControl.PositionSizingMode == "margin_based" {
+		if c.RiskControl.BTCETHMaxMarginRatio < MinPositionMarginRatio {
+			c.RiskControl.BTCETHMaxMarginRatio = MinPositionMarginRatio
+		}
+		if c.RiskControl.BTCETHMaxMarginRatio > MaxPositionMarginRatio {
+			c.RiskControl.BTCETHMaxMarginRatio = MaxPositionMarginRatio
+		}
+		if c.RiskControl.AltcoinMaxMarginRatio < MinPositionMarginRatio {
+			c.RiskControl.AltcoinMaxMarginRatio = MinPositionMarginRatio
+		}
+		if c.RiskControl.AltcoinMaxMarginRatio > MaxPositionMarginRatio {
+			c.RiskControl.AltcoinMaxMarginRatio = MaxPositionMarginRatio
+		}
+	}
 
 	// Clamp risk parameters and entry requirements.
 	if c.RiskControl.MinRiskRewardRatio < MinRiskReward {
@@ -146,6 +162,9 @@ func (c *StrategyConfig) ClampLimits() {
 // editor schema. LLMs may emit user-facing labels such as "AI500"; persistence
 // must use the exact frontend/backend enum values.
 func (c *StrategyConfig) NormalizeProductSchema() {
+	if c.RiskControl.PositionSizingMode != "margin_based" {
+		c.RiskControl.PositionSizingMode = "notional_based"
+	}
 	c.StrategyType = normalizeStrategyType(c.StrategyType)
 	c.CoinSource.StaticCoins = normalizeSymbols(c.CoinSource.StaticCoins)
 	c.CoinSource.Watchlist = normalizeSymbols(c.CoinSource.Watchlist)
@@ -989,6 +1008,8 @@ type ExternalDataSource struct {
 type RiskControlConfig struct {
 	// Max number of coins held simultaneously (CODE ENFORCED)
 	MaxPositions int `json:"max_positions"`
+	// Versioned: legacy strategies remain notional_based.
+	PositionSizingMode string `json:"position_sizing_mode,omitempty"`
 
 	// BTC/ETH exchange leverage for opening positions (AI guided)
 	BTCETHMaxLeverage int `json:"btc_eth_max_leverage"`
@@ -999,6 +1020,8 @@ type RiskControlConfig struct {
 	BTCETHMaxPositionValueRatio float64 `json:"btc_eth_max_position_value_ratio"`
 	// Altcoin single position max value = equity × this ratio (CODE ENFORCED, default: 1)
 	AltcoinMaxPositionValueRatio float64 `json:"altcoin_max_position_value_ratio"`
+	BTCETHMaxMarginRatio         float64 `json:"btc_eth_max_margin_ratio,omitempty"`
+	AltcoinMaxMarginRatio        float64 `json:"altcoin_max_margin_ratio,omitempty"`
 
 	// Max margin utilization (e.g. 0.9 = 90%) (CODE ENFORCED)
 	MaxMarginUsage float64 `json:"max_margin_usage"`
@@ -1009,6 +1032,30 @@ type RiskControlConfig struct {
 	MinRiskRewardRatio float64 `json:"min_risk_reward_ratio"`
 	// Min AI confidence to open position (AI guided)
 	MinConfidence int `json:"min_confidence"`
+}
+
+func (r RiskControlConfig) IsMarginBased() bool { return r.PositionSizingMode == "margin_based" }
+
+// MaxPositionNotional returns the hard per-position notional cap. In margin
+// mode leverage converts the initial-margin budget into notional; the legacy
+// notional ratio remains an independent exposure safety ceiling.
+func (r RiskControlConfig) MaxPositionNotional(equity float64, leverage int, major bool) float64 {
+	if equity <= 0 || leverage <= 0 {
+		return 0
+	}
+	notionalRatio, marginRatio := r.AltcoinMaxPositionValueRatio, r.AltcoinMaxMarginRatio
+	if major {
+		notionalRatio, marginRatio = r.BTCETHMaxPositionValueRatio, r.BTCETHMaxMarginRatio
+	}
+	notionalCap := equity * notionalRatio
+	if !r.IsMarginBased() {
+		return notionalCap
+	}
+	marginCap := equity * marginRatio * float64(leverage)
+	if notionalCap <= 0 || (marginCap > 0 && marginCap < notionalCap) {
+		return marginCap
+	}
+	return notionalCap
 }
 
 // NewStrategyStore creates a new StrategyStore
@@ -1090,10 +1137,13 @@ func GetDefaultStrategyConfig(lang string) StrategyConfig {
 		},
 		RiskControl: RiskControlConfig{
 			MaxPositions:                 3,
+			PositionSizingMode:           "margin_based",
 			BTCETHMaxLeverage:            3,
 			AltcoinMaxLeverage:           3,
 			BTCETHMaxPositionValueRatio:  1.0,
 			AltcoinMaxPositionValueRatio: 0.5,
+			BTCETHMaxMarginRatio:         0.15,
+			AltcoinMaxMarginRatio:        0.15,
 			MaxMarginUsage:               0.5,
 			MinPositionSize:              12,
 			MinRiskRewardRatio:           2.0,

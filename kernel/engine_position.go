@@ -5,6 +5,7 @@ import (
 	"math"
 	"nofx/logger"
 	"nofx/market"
+	"nofx/store"
 )
 
 // ============================================================================
@@ -12,8 +13,13 @@ import (
 // ============================================================================
 
 func validateDecisions(decisions []Decision, accountEquity float64, btcEthLeverage, altcoinLeverage int, btcEthPosRatio, altcoinPosRatio float64) error {
+	risk := store.RiskControlConfig{PositionSizingMode: "notional_based", BTCETHMaxLeverage: btcEthLeverage, AltcoinMaxLeverage: altcoinLeverage, BTCETHMaxPositionValueRatio: btcEthPosRatio, AltcoinMaxPositionValueRatio: altcoinPosRatio, MinPositionSize: 12, MinRiskRewardRatio: 3}
+	return validateDecisionsWithRisk(decisions, accountEquity, risk)
+}
+
+func validateDecisionsWithRisk(decisions []Decision, accountEquity float64, risk store.RiskControlConfig) error {
 	for i := range decisions {
-		if err := validateDecision(&decisions[i], accountEquity, btcEthLeverage, altcoinLeverage, btcEthPosRatio, altcoinPosRatio); err != nil {
+		if err := validateDecisionWithRisk(&decisions[i], accountEquity, risk); err != nil {
 			return fmt.Errorf("decision #%d validation failed: %w", i+1, err)
 		}
 	}
@@ -21,6 +27,11 @@ func validateDecisions(decisions []Decision, accountEquity float64, btcEthLevera
 }
 
 func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoinLeverage int, btcEthPosRatio, altcoinPosRatio float64) error {
+	risk := store.RiskControlConfig{PositionSizingMode: "notional_based", BTCETHMaxLeverage: btcEthLeverage, AltcoinMaxLeverage: altcoinLeverage, BTCETHMaxPositionValueRatio: btcEthPosRatio, AltcoinMaxPositionValueRatio: altcoinPosRatio, MinPositionSize: 12, MinRiskRewardRatio: 3}
+	return validateDecisionWithRisk(d, accountEquity, risk)
+}
+
+func validateDecisionWithRisk(d *Decision, accountEquity float64, risk store.RiskControlConfig) error {
 	validActions := map[string]bool{
 		"open_long":   true,
 		"open_short":  true,
@@ -42,14 +53,12 @@ func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoi
 		//     and the user's quick-trade flow shows them at the higher cap,
 		//     so the validator must match.
 		//   - Everything else is altcoin (1x equity by default).
-		maxLeverage := altcoinLeverage
-		posRatio := altcoinPosRatio
-		maxPositionValue := accountEquity * posRatio
+		maxLeverage := risk.AltcoinMaxLeverage
+		posRatio := risk.AltcoinMaxPositionValueRatio
 		isMajor := d.Symbol == "BTCUSDT" || d.Symbol == "ETHUSDT" || market.IsXyzDexAsset(d.Symbol)
 		if isMajor {
-			maxLeverage = btcEthLeverage
-			posRatio = btcEthPosRatio
-			maxPositionValue = accountEquity * posRatio
+			maxLeverage = risk.BTCETHMaxLeverage
+			posRatio = risk.BTCETHMaxPositionValueRatio
 		}
 
 		if d.Leverage <= 0 {
@@ -60,12 +69,16 @@ func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoi
 				d.Symbol, d.Leverage, maxLeverage, maxLeverage)
 			d.Leverage = maxLeverage
 		}
+		maxPositionValue := risk.MaxPositionNotional(accountEquity, d.Leverage, isMajor)
 		if d.PositionSizeUSD <= 0 {
 			return fmt.Errorf("position size must be greater than 0: %.2f", d.PositionSizeUSD)
 		}
 
-		const minPositionSizeGeneral = 12.0
-		const minPositionSizeBTCETH = 60.0
+		minPositionSizeGeneral := risk.MinPositionSize
+		if minPositionSizeGeneral <= 0 {
+			minPositionSizeGeneral = 12
+		}
+		minPositionSizeBTCETH := math.Max(60, minPositionSizeGeneral)
 
 		if d.Symbol == "BTCUSDT" || d.Symbol == "ETHUSDT" {
 			if d.PositionSizeUSD < minPositionSizeBTCETH {
@@ -127,9 +140,13 @@ func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoi
 			}
 		}
 
-		if riskRewardRatio < 3.0 {
-			return fmt.Errorf("risk/reward ratio too low (%.2f:1), must be ≥3.0:1 [risk: %.2f%% reward: %.2f%%] [stop loss: %.2f take profit: %.2f]",
-				riskRewardRatio, riskPercent, rewardPercent, d.StopLoss, d.TakeProfit)
+		minRiskRewardRatio := risk.MinRiskRewardRatio
+		if minRiskRewardRatio <= 0 {
+			minRiskRewardRatio = 3
+		}
+		if riskRewardRatio < minRiskRewardRatio {
+			return fmt.Errorf("risk/reward ratio too low (%.2f:1), must be ≥%.1f:1 [risk: %.2f%% reward: %.2f%%] [stop loss: %.2f take profit: %.2f]",
+				riskRewardRatio, minRiskRewardRatio, riskPercent, rewardPercent, d.StopLoss, d.TakeProfit)
 		}
 	}
 

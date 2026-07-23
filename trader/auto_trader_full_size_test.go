@@ -9,6 +9,8 @@ import (
 func TestApplyAutopilotFullSizeOpenForClaw402(t *testing.T) {
 	cfg := store.GetDefaultStrategyConfig("en")
 	cfg.CoinSource.SourceType = "vergex_signal"
+	// Existing saved strategies retain legacy notional sizing until explicitly migrated.
+	cfg.RiskControl.PositionSizingMode = "notional_based"
 	cfg.RiskControl.BTCETHMaxLeverage = 10
 	cfg.RiskControl.AltcoinMaxLeverage = 10
 	cfg.RiskControl.BTCETHMaxPositionValueRatio = 10

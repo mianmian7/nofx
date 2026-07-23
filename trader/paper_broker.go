@@ -1572,11 +1572,12 @@ func (b *PaperBroker) GetPositions() ([]map[string]interface{}, error) {
 func (b *PaperBroker) GetBalance() (map[string]interface{}, error) {
 	s := b.Snapshot()
 	return map[string]interface{}{
-		"totalWalletBalance":    s.Balance,
-		"totalUnrealizedProfit": s.UnrealizedPnL,
-		"availableBalance":      s.AvailableBalance,
-		"totalInitialMargin":    s.UsedMargin,
-		"totalEquity":           s.Equity,
+		"totalWalletBalance":          s.Balance,
+		"totalUnrealizedProfit":       s.UnrealizedPnL,
+		"availableBalance":            s.AvailableBalance,
+		"totalInitialMargin":          s.UsedMargin,
+		"totalOpenOrderInitialMargin": math.Max(0, s.Balance-s.UsedMargin-s.AvailableBalance),
+		"totalEquity":                 s.Equity,
 	}, nil
 }
 

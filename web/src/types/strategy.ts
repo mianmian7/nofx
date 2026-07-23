@@ -215,6 +215,7 @@ export interface ExternalDataSource {
 export interface RiskControlConfig {
   // Max number of coins held simultaneously (CODE ENFORCED)
   max_positions: number
+  position_sizing_mode?: 'notional_based' | 'margin_based'
 
   // Trading Leverage - exchange leverage for opening positions (AI guided)
   btc_eth_max_leverage: number // BTC/ETH max exchange leverage
@@ -224,6 +225,8 @@ export interface RiskControlConfig {
   // Max position value = equity × this ratio
   btc_eth_max_position_value_ratio?: number // default: 5 (BTC/ETH max position = 5x equity)
   altcoin_max_position_value_ratio?: number // default: 1 (Altcoin max position = 1x equity)
+  btc_eth_max_margin_ratio?: number
+  altcoin_max_margin_ratio?: number
 
   // Risk Parameters
   max_margin_usage: number // Max margin utilization, e.g. 0.9 = 90% (CODE ENFORCED)

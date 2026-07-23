@@ -203,36 +203,17 @@ func isMajorAsset(symbol string) bool {
 // positionSizeUSD: the original position size in USD
 // equity: the account equity
 // symbol: the trading symbol
-func (at *AutoTrader) enforcePositionValueRatio(positionSizeUSD float64, equity float64, symbol string) (float64, bool) {
+func (at *AutoTrader) enforcePositionValueRatio(positionSizeUSD float64, equity float64, symbol string, leverage int) (float64, bool) {
 	if at.config.StrategyConfig == nil {
 		return positionSizeUSD, false
 	}
 
 	riskControl := at.config.StrategyConfig.RiskControl
-
-	// Get the appropriate position value ratio limit. BTC/ETH AND Hyperliquid
-	// XYZ assets (US stocks etc.) use the higher tier; pure altcoins use the
-	// lower tier.
-	var maxPositionValueRatio float64
-	if isMajorAsset(symbol) {
-		maxPositionValueRatio = riskControl.BTCETHMaxPositionValueRatio
-		if maxPositionValueRatio <= 0 {
-			maxPositionValueRatio = 5.0 // Default: 5x for BTC/ETH and XYZ assets
-		}
-	} else {
-		maxPositionValueRatio = riskControl.AltcoinMaxPositionValueRatio
-		if maxPositionValueRatio <= 0 {
-			maxPositionValueRatio = 1.0 // Default: 1x for altcoins
-		}
-	}
-
-	// Calculate max allowed position value = equity × ratio
-	maxPositionValue := equity * maxPositionValueRatio
-
+	maxPositionValue := riskControl.MaxPositionNotional(equity, leverage, isMajorAsset(symbol))
 	// Check if position size exceeds limit
 	if positionSizeUSD > maxPositionValue {
 		logger.Infof("  ⚠️ [RISK CONTROL] Position %.2f USDT exceeds limit (equity %.2f × %.1fx = %.2f USDT max for %s), capping",
-			positionSizeUSD, equity, maxPositionValueRatio, maxPositionValue, symbol)
+			positionSizeUSD, equity, maxPositionValue/equity, maxPositionValue, symbol)
 		return maxPositionValue, true
 	}
 
@@ -251,10 +232,8 @@ func (at *AutoTrader) applyAutopilotFullSizeOpen(decision *kernel.Decision, equi
 
 	riskControl := cfg.RiskControl
 	leverage := riskControl.AltcoinMaxLeverage
-	positionValueRatio := riskControl.AltcoinMaxPositionValueRatio
 	if isMajorAsset(decision.Symbol) {
 		leverage = riskControl.BTCETHMaxLeverage
-		positionValueRatio = riskControl.BTCETHMaxPositionValueRatio
 	}
 	if leverage < store.MinLeverage {
 		leverage = store.MinLeverage
@@ -262,11 +241,8 @@ func (at *AutoTrader) applyAutopilotFullSizeOpen(decision *kernel.Decision, equi
 	if leverage > store.MaxAltLeverage {
 		leverage = store.MaxAltLeverage
 	}
-	if positionValueRatio <= 0 {
-		positionValueRatio = 1.0
-	}
 
-	fullPositionSize := equity * positionValueRatio
+	fullPositionSize := riskControl.MaxPositionNotional(equity, leverage, isMajorAsset(decision.Symbol))
 	if fullPositionSize <= 0 {
 		return
 	}
