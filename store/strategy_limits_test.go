@@ -36,8 +36,8 @@ func TestMarginBasedPositionSizingLimits(t *testing.T) {
 	if got := risk.MaxPositionNotional(100, 3, false); got != 45 {
 		t.Fatalf("altcoin notional cap = %.2f, want 45", got)
 	}
-	if got := risk.MaxPositionNotional(100, 20, false); got != 150 {
-		t.Fatalf("exposure safety cap = %.2f, want 150", got)
+	if got := risk.MaxPositionNotional(100, 20, false); got != 300 {
+		t.Fatalf("margin-based notional cap = %.2f, want 300", got)
 	}
 	if got := risk.MaxPositionNotional(100, 5, true); got != 50 {
 		t.Fatalf("major notional cap = %.2f, want 50", got)

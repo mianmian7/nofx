@@ -319,12 +319,16 @@ func writeVergexSchemaPrompt(sb *strings.Builder, zh bool) {
 
 func writeVergexHardConstraints(sb *strings.Builder, accountEquity float64, riskControl store.RiskControlConfig, tradeFiPositionValueRatio float64, zh bool) {
 	maxPositionValue := accountEquity * tradeFiPositionValueRatio
+	positionFormula := fmt.Sprintf("equity %.0f × %.1fx", accountEquity, tradeFiPositionValueRatio)
+	if riskControl.IsMarginBased() {
+		maxPositionValue = riskControl.MaxPositionNotional(accountEquity, riskControl.BTCETHMaxLeverage, true)
+		positionFormula = fmt.Sprintf("equity %.0f × margin %.0f%% × leverage %dx", accountEquity, riskControl.BTCETHMaxMarginRatio*100, riskControl.BTCETHMaxLeverage)
+	}
 	if zh {
 		sb.WriteString("# Hard Risk Constraints\n\n")
 		sb.WriteString("## Backend enforced\n")
 		sb.WriteString(fmt.Sprintf("- Max positions: %d Claw402 candidate instruments at the same time\n", riskControl.MaxPositions))
-		sb.WriteString(fmt.Sprintf("- Max notional per position: %.0f USDT (= equity %.0f × %.1fx)\n", maxPositionValue, accountEquity, tradeFiPositionValueRatio))
-		sb.WriteString(fmt.Sprintf("- Max margin usage: ≤%.0f%%\n", riskControl.MaxMarginUsage*100))
+		sb.WriteString(fmt.Sprintf("- Max notional per position: %.0f USDT (= %s)\n", maxPositionValue, positionFormula))
 		sb.WriteString(fmt.Sprintf("- Min order size: ≥%.0f USDT\n\n", riskControl.MinPositionSize))
 		sb.WriteString("## AI guided\n")
 		sb.WriteString(fmt.Sprintf("- Maximum leverage: every open position must use at most %dx; lower leverage is allowed\n", riskControl.AltcoinMaxLeverage))
@@ -340,8 +344,7 @@ func writeVergexHardConstraints(sb *strings.Builder, accountEquity float64, risk
 		sb.WriteString("# Hard Risk Constraints\n\n")
 		sb.WriteString("## Backend enforced\n")
 		sb.WriteString(fmt.Sprintf("- Max positions: %d Claw402 candidate instruments at the same time\n", riskControl.MaxPositions))
-		sb.WriteString(fmt.Sprintf("- Max notional per position: %.0f USDT (= equity %.0f × %.1fx)\n", maxPositionValue, accountEquity, tradeFiPositionValueRatio))
-		sb.WriteString(fmt.Sprintf("- Max margin usage: ≤%.0f%%\n", riskControl.MaxMarginUsage*100))
+		sb.WriteString(fmt.Sprintf("- Max notional per position: %.0f USDT (= %s)\n", maxPositionValue, positionFormula))
 		sb.WriteString(fmt.Sprintf("- Min order size: ≥%.0f USDT\n\n", riskControl.MinPositionSize))
 		sb.WriteString("## AI guided\n")
 		sb.WriteString(fmt.Sprintf("- Leverage: every open position must use exactly %dx\n", riskControl.AltcoinMaxLeverage))
@@ -522,14 +525,14 @@ func writeHardConstraints(sb *strings.Builder, accountEquity float64, riskContro
 	}
 
 	if riskControl.IsMarginBased() {
-		sb.WriteString(fmt.Sprintf("- Sizing mode: margin based; total initial margin ≤ %.0f%% of equity\n", riskControl.MaxMarginUsage*100))
+		sb.WriteString("- Sizing mode: margin based; each position uses the configured equity percentage as margin\n")
 		if singleSymbol {
 			major := market.IsXyzDexAsset(primarySymbol) || primarySymbol == "BTCUSDT" || primarySymbol == "ETHUSDT"
 			lev := riskControl.AltcoinMaxLeverage
 			if major {
 				lev = riskControl.BTCETHMaxLeverage
 			}
-			sb.WriteString(fmt.Sprintf("- %s max notional: %.0f USDT (margin budget × leverage, also exposure-capped)\n", primarySymbol, riskControl.MaxPositionNotional(accountEquity, lev, major)))
+			sb.WriteString(fmt.Sprintf("- %s max notional: %.0f USDT (margin budget × leverage)\n", primarySymbol, riskControl.MaxPositionNotional(accountEquity, lev, major)))
 		} else {
 			sb.WriteString(fmt.Sprintf("- Altcoin/Stock max notional at max leverage: %.0f USDT\n", riskControl.MaxPositionNotional(accountEquity, riskControl.AltcoinMaxLeverage, false)))
 			sb.WriteString(fmt.Sprintf("- BTC/ETH max notional at max leverage: %.0f USDT\n", riskControl.MaxPositionNotional(accountEquity, riskControl.BTCETHMaxLeverage, true)))
@@ -545,11 +548,9 @@ func writeHardConstraints(sb *strings.Builder, accountEquity float64, riskContro
 		sb.WriteString(fmt.Sprintf("- Position Value Limit (BTC/ETH): max %.0f USDT (= equity %.0f × %.1fx)\n", accountEquity*btcEthPosValueRatio, accountEquity, btcEthPosValueRatio))
 	}
 	if zh {
-		sb.WriteString(fmt.Sprintf("- Max Margin Usage: ≤%.0f%%\n", riskControl.MaxMarginUsage*100))
 		sb.WriteString(fmt.Sprintf("- Min Position Size: ≥%.0f USDT\n\n", riskControl.MinPositionSize))
 		sb.WriteString("## AI GUIDED (recommended):\n")
 	} else {
-		sb.WriteString(fmt.Sprintf("- Max Margin Usage: ≤%.0f%%\n", riskControl.MaxMarginUsage*100))
 		sb.WriteString(fmt.Sprintf("- Min Position Size: ≥%.0f USDT\n\n", riskControl.MinPositionSize))
 		sb.WriteString("## AI GUIDED (recommended):\n")
 	}

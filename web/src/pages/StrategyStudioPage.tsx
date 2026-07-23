@@ -96,9 +96,7 @@ const profileOptions: Array<{
   topN: number
   timeframe: string
   bars: number
-  margin: number
   perPositionMargin: number
-  notionalCap: number
   promptZh: string
   promptEn: string
 }> = [
@@ -114,9 +112,7 @@ const profileOptions: Array<{
     topN: 5,
     timeframe: '1h',
     bars: 30,
-    margin: 0.3,
     perPositionMargin: 0.1,
-    notionalCap: 1,
     promptZh:
       '谨慎模式：只有趋势、动量、成交量和原始 K 线相互支持时才开仓；出现冲突时等待。',
     promptEn:
@@ -134,9 +130,7 @@ const profileOptions: Array<{
     topN: 5,
     timeframe: '15m',
     bars: 30,
-    margin: 0.5,
     perPositionMargin: 0.15,
-    notionalCap: 1.5,
     promptZh:
       '平衡模式：优先分析流动性较高的候选交易对，结合多周期趋势和原始 K 线设置止损与目标。',
     promptEn:
@@ -154,9 +148,7 @@ const profileOptions: Array<{
     topN: 8,
     timeframe: '5m',
     bars: 50,
-    margin: 0.7,
     perPositionMargin: 0.2,
-    notionalCap: 2,
     promptZh:
       '积极模式：更快响应强趋势和放量行情，但必须设置明确止损，并避免在数据冲突时追单。',
     promptEn:
@@ -384,13 +376,8 @@ function profileFromConfig(
       risk.altcoin_max_leverage === profile.leverage &&
       risk.min_confidence === profile.confidence &&
       risk.position_sizing_mode === 'margin_based' &&
-      risk.max_margin_usage === profile.margin &&
       risk.btc_eth_max_margin_ratio === profile.perPositionMargin &&
       risk.altcoin_max_margin_ratio === profile.perPositionMargin &&
-      risk.btc_eth_max_position_value_ratio === profile.notionalCap &&
-      risk.altcoin_max_position_value_ratio === profile.notionalCap &&
-      risk.min_position_size === 12 &&
-      risk.min_risk_reward_ratio === 2 &&
       klines.primary_timeframe === profile.timeframe &&
       klines.primary_count === profile.bars &&
       klines.enable_multi_timeframe !== true &&
@@ -1513,7 +1500,6 @@ export function StrategyStudioPage() {
           altcoin_max_margin_ratio: 0.15,
           max_margin_usage: 0.5,
           min_confidence: 78,
-          min_risk_reward_ratio: 2,
         }),
         custom_prompt:
           'Rank the local Binance perpetual candidates by liquid market activity, confirm each setup with raw OHLCV candles, and trade only when the configured risk/reward and confidence requirements are met.',
@@ -1849,11 +1835,6 @@ export function StrategyStudioPage() {
             altcoin_max_leverage: profile.leverage,
             btc_eth_max_margin_ratio: profile.perPositionMargin,
             altcoin_max_margin_ratio: profile.perPositionMargin,
-            btc_eth_max_position_value_ratio: profile.notionalCap,
-            altcoin_max_position_value_ratio: profile.notionalCap,
-            max_margin_usage: profile.margin,
-            min_position_size: 12,
-            min_risk_reward_ratio: 2,
             min_confidence: profile.confidence,
           }),
           custom_prompt: text(language, profile.promptZh, profile.promptEn),
@@ -2990,170 +2971,46 @@ export function StrategyStudioPage() {
                     <div className="mb-4 text-sm font-semibold text-nofx-text">
                       {text(
                         language,
-                        '仓位与保证金',
-                        'Position sizing & margin'
+                        '单仓保证金上限',
+                        'Margin limit per position'
                       )}
                     </div>
-                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                      <label className="space-y-2">
-                        <span className="text-xs text-nofx-text-muted">
-                          {text(language, '仓位计算模式', 'Sizing mode')}
-                        </span>
-                        <select
-                          value={risk.position_sizing_mode || 'notional_based'}
-                          onChange={(event) =>
-                            patchRisk({
-                              position_sizing_mode: event.target.value as
-                                | 'notional_based'
-                                | 'margin_based',
-                            })
-                          }
-                          className="w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
-                        >
-                          <option value="margin_based">
-                            {text(language, '按保证金分配', 'Margin based')}
-                          </option>
-                          <option value="notional_based">
-                            {text(language, '旧版名义仓位', 'Legacy notional')}
-                          </option>
-                        </select>
-                      </label>
-                      <label className="space-y-2">
-                        <span className="text-xs text-nofx-text-muted">
-                          {text(
-                            language,
-                            '单仓保证金比例',
-                            'Margin per position'
-                          )}
-                        </span>
-                        <input
-                          type="number"
-                          min={1}
-                          max={100}
-                          step={1}
-                          value={Math.round(
-                            (risk.altcoin_max_margin_ratio || 0.15) * 100
-                          )}
-                          onChange={(event) => {
-                            const ratio = Math.min(
-                              1,
-                              Math.max(0.01, Number(event.target.value) / 100)
-                            )
-                            patchRisk({
-                              btc_eth_max_margin_ratio: ratio,
-                              altcoin_max_margin_ratio: ratio,
-                            })
-                          }}
-                          className="w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
-                        />
-                      </label>
-                      <label className="space-y-2">
-                        <span className="text-xs text-nofx-text-muted">
-                          {text(language, '总保证金上限', 'Total margin cap')}
-                        </span>
-                        <input
-                          type="number"
-                          min={10}
-                          max={100}
-                          step={1}
-                          value={Math.round(risk.max_margin_usage * 100)}
-                          onChange={(event) =>
-                            patchRisk({
-                              max_margin_usage: Math.min(
-                                1,
-                                Math.max(0.1, Number(event.target.value) / 100)
-                              ),
-                            })
-                          }
-                          className="w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
-                        />
-                      </label>
-                      <label className="space-y-2">
-                        <span className="text-xs text-nofx-text-muted">
-                          {text(
-                            language,
-                            '单仓名义敞口上限（净值倍数）',
-                            'Notional exposure cap (equity multiple)'
-                          )}
-                        </span>
-                        <input
-                          type="number"
-                          min={0.5}
-                          max={10}
-                          step={0.1}
-                          value={risk.altcoin_max_position_value_ratio || 1.5}
-                          onChange={(event) => {
-                            const ratio = Math.min(
-                              10,
-                              Math.max(0.5, Number(event.target.value) || 0.5)
-                            )
-                            patchRisk({
-                              btc_eth_max_position_value_ratio: ratio,
-                              altcoin_max_position_value_ratio: ratio,
-                            })
-                          }}
-                          className="w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
-                        />
-                      </label>
-                      <label className="space-y-2">
-                        <span className="text-xs text-nofx-text-muted">
-                          {text(
-                            language,
-                            '最小名义仓位（USDT）',
-                            'Minimum notional (USDT)'
-                          )}
-                        </span>
-                        <input
-                          type="number"
-                          min={10}
-                          max={1000}
-                          step={1}
-                          value={risk.min_position_size}
-                          onChange={(event) =>
-                            patchRisk({
-                              min_position_size: Math.min(
-                                1000,
-                                Math.max(10, Number(event.target.value) || 10)
-                              ),
-                            })
-                          }
-                          className="w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
-                        />
-                      </label>
-                      <label className="space-y-2">
-                        <span className="text-xs text-nofx-text-muted">
-                          {text(language, '最低盈亏比', 'Minimum risk/reward')}
-                        </span>
-                        <input
-                          type="number"
-                          min={1}
-                          max={10}
-                          step={0.1}
-                          value={risk.min_risk_reward_ratio}
-                          onChange={(event) =>
-                            patchRisk({
-                              min_risk_reward_ratio: Math.min(
-                                10,
-                                Math.max(1, Number(event.target.value) || 1)
-                              ),
-                            })
-                          }
-                          className="w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
-                        />
-                      </label>
-                    </div>
-                    <div className="mt-4 rounded-lg bg-nofx-bg p-3 text-xs text-nofx-text-muted">
-                      {risk.position_sizing_mode === 'margin_based'
-                        ? text(
-                            language,
-                            `示例净值 100 USDT：单仓保证金 ${(risk.altcoin_max_margin_ratio || 0.15) * 100} USDT × ${risk.altcoin_max_leverage}x = 名义仓位 ${Math.min(100 * (risk.altcoin_max_margin_ratio || 0.15) * risk.altcoin_max_leverage, 100 * (risk.altcoin_max_position_value_ratio || 1.5)).toFixed(0)} USDT；所有持仓与待成交订单总保证金不超过 ${(risk.max_margin_usage * 100).toFixed(0)} USDT。`,
-                            `Example at 100 USDT equity: margin ${(risk.altcoin_max_margin_ratio || 0.15) * 100} USDT × ${risk.altcoin_max_leverage}x = ${Math.min(100 * (risk.altcoin_max_margin_ratio || 0.15) * risk.altcoin_max_leverage, 100 * (risk.altcoin_max_position_value_ratio || 1.5)).toFixed(0)} USDT notional; total margin across positions and pending entries stays below ${(risk.max_margin_usage * 100).toFixed(0)} USDT.`
+                    <label className="block max-w-sm space-y-2">
+                      <span className="text-xs text-nofx-text-muted">
+                        {text(
+                          language,
+                          '每个仓位最多使用净值的百分比',
+                          'Maximum equity percentage used as margin per position'
+                        )}
+                      </span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={100}
+                        step={1}
+                        value={Math.round(
+                          (risk.altcoin_max_margin_ratio || 0.15) * 100
+                        )}
+                        onChange={(event) => {
+                          const ratio = Math.min(
+                            1,
+                            Math.max(0.01, Number(event.target.value) / 100)
                           )
-                        : text(
-                            language,
-                            '旧版模式直接以净值倍数限制名义仓位；杠杆不会扩大该上限。',
-                            'Legacy mode caps notional directly as an equity multiple; leverage does not increase that cap.'
-                          )}
+                          patchRisk({
+                            position_sizing_mode: 'margin_based',
+                            btc_eth_max_margin_ratio: ratio,
+                            altcoin_max_margin_ratio: ratio,
+                          })
+                        }}
+                        className="w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
+                      />
+                    </label>
+                    <div className="mt-4 rounded-lg bg-nofx-bg p-3 text-xs text-nofx-text-muted">
+                      {text(
+                        language,
+                        `示例净值 100 USDT：单仓保证金 ${(risk.altcoin_max_margin_ratio || 0.15) * 100} USDT × ${risk.altcoin_max_leverage}x = 名义仓位 ${(100 * (risk.altcoin_max_margin_ratio || 0.15) * risk.altcoin_max_leverage).toFixed(0)} USDT。实际下单仍受可用余额和交易所最大杠杆限制。${risk.position_sizing_mode === 'margin_based' ? '' : ' 修改此数值并保存后启用按保证金分配。'}`,
+                        `Example at 100 USDT equity: ${(risk.altcoin_max_margin_ratio || 0.15) * 100} USDT margin × ${risk.altcoin_max_leverage}x = ${(100 * (risk.altcoin_max_margin_ratio || 0.15) * risk.altcoin_max_leverage).toFixed(0)} USDT notional. Actual execution remains limited by available balance and exchange leverage.${risk.position_sizing_mode === 'margin_based' ? '' : ' Change this value and save to enable margin-based sizing.'}`
+                      )}
                     </div>
                   </div>
                 </div>

@@ -109,7 +109,7 @@ func numericBalanceField(balance map[string]interface{}, key string) float64 {
 }
 
 // enforceOpenRiskBudget is shared by Paper and Live. It applies the selected
-// per-position sizing model and the portfolio-wide configured margin ceiling.
+// per-position sizing model and the account's actual available-balance ceiling.
 func (at *AutoTrader) enforceOpenRiskBudget(decision *kernel.Decision) error {
 	if at.config.StrategyConfig == nil {
 		return nil
@@ -153,17 +153,11 @@ func (at *AutoTrader) enforceOpenRiskBudget(decision *kernel.Decision) error {
 	if capped {
 		decision.PositionSizeUSD = adjusted
 	}
-	risk := at.config.StrategyConfig.RiskControl
-	committed := numericBalanceField(balance, "totalInitialMargin") + numericBalanceField(balance, "totalOpenOrderInitialMargin")
-	if committed <= 0 && equity > available {
-		committed = equity - available
-	}
-	remaining := equity*risk.MaxMarginUsage - committed
-	if remaining <= 0 {
-		return fmt.Errorf("max margin usage %.0f%% reached", risk.MaxMarginUsage*100)
+	if available <= 0 {
+		return fmt.Errorf("no available balance for a new position")
 	}
 	marginFactor := marginOverheadFactor/float64(decision.Leverage) + takerFeeRate
-	maxByPortfolio := remaining / marginFactor
+	maxByPortfolio := available / marginFactor
 	if decision.PositionSizeUSD > maxByPortfolio {
 		decision.PositionSizeUSD = maxByPortfolio * positionSizeSafetyFactor
 	}

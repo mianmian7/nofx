@@ -1037,8 +1037,8 @@ type RiskControlConfig struct {
 func (r RiskControlConfig) IsMarginBased() bool { return r.PositionSizingMode == "margin_based" }
 
 // MaxPositionNotional returns the hard per-position notional cap. In margin
-// mode leverage converts the initial-margin budget into notional; the legacy
-// notional ratio remains an independent exposure safety ceiling.
+// mode leverage converts the per-position initial-margin budget into notional.
+// Legacy strategies continue to use their notional ratio.
 func (r RiskControlConfig) MaxPositionNotional(equity float64, leverage int, major bool) float64 {
 	if equity <= 0 || leverage <= 0 {
 		return 0
@@ -1051,11 +1051,7 @@ func (r RiskControlConfig) MaxPositionNotional(equity float64, leverage int, maj
 	if !r.IsMarginBased() {
 		return notionalCap
 	}
-	marginCap := equity * marginRatio * float64(leverage)
-	if notionalCap <= 0 || (marginCap > 0 && marginCap < notionalCap) {
-		return marginCap
-	}
-	return notionalCap
+	return equity * marginRatio * float64(leverage)
 }
 
 // NewStrategyStore creates a new StrategyStore
