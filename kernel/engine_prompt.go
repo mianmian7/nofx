@@ -404,7 +404,7 @@ func writeVergexOutputFormat(sb *strings.Builder, accountEquity float64, riskCon
 	if zh {
 		sb.WriteString("## Field Requirements\n\n")
 		sb.WriteString("- `action`: open_long | open_short | close_long | close_short | hold | wait\n")
-		sb.WriteString(fmt.Sprintf("- `confidence`: 0-100; recommended ≥ %d to open\n", riskControl.MinConfidence))
+		sb.WriteString(fmt.Sprintf("- `confidence`: 0-100; required for every action. For `wait`, report the strongest rejected setup's entry confidence, which must be below %d; do not report confidence in the decision to wait.\n", riskControl.MinConfidence))
 		sb.WriteString("- Required when opening: leverage, position_size_usd, stop_loss, take_profit, confidence, risk_usd\n")
 		sb.WriteString("- All numeric values must be calculated numbers, not formulas.\n")
 		if singleSymbol {
@@ -416,7 +416,7 @@ func writeVergexOutputFormat(sb *strings.Builder, accountEquity float64, riskCon
 	} else {
 		sb.WriteString("## Field Requirements\n\n")
 		sb.WriteString("- `action`: open_long | open_short | close_long | close_short | hold | wait\n")
-		sb.WriteString(fmt.Sprintf("- `confidence`: 0-100; recommended ≥ %d to open\n", riskControl.MinConfidence))
+		sb.WriteString(fmt.Sprintf("- `confidence`: 0-100; required for every action. For `wait`, report the strongest rejected setup's entry confidence, which must be below %d; do not report confidence in the decision to wait.\n", riskControl.MinConfidence))
 		sb.WriteString("- Required when opening: leverage, position_size_usd, stop_loss, take_profit, confidence, risk_usd\n")
 		sb.WriteString("- All numeric values must be calculated numbers, not formulas.\n")
 		if singleSymbol {
@@ -642,7 +642,7 @@ func writeOutputFormat(sb *strings.Builder, accountEquity, btcEthPosValueRatio f
 		ratio := btcEthPosValueRatio // already chosen as the larger above when single-symbol
 		size := accountEquity * ratio
 		sb.WriteString(fmt.Sprintf("  {\"symbol\": \"%s\", \"action\": \"open_long\", \"leverage\": %d, \"position_size_usd\": %.0f, \"stop_loss\": 0, \"take_profit\": 0, \"confidence\": 85, \"risk_usd\": 0},\n", primarySymbol, lev, size))
-		sb.WriteString(fmt.Sprintf("  {\"symbol\": \"%s\", \"action\": \"wait\"}\n", primarySymbol))
+		sb.WriteString(fmt.Sprintf("  {\"symbol\": \"%s\", \"action\": \"wait\", \"confidence\": %d}\n", primarySymbol, max(1, riskControl.MinConfidence-5)))
 	} else {
 		examplePositionSize := accountEquity * btcEthPosValueRatio
 		sb.WriteString(fmt.Sprintf("  {\"symbol\": \"BTCUSDT\", \"action\": \"open_short\", \"leverage\": %d, \"position_size_usd\": %.0f, \"stop_loss\": 97000, \"take_profit\": 91000, \"confidence\": 85, \"risk_usd\": 300},\n",
@@ -655,7 +655,7 @@ func writeOutputFormat(sb *strings.Builder, accountEquity, btcEthPosValueRatio f
 	if zh {
 		sb.WriteString("## Field Description\n\n")
 		sb.WriteString("- `action`: open_long | open_short | close_long | close_short | hold | wait\n")
-		sb.WriteString(fmt.Sprintf("- `confidence`: 0-100 (opening recommended ≥ %d)\n", riskControl.MinConfidence))
+		sb.WriteString(fmt.Sprintf("- `confidence`: 0-100 and required for every action. For `wait`, it is the strongest rejected setup's entry confidence and must be below %d, not confidence in waiting.\n", riskControl.MinConfidence))
 		sb.WriteString("- Required when opening: leverage, position_size_usd, stop_loss, take_profit, confidence, risk_usd\n")
 		sb.WriteString("- **IMPORTANT**: all numeric values must be calculated numbers, NOT formulas/expressions (e.g. use `27.76`, not `3000 * 0.01`)\n")
 		if singleSymbol {
@@ -665,7 +665,7 @@ func writeOutputFormat(sb *strings.Builder, accountEquity, btcEthPosValueRatio f
 	} else {
 		sb.WriteString("## Field Description\n\n")
 		sb.WriteString("- `action`: open_long | open_short | close_long | close_short | hold | wait\n")
-		sb.WriteString(fmt.Sprintf("- `confidence`: 0-100 (opening recommended ≥ %d)\n", riskControl.MinConfidence))
+		sb.WriteString(fmt.Sprintf("- `confidence`: 0-100 and required for every action. For `wait`, it is the strongest rejected setup's entry confidence and must be below %d, not confidence in waiting.\n", riskControl.MinConfidence))
 		sb.WriteString("- Required when opening: leverage, position_size_usd, stop_loss, take_profit, confidence, risk_usd\n")
 		sb.WriteString("- **IMPORTANT**: all numeric values must be calculated numbers, NOT formulas/expressions (e.g. use `27.76`, not `3000 * 0.01`)\n")
 		if singleSymbol {

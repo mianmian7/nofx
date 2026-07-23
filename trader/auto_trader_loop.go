@@ -313,7 +313,7 @@ func (at *AutoTrader) runCycle() error {
 			record.ExecutionLog = append(record.ExecutionLog, fmt.Sprintf("❌ %s %s failed: %v", d.Symbol, d.Action, err))
 		} else {
 			actionRecord.Success = true
-			record.ExecutionLog = append(record.ExecutionLog, fmt.Sprintf("✓ %s %s succeeded", d.Symbol, d.Action))
+			record.ExecutionLog = append(record.ExecutionLog, formatDecisionSuccessLog(d, at.entryConfidenceThreshold()))
 			// Brief delay after successful execution
 			time.Sleep(1 * time.Second)
 		}
@@ -327,6 +327,27 @@ func (at *AutoTrader) runCycle() error {
 	}
 
 	return nil
+}
+
+func (at *AutoTrader) entryConfidenceThreshold() int {
+	if at.config.StrategyConfig != nil && at.config.StrategyConfig.RiskControl.MinConfidence > 0 {
+		return at.config.StrategyConfig.RiskControl.MinConfidence
+	}
+	return 75
+}
+
+func formatDecisionSuccessLog(d kernel.Decision, entryThreshold int) string {
+	base := fmt.Sprintf("✓ %s %s succeeded", d.Symbol, d.Action)
+	if d.Action == "wait" {
+		if d.Confidence > 0 {
+			return fmt.Sprintf("%s · entry confidence %d%% < threshold %d%%", base, d.Confidence, entryThreshold)
+		}
+		return fmt.Sprintf("%s · entry confidence unavailable (threshold %d%%)", base, entryThreshold)
+	}
+	if d.Confidence > 0 {
+		return fmt.Sprintf("%s · confidence %d%%", base, d.Confidence)
+	}
+	return base
 }
 
 func normalizeUniverseSymbol(exchange, symbol string) string {
