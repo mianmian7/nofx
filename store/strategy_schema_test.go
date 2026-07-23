@@ -77,6 +77,25 @@ func TestStrategyConfigUnmarshalLegacyFlatAIConfig(t *testing.T) {
 	}
 }
 
+func TestStrategyConfigRoundTripsTradeThrottle(t *testing.T) {
+	cfg := GetDefaultStrategyConfig("en")
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal strategy config: %v", err)
+	}
+
+	var decoded StrategyConfig
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal strategy config: %v", err)
+	}
+	if decoded.RiskControl.TradeThrottle == nil {
+		t.Fatalf("trade throttle missing after round trip: %s", string(raw))
+	}
+	if got := decoded.RiskControl.EffectiveTradeThrottle(); got != BigMoveTradeThrottleConfig() {
+		t.Fatalf("trade throttle after round trip = %+v", got)
+	}
+}
+
 func TestStrategyConfigNormalizeProductSchemaForLLMLabels(t *testing.T) {
 	cfg := GetDefaultStrategyConfig("zh")
 	patch := map[string]any{

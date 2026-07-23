@@ -84,17 +84,14 @@ func (e *StrategyEngine) BuildSystemPrompt(accountEquity float64, variant string
 		sb.WriteString("\n\n")
 	} else if zh {
 		sb.WriteString("# ⏱️ Trading Frequency Awareness\n\n")
-		sb.WriteString("- Excellent traders: 2-4 trades/day ≈ 0.1-0.2 trades/hour\n")
-		sb.WriteString("- >2 trades/hour = overtrading\n")
-		sb.WriteString("- Single position hold time ≥ 45-90 minutes\n")
-		sb.WriteString("If you find yourself trading every cycle → standards too low; if closing positions < 45 minutes → too impulsive.\n\n")
+		sb.WriteString("- Wait for quality setups instead of trading every cycle.\n")
+		sb.WriteString("- Manage existing positions before opening new ones.\n\n")
 	} else {
 		sb.WriteString("# ⏱️ Trading Frequency Awareness\n\n")
-		sb.WriteString("- Excellent traders: 2-4 trades/day ≈ 0.1-0.2 trades/hour\n")
-		sb.WriteString("- >2 trades/hour = overtrading\n")
-		sb.WriteString("- Single position hold time ≥ 45-90 minutes\n")
-		sb.WriteString("If you find yourself trading every cycle → standards too low; if closing positions < 45 minutes → too impulsive.\n\n")
+		sb.WriteString("- Wait for quality setups instead of trading every cycle.\n")
+		sb.WriteString("- Manage existing positions before opening new ones.\n\n")
 	}
+	writeTradeThrottleGuidance(&sb, riskControl.EffectiveTradeThrottle())
 
 	// 5. Entry standards (editable)
 	entryStandards := englishOnlyPromptSection(promptSections.EntryStandards)
@@ -215,9 +212,6 @@ func (e *StrategyEngine) buildVergexSystemPrompt(accountEquity float64, variant 
 		sb.WriteString("- Ranking alone is not an entry reason; it only defines the candidate pool.\n")
 		sb.WriteString("- Every symbol in Candidate Coins is part of the allowed trading universe; missing detail can lower confidence or trigger waiting, but does not make the symbol non-tradable.\n")
 		sb.WriteString("- If Signal Lab or heatmap is absent from that symbol's Vergex Claw402 Signals, state it in reasoning; if it is present, never claim the symbol lacks that data.\n")
-		sb.WriteString("- Avoid churn: unless stopping out or taking a strong profit, hold new positions for at least 60 minutes; avoid flat/noise closes until roughly 90 minutes; after closing a symbol, wait 90 minutes before re-entry; open at most 1 new position per hour.\n")
-		sb.WriteString("- Fees are the main edge killer: a round trip costs roughly 0.1%% of notional (about 1%% of margin at 10x). Only take setups whose expected move to target is at least 3x that cost; fewer, higher-conviction, longer-hold trades beat frequent scalps.\n")
-		sb.WriteString("- Stops must sit beyond invalidation; targets should prefer heatmap resistance/liquidation zones or valid risk/reward levels.\n\n")
 	} else {
 		sb.WriteString("# You are the NOFX Claw402 auto-trader\n\n")
 		sb.WriteString("Trade only Hyperliquid instruments returned by this cycle's Claw402.ai/Vergex board. You may trade only the current candidate symbols and existing positions; never invent tickers or rotate outside the provided universe.\n\n")
@@ -232,10 +226,8 @@ func (e *StrategyEngine) buildVergexSystemPrompt(accountEquity float64, variant 
 		sb.WriteString("- Ranking alone is not an entry reason; it only defines the candidate pool.\n")
 		sb.WriteString("- Every symbol in Candidate Coins is part of the allowed trading universe; missing detail can lower confidence or trigger waiting, but does not make the symbol non-tradable.\n")
 		sb.WriteString("- If Signal Lab or heatmap is absent from that symbol's Vergex Claw402 Signals, state it in reasoning; if it is present, never claim the symbol lacks that data.\n")
-		sb.WriteString("- Avoid churn: unless stopping out or taking a strong profit, hold new positions for at least 60 minutes; avoid flat/noise closes until roughly 90 minutes; after closing a symbol, wait 90 minutes before re-entry; open at most 1 new position per hour.\n")
-		sb.WriteString("- Fees are the main edge killer: a round trip costs roughly 0.1%% of notional (about 1%% of margin at 10x). Only take setups whose expected move to target is at least 3x that cost; fewer, higher-conviction, longer-hold trades beat frequent scalps.\n")
-		sb.WriteString("- Stops must sit beyond invalidation; targets should prefer heatmap resistance/liquidation zones or valid risk/reward levels.\n\n")
 	}
+	writeTradeThrottleGuidance(&sb, riskControl.EffectiveTradeThrottle())
 
 	writeModeVariant(&sb, variant, zh)
 
@@ -511,6 +503,22 @@ func writeModeVariant(sb *strings.Builder, variant string, zh bool) {
 			sb.WriteString("## Mode: Scalping\n- Focus on short-term momentum, smaller profit targets but require quick action\n- If price doesn't move as expected within two bars, immediately reduce position or stop-loss\n\n")
 		}
 	}
+}
+
+func formatThrottleDuration(minutes int) string {
+	if minutes%60 == 0 {
+		return fmt.Sprintf("%dh", minutes/60)
+	}
+	return fmt.Sprintf("%dm", minutes)
+}
+
+func writeTradeThrottleGuidance(sb *strings.Builder, throttle store.TradeThrottleConfig) {
+	sb.WriteString("# Trade Throttle (Backend Enforced)\n\n")
+	sb.WriteString(fmt.Sprintf("- Hold each new position for at least %s unless PnL reaches %.1f%% loss or %.1f%% profit.\n", formatThrottleDuration(throttle.MinHoldMinutes), throttle.EarlyCloseStopLossBypassPct, throttle.EarlyCloseTakeProfitBypassPct))
+	sb.WriteString(fmt.Sprintf("- After the minimum hold, avoid small closes inside the %.1f%% to %.1f%% noise band until %s.\n", throttle.NoiseCloseLossFloorPct, throttle.NoiseCloseProfitCeilingPct, formatThrottleDuration(throttle.NoiseCloseHoldMinutes)))
+	sb.WriteString(fmt.Sprintf("- Wait %s after closing a symbol before re-entry.\n", formatThrottleDuration(throttle.ReentryCooldownMinutes)))
+	sb.WriteString(fmt.Sprintf("- Open no more than %d new positions per hour and %d per decision cycle.\n", throttle.MaxOpensPerHour, throttle.MaxOpensPerCycle))
+	sb.WriteString("- Keep stops beyond thesis invalidation and targets far enough to cover fees; do not scalp noise.\n\n")
 }
 
 func writeHardConstraints(sb *strings.Builder, accountEquity float64, riskControl store.RiskControlConfig, btcEthPosValueRatio, altcoinPosValueRatio float64, singleSymbol bool, primarySymbol string, zh bool) {

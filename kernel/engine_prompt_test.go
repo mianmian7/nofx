@@ -35,6 +35,16 @@ func TestBuildSystemPromptUsesVergexClaw402Prompt(t *testing.T) {
 	if !strings.Contains(prompt, "use the full max notional per position") {
 		t.Fatalf("prompt should force full-size Claw402 opens:\n%s", prompt)
 	}
+	for _, phrase := range []string{
+		"at least 4h",
+		"until 8h",
+		"Wait 3h after closing a symbol",
+		"no more than 3 new positions per hour and 2 per decision cycle",
+	} {
+		if !strings.Contains(prompt, phrase) {
+			t.Fatalf("prompt should reflect the strategy-scoped throttle %q:\n%s", phrase, prompt)
+		}
+	}
 	if containsCJK(prompt) {
 		t.Fatalf("system prompt must be English-only, got CJK text:\n%s", prompt)
 	}
@@ -81,6 +91,9 @@ func TestBuildSystemPromptFallsBackToEnglishWhenConfiguredLanguageIsChinese(t *t
 		if !strings.Contains(prompt, phrase) {
 			t.Fatalf("English fallback prompt missing %q:\n%s", phrase, prompt)
 		}
+	}
+	if !strings.Contains(prompt, "at least 4h") {
+		t.Fatalf("generic prompt should reflect the strategy throttle profile:\n%s", prompt)
 	}
 	if containsCJK(prompt) {
 		t.Fatalf("system prompt must be English-only, got CJK text:\n%s", prompt)

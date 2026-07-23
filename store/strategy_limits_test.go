@@ -79,3 +79,46 @@ func TestNormalizeProductSchemaKeepsLegacySizingExplicit(t *testing.T) {
 		t.Fatalf("legacy sizing mode = %q, want notional_based", got)
 	}
 }
+
+func TestTradeThrottleProfilesAndLegacyFallback(t *testing.T) {
+	legacy := (RiskControlConfig{}).EffectiveTradeThrottle()
+	if legacy.MinHoldMinutes != 60 || legacy.NoiseCloseHoldMinutes != 90 || legacy.MaxOpensPerCycle != 6 {
+		t.Fatalf("legacy throttle fallback = %+v", legacy)
+	}
+
+	cfg := GetDefaultStrategyConfig("en")
+	if cfg.RiskControl.TradeThrottle == nil {
+		t.Fatal("default strategy should carry an explicit trade throttle profile")
+	}
+	got := cfg.RiskControl.EffectiveTradeThrottle()
+	want := BigMoveTradeThrottleConfig()
+	if got != want {
+		t.Fatalf("default throttle = %+v, want %+v", got, want)
+	}
+}
+
+func TestTradeThrottleClampLimits(t *testing.T) {
+	throttle := &TradeThrottleConfig{
+		MinHoldMinutes:                -1,
+		NoiseCloseHoldMinutes:         999999,
+		ReentryCooldownMinutes:        -1,
+		MaxOpensPerHour:               9999,
+		MaxOpensPerCycle:              -1,
+		EarlyCloseStopLossBypassPct:   -999,
+		EarlyCloseTakeProfitBypassPct: 999,
+		NoiseCloseLossFloorPct:        -999,
+		NoiseCloseProfitCeilingPct:    999,
+	}
+	throttle.ClampLimits()
+
+	if throttle.MinHoldMinutes != 0 || throttle.ReentryCooldownMinutes != 0 || throttle.MaxOpensPerCycle != 0 {
+		t.Fatalf("negative throttle values were not cleared: %+v", throttle)
+	}
+	if throttle.NoiseCloseHoldMinutes != 14*24*60 || throttle.MaxOpensPerHour != 1000 {
+		t.Fatalf("throttle upper bounds not applied: %+v", throttle)
+	}
+	if throttle.EarlyCloseStopLossBypassPct != -100 || throttle.EarlyCloseTakeProfitBypassPct != 100 ||
+		throttle.NoiseCloseLossFloorPct != -100 || throttle.NoiseCloseProfitCeilingPct != 100 {
+		t.Fatalf("throttle percentage bounds not applied: %+v", throttle)
+	}
+}

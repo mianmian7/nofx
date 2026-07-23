@@ -156,6 +156,9 @@ func (c *StrategyConfig) ClampLimits() {
 	if c.RiskControl.MinConfidence > MaxConfidence {
 		c.RiskControl.MinConfidence = MaxConfidence
 	}
+	if c.RiskControl.TradeThrottle != nil {
+		c.RiskControl.TradeThrottle.ClampLimits()
+	}
 }
 
 // NormalizeProductSchema keeps saved strategy JSON aligned with the product
@@ -1004,6 +1007,153 @@ type ExternalDataSource struct {
 	RefreshSecs int               `json:"refresh_secs,omitempty"` // refresh interval (seconds)
 }
 
+// TradeThrottleConfig controls AI-managed trade frequency and noise exits for
+// one strategy. Zero values mean "use the legacy fallback" so old persisted
+// strategy JSON remains backward compatible.
+type TradeThrottleConfig struct {
+	MinHoldMinutes                int     `json:"min_hold_minutes,omitempty"`
+	NoiseCloseHoldMinutes         int     `json:"noise_close_hold_minutes,omitempty"`
+	ReentryCooldownMinutes        int     `json:"reentry_cooldown_minutes,omitempty"`
+	MaxOpensPerHour               int     `json:"max_opens_per_hour,omitempty"`
+	MaxOpensPerCycle              int     `json:"max_opens_per_cycle,omitempty"`
+	EarlyCloseStopLossBypassPct   float64 `json:"early_close_stop_loss_bypass_pct,omitempty"`
+	EarlyCloseTakeProfitBypassPct float64 `json:"early_close_take_profit_bypass_pct,omitempty"`
+	NoiseCloseLossFloorPct        float64 `json:"noise_close_loss_floor_pct,omitempty"`
+	NoiseCloseProfitCeilingPct    float64 `json:"noise_close_profit_ceiling_pct,omitempty"`
+}
+
+// DefaultTradeThrottleConfig returns the compatibility profile used when an
+// existing strategy has no throttle settings.
+func DefaultTradeThrottleConfig() TradeThrottleConfig {
+	return TradeThrottleConfig{
+		MinHoldMinutes:                60,
+		NoiseCloseHoldMinutes:         90,
+		ReentryCooldownMinutes:        30,
+		MaxOpensPerHour:               30,
+		MaxOpensPerCycle:              6,
+		EarlyCloseStopLossBypassPct:   -2.5,
+		EarlyCloseTakeProfitBypassPct: 5,
+		NoiseCloseLossFloorPct:        -1,
+		NoiseCloseProfitCeilingPct:    2,
+	}
+}
+
+// BigMoveTradeThrottleConfig is the opt-in profile derived from
+// 39eac5ac. It reduces fee-heavy churn while remaining scoped to the strategy
+// that stores it instead of changing every AutoTrader globally.
+func BigMoveTradeThrottleConfig() TradeThrottleConfig {
+	return TradeThrottleConfig{
+		MinHoldMinutes:                4 * 60,
+		NoiseCloseHoldMinutes:         8 * 60,
+		ReentryCooldownMinutes:        3 * 60,
+		MaxOpensPerHour:               3,
+		MaxOpensPerCycle:              2,
+		EarlyCloseStopLossBypassPct:   -5,
+		EarlyCloseTakeProfitBypassPct: 12,
+		NoiseCloseLossFloorPct:        -4,
+		NoiseCloseProfitCeilingPct:    6,
+	}
+}
+
+// Effective returns a complete, safe configuration. Partial configs from API
+// clients inherit only the missing fields from the compatibility profile.
+func (c TradeThrottleConfig) Effective() TradeThrottleConfig {
+	d := DefaultTradeThrottleConfig()
+	if c.MinHoldMinutes > 0 {
+		d.MinHoldMinutes = c.MinHoldMinutes
+	}
+	if c.NoiseCloseHoldMinutes > 0 {
+		d.NoiseCloseHoldMinutes = c.NoiseCloseHoldMinutes
+	}
+	if c.ReentryCooldownMinutes > 0 {
+		d.ReentryCooldownMinutes = c.ReentryCooldownMinutes
+	}
+	if c.MaxOpensPerHour > 0 {
+		d.MaxOpensPerHour = c.MaxOpensPerHour
+	}
+	if c.MaxOpensPerCycle > 0 {
+		d.MaxOpensPerCycle = c.MaxOpensPerCycle
+	}
+	if c.EarlyCloseStopLossBypassPct != 0 {
+		d.EarlyCloseStopLossBypassPct = c.EarlyCloseStopLossBypassPct
+	}
+	if c.EarlyCloseTakeProfitBypassPct != 0 {
+		d.EarlyCloseTakeProfitBypassPct = c.EarlyCloseTakeProfitBypassPct
+	}
+	if c.NoiseCloseLossFloorPct != 0 {
+		d.NoiseCloseLossFloorPct = c.NoiseCloseLossFloorPct
+	}
+	if c.NoiseCloseProfitCeilingPct != 0 {
+		d.NoiseCloseProfitCeilingPct = c.NoiseCloseProfitCeilingPct
+	}
+	if d.NoiseCloseHoldMinutes < d.MinHoldMinutes {
+		d.NoiseCloseHoldMinutes = d.MinHoldMinutes
+	}
+	return d
+}
+
+// ClampLimits keeps user-provided throttle values finite and bounded without
+// materializing defaults into legacy strategy JSON.
+func (c *TradeThrottleConfig) ClampLimits() {
+	if c == nil {
+		return
+	}
+	if c.MinHoldMinutes < 0 {
+		c.MinHoldMinutes = 0
+	}
+	if c.MinHoldMinutes > 7*24*60 {
+		c.MinHoldMinutes = 7 * 24 * 60
+	}
+	if c.NoiseCloseHoldMinutes < 0 {
+		c.NoiseCloseHoldMinutes = 0
+	}
+	if c.NoiseCloseHoldMinutes > 14*24*60 {
+		c.NoiseCloseHoldMinutes = 14 * 24 * 60
+	}
+	if c.ReentryCooldownMinutes < 0 {
+		c.ReentryCooldownMinutes = 0
+	}
+	if c.ReentryCooldownMinutes > 7*24*60 {
+		c.ReentryCooldownMinutes = 7 * 24 * 60
+	}
+	if c.MaxOpensPerHour < 0 {
+		c.MaxOpensPerHour = 0
+	}
+	if c.MaxOpensPerHour > 1000 {
+		c.MaxOpensPerHour = 1000
+	}
+	if c.MaxOpensPerCycle < 0 {
+		c.MaxOpensPerCycle = 0
+	}
+	if c.MaxOpensPerCycle > 100 {
+		c.MaxOpensPerCycle = 100
+	}
+	if c.EarlyCloseStopLossBypassPct < -100 {
+		c.EarlyCloseStopLossBypassPct = -100
+	}
+	if c.EarlyCloseStopLossBypassPct > 100 {
+		c.EarlyCloseStopLossBypassPct = 100
+	}
+	if c.EarlyCloseTakeProfitBypassPct < -100 {
+		c.EarlyCloseTakeProfitBypassPct = -100
+	}
+	if c.EarlyCloseTakeProfitBypassPct > 100 {
+		c.EarlyCloseTakeProfitBypassPct = 100
+	}
+	if c.NoiseCloseLossFloorPct < -100 {
+		c.NoiseCloseLossFloorPct = -100
+	}
+	if c.NoiseCloseLossFloorPct > 100 {
+		c.NoiseCloseLossFloorPct = 100
+	}
+	if c.NoiseCloseProfitCeilingPct < -100 {
+		c.NoiseCloseProfitCeilingPct = -100
+	}
+	if c.NoiseCloseProfitCeilingPct > 100 {
+		c.NoiseCloseProfitCeilingPct = 100
+	}
+}
+
 // RiskControlConfig risk control configuration
 type RiskControlConfig struct {
 	// Max number of coins held simultaneously (CODE ENFORCED)
@@ -1032,9 +1182,18 @@ type RiskControlConfig struct {
 	MinRiskRewardRatio float64 `json:"min_risk_reward_ratio"`
 	// Min AI confidence to open position (AI guided)
 	MinConfidence int `json:"min_confidence"`
+	// Strategy-scoped AI trade frequency and noise-exit policy.
+	TradeThrottle *TradeThrottleConfig `json:"trade_throttle,omitempty"`
 }
 
 func (r RiskControlConfig) IsMarginBased() bool { return r.PositionSizingMode == "margin_based" }
+
+func (r RiskControlConfig) EffectiveTradeThrottle() TradeThrottleConfig {
+	if r.TradeThrottle == nil {
+		return DefaultTradeThrottleConfig()
+	}
+	return r.TradeThrottle.Effective()
+}
 
 // MaxPositionNotional returns the hard per-position notional cap. In margin
 // mode leverage converts the per-position initial-margin budget into notional.
@@ -1146,6 +1305,8 @@ func GetDefaultStrategyConfig(lang string) StrategyConfig {
 			MinConfidence:                75,
 		},
 	}
+	tradeThrottle := BigMoveTradeThrottleConfig()
+	config.RiskControl.TradeThrottle = &tradeThrottle
 
 	if lang == "zh" {
 		config.PromptSections = PromptSectionsConfig{

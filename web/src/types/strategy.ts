@@ -233,4 +233,17 @@ export interface RiskControlConfig {
   min_position_size: number // Min position size in USDT (CODE ENFORCED)
   min_risk_reward_ratio: number // Min take_profit / stop_loss ratio (AI guided)
   min_confidence: number // Min AI confidence to open position (AI guided)
+  trade_throttle?: TradeThrottleConfig
+}
+
+export interface TradeThrottleConfig {
+  min_hold_minutes?: number
+  noise_close_hold_minutes?: number
+  reentry_cooldown_minutes?: number
+  max_opens_per_hour?: number
+  max_opens_per_cycle?: number
+  early_close_stop_loss_bypass_pct?: number
+  early_close_take_profit_bypass_pct?: number
+  noise_close_loss_floor_pct?: number
+  noise_close_profit_ceiling_pct?: number
 }

@@ -26,6 +26,7 @@ import type {
   RiskControlConfig,
   Strategy,
   StrategyConfig,
+  TradeThrottleConfig,
   AIModel,
 } from '../types'
 import type { BacktestJob } from '../lib/api/strategies'
@@ -273,7 +274,42 @@ function defaultRisk(risk?: Partial<RiskControlConfig>): RiskControlConfig {
     min_position_size: risk?.min_position_size || 12,
     min_risk_reward_ratio: risk?.min_risk_reward_ratio || 2,
     min_confidence: risk?.min_confidence || 78,
+    ...(risk?.trade_throttle
+      ? { trade_throttle: defaultTradeThrottle(risk.trade_throttle) }
+      : {}),
   }
+}
+
+function defaultTradeThrottle(
+  throttle?: Partial<TradeThrottleConfig>
+): Required<TradeThrottleConfig> {
+  return {
+    min_hold_minutes: throttle?.min_hold_minutes ?? 60,
+    noise_close_hold_minutes: throttle?.noise_close_hold_minutes ?? 90,
+    reentry_cooldown_minutes: throttle?.reentry_cooldown_minutes ?? 30,
+    max_opens_per_hour: throttle?.max_opens_per_hour ?? 30,
+    max_opens_per_cycle: throttle?.max_opens_per_cycle ?? 6,
+    early_close_stop_loss_bypass_pct:
+      throttle?.early_close_stop_loss_bypass_pct ?? -2.5,
+    early_close_take_profit_bypass_pct:
+      throttle?.early_close_take_profit_bypass_pct ?? 5,
+    noise_close_loss_floor_pct:
+      throttle?.noise_close_loss_floor_pct ?? -1,
+    noise_close_profit_ceiling_pct:
+      throttle?.noise_close_profit_ceiling_pct ?? 2,
+  }
+}
+
+const bigMoveTradeThrottle: Required<TradeThrottleConfig> = {
+  min_hold_minutes: 240,
+  noise_close_hold_minutes: 480,
+  reentry_cooldown_minutes: 180,
+  max_opens_per_hour: 3,
+  max_opens_per_cycle: 2,
+  early_close_stop_loss_bypass_pct: -5,
+  early_close_take_profit_bypass_pct: 12,
+  noise_close_loss_floor_pct: -4,
+  noise_close_profit_ceiling_pct: 6,
 }
 
 function simplifyConfig(
@@ -1134,6 +1170,7 @@ export function StrategyStudioPage() {
   const coinSource = aiConfig?.coin_source
   const indicators = aiConfig?.indicators
   const risk = aiConfig?.risk_control
+  const throttle = defaultTradeThrottle(risk?.trade_throttle)
   const selectedSymbols = coinSource?.static_coins || []
   const watchlist = coinSource?.watchlist || []
   const watchlistCandidateMode = coinSource?.use_watchlist === true
@@ -1456,6 +1493,15 @@ export function StrategyStudioPage() {
     })
   }
 
+  const patchThrottle = (patch: Partial<TradeThrottleConfig>) => {
+    patchRisk({
+      trade_throttle: {
+        ...throttle,
+        ...patch,
+      },
+    })
+  }
+
   const createStrategy = async () => {
     if (!token) return
     try {
@@ -1500,6 +1546,7 @@ export function StrategyStudioPage() {
           altcoin_max_margin_ratio: 0.15,
           max_margin_usage: 0.5,
           min_confidence: 78,
+          trade_throttle: bigMoveTradeThrottle,
         }),
         custom_prompt:
           'Rank the local Binance perpetual candidates by liquid market activity, confirm each setup with raw OHLCV candles, and trade only when the configured risk/reward and confidence requirements are met.',
@@ -3012,6 +3059,210 @@ export function StrategyStudioPage() {
                         `Example at 100 USDT equity: ${(risk.altcoin_max_margin_ratio || 0.15) * 100} USDT margin × ${risk.altcoin_max_leverage}x = ${(100 * (risk.altcoin_max_margin_ratio || 0.15) * risk.altcoin_max_leverage).toFixed(0)} USDT notional. Actual execution remains limited by available balance and exchange leverage.${risk.position_sizing_mode === 'margin_based' ? '' : ' Change this value and save to enable margin-based sizing.'}`
                       )}
                     </div>
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-lighter p-4">
+                  <div className="mb-1 text-sm font-semibold text-nofx-text">
+                    {text(language, '交易节流', 'Trade throttle')}
+                  </div>
+                  <div className="mb-4 text-xs text-nofx-text-muted">
+                    {text(
+                      language,
+                      '按当前策略限制持仓时间、重入和开仓频率；不会影响交易所已设置的硬止损/止盈单。',
+                      'Scope hold time, re-entry and opening frequency to this strategy; exchange hard stop-loss/take-profit orders remain active.'
+                    )}
+                  </div>
+                  <div className="grid gap-4 sm:grid-cols-3">
+                    <label className="space-y-2">
+                      <span className="text-xs text-nofx-text-muted">
+                        {text(language, '最短持仓（分钟）', 'Minimum hold (min)')}
+                      </span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={10080}
+                        step={1}
+                        value={throttle.min_hold_minutes}
+                        onChange={(event) =>
+                          patchThrottle({
+                            min_hold_minutes: Math.min(
+                              10080,
+                              Math.max(1, Number(event.target.value) || 1)
+                            ),
+                          })
+                        }
+                        className="w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
+                      />
+                    </label>
+                    <label className="space-y-2">
+                      <span className="text-xs text-nofx-text-muted">
+                        {text(language, '噪声窗口（分钟）', 'Noise window (min)')}
+                      </span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={20160}
+                        step={1}
+                        value={throttle.noise_close_hold_minutes}
+                        onChange={(event) =>
+                          patchThrottle({
+                            noise_close_hold_minutes: Math.min(
+                              20160,
+                              Math.max(1, Number(event.target.value) || 1)
+                            ),
+                          })
+                        }
+                        className="w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
+                      />
+                    </label>
+                    <label className="space-y-2">
+                      <span className="text-xs text-nofx-text-muted">
+                        {text(language, '重入冷却（分钟）', 'Re-entry cooldown (min)')}
+                      </span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={10080}
+                        step={1}
+                        value={throttle.reentry_cooldown_minutes}
+                        onChange={(event) =>
+                          patchThrottle({
+                            reentry_cooldown_minutes: Math.min(
+                              10080,
+                              Math.max(1, Number(event.target.value) || 1)
+                            ),
+                          })
+                        }
+                        className="w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
+                      />
+                    </label>
+                    <label className="space-y-2">
+                      <span className="text-xs text-nofx-text-muted">
+                        {text(language, '每小时最大开仓', 'Max opens per hour')}
+                      </span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={1000}
+                        step={1}
+                        value={throttle.max_opens_per_hour}
+                        onChange={(event) =>
+                          patchThrottle({
+                            max_opens_per_hour: Math.min(
+                              1000,
+                              Math.max(1, Number(event.target.value) || 1)
+                            ),
+                          })
+                        }
+                        className="w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
+                      />
+                    </label>
+                    <label className="space-y-2">
+                      <span className="text-xs text-nofx-text-muted">
+                        {text(language, '每周期最大开仓', 'Max opens per cycle')}
+                      </span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={100}
+                        step={1}
+                        value={throttle.max_opens_per_cycle}
+                        onChange={(event) =>
+                          patchThrottle({
+                            max_opens_per_cycle: Math.min(
+                              100,
+                              Math.max(1, Number(event.target.value) || 1)
+                            ),
+                          })
+                        }
+                        className="w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
+                      />
+                    </label>
+                    <label className="space-y-2">
+                      <span className="text-xs text-nofx-text-muted">
+                        {text(language, '提前止损阈值（%）', 'Early stop bypass (%)')}
+                      </span>
+                      <input
+                        type="number"
+                        min={-100}
+                        max={100}
+                        step={0.5}
+                        value={throttle.early_close_stop_loss_bypass_pct}
+                        onChange={(event) =>
+                          patchThrottle({
+                            early_close_stop_loss_bypass_pct: Math.min(
+                              100,
+                              Math.max(-100, Number(event.target.value) || 0)
+                            ),
+                          })
+                        }
+                        className="w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
+                      />
+                    </label>
+                    <label className="space-y-2">
+                      <span className="text-xs text-nofx-text-muted">
+                        {text(language, '提前止盈阈值（%）', 'Early profit bypass (%)')}
+                      </span>
+                      <input
+                        type="number"
+                        min={-100}
+                        max={100}
+                        step={0.5}
+                        value={throttle.early_close_take_profit_bypass_pct}
+                        onChange={(event) =>
+                          patchThrottle({
+                            early_close_take_profit_bypass_pct: Math.min(
+                              100,
+                              Math.max(-100, Number(event.target.value) || 0)
+                            ),
+                          })
+                        }
+                        className="w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
+                      />
+                    </label>
+                    <label className="space-y-2">
+                      <span className="text-xs text-nofx-text-muted">
+                        {text(language, '噪声亏损下限（%）', 'Noise loss floor (%)')}
+                      </span>
+                      <input
+                        type="number"
+                        min={-100}
+                        max={100}
+                        step={0.5}
+                        value={throttle.noise_close_loss_floor_pct}
+                        onChange={(event) =>
+                          patchThrottle({
+                            noise_close_loss_floor_pct: Math.min(
+                              100,
+                              Math.max(-100, Number(event.target.value) || 0)
+                            ),
+                          })
+                        }
+                        className="w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
+                      />
+                    </label>
+                    <label className="space-y-2">
+                      <span className="text-xs text-nofx-text-muted">
+                        {text(language, '噪声盈利上限（%）', 'Noise profit ceiling (%)')}
+                      </span>
+                      <input
+                        type="number"
+                        min={-100}
+                        max={100}
+                        step={0.5}
+                        value={throttle.noise_close_profit_ceiling_pct}
+                        onChange={(event) =>
+                          patchThrottle({
+                            noise_close_profit_ceiling_pct: Math.min(
+                              100,
+                              Math.max(-100, Number(event.target.value) || 0)
+                            ),
+                          })
+                        }
+                        className="w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
+                      />
+                    </label>
                   </div>
                 </div>
 

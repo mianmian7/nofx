@@ -2,6 +2,7 @@ package trader
 
 import (
 	"nofx/kernel"
+	"nofx/store"
 	"strings"
 	"testing"
 	"time"
@@ -93,5 +94,32 @@ func TestTradeThrottleBlocksOpeningAgainstExistingPosition(t *testing.T) {
 	reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "open_short"}, ctx, 0)
 	if !strings.Contains(reason, "already has an open") {
 		t.Fatalf("expected opposite open to be blocked when position exists, got %q", reason)
+	}
+}
+
+func TestTradeThrottleUsesStrategyScopedProfile(t *testing.T) {
+	profile := store.BigMoveTradeThrottleConfig()
+	cfg := store.StrategyConfig{
+		RiskControl: store.RiskControlConfig{TradeThrottle: &profile},
+	}
+	at := &AutoTrader{config: AutoTraderConfig{StrategyConfig: &cfg}}
+
+	ctx := throttleContext("BTCUSDT", "long", 2*time.Hour, 0.4)
+	if reason := at.tradeThrottleReason(kernel.Decision{Symbol: "BTCUSDT", Action: "close_long"}, ctx, 0); !strings.Contains(reason, "min AI-managed hold") {
+		t.Fatalf("strategy profile should enforce its 4h minimum hold, got %q", reason)
+	}
+	if reason := at.tradeThrottleReason(kernel.Decision{Symbol: "BTCUSDT", Action: "open_long"}, &kernel.Context{}, 2); !strings.Contains(reason, "2 new position") {
+		t.Fatalf("strategy profile should enforce its per-cycle cap, got %q", reason)
+	}
+}
+
+func TestTradeThrottleLegacyFallbackRemainsIndependent(t *testing.T) {
+	at := &AutoTrader{}
+	ctx := throttleContext("BTCUSDT", "long", 2*time.Hour, 0.4)
+	if reason := at.tradeThrottleReason(kernel.Decision{Symbol: "BTCUSDT", Action: "close_long"}, ctx, 0); reason != "" {
+		t.Fatalf("legacy trader should keep the 90m noise window fallback, got %q", reason)
+	}
+	if reason := at.tradeThrottleReason(kernel.Decision{Symbol: "BTCUSDT", Action: "open_long"}, &kernel.Context{}, 2); reason != "" {
+		t.Fatalf("legacy trader should keep the 6-per-cycle fallback, got %q", reason)
 	}
 }
