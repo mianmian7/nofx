@@ -8,12 +8,17 @@ import (
 )
 
 func throttleContext(symbol, side string, heldFor time.Duration, pnlPct float64) *kernel.Context {
+	return leveragedThrottleContext(symbol, side, heldFor, pnlPct, 1)
+}
+
+func leveragedThrottleContext(symbol, side string, heldFor time.Duration, pnlPct float64, leverage int) *kernel.Context {
 	return &kernel.Context{
 		Positions: []kernel.PositionInfo{
 			{
 				Symbol:           symbol,
 				Side:             side,
 				UnrealizedPnLPct: pnlPct,
+				Leverage:         leverage,
 				UpdateTime:       time.Now().Add(-heldFor).UnixMilli(),
 			},
 		},
@@ -38,6 +43,37 @@ func TestTradeThrottleAllowsEarlyHardStop(t *testing.T) {
 	reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "close_long"}, ctx, 0)
 	if reason != "" {
 		t.Fatalf("expected hard stop close to pass, got %q", reason)
+	}
+}
+
+func TestTradeThrottleBypassIsPriceBasisNotMarginBasis(t *testing.T) {
+	at := &AutoTrader{}
+	// At 10x leverage the exchange reports margin-based PnL: -6% margin is
+	// only a -0.6% price move — noise, must NOT bypass the min hold.
+	ctx := leveragedThrottleContext("xyz:INTC", "long", 20*time.Minute, -6.0, 10)
+
+	reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "close_long"}, ctx, 0)
+	if !strings.Contains(reason, "min AI-managed hold") {
+		t.Fatalf("expected -0.6%% price move to stay blocked at 10x, got %q", reason)
+	}
+
+	// -60% margin at 10x is a real -6% price move — bypass allowed.
+	ctx = leveragedThrottleContext("xyz:INTC", "long", 20*time.Minute, -60.0, 10)
+	reason = at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "close_long"}, ctx, 0)
+	if reason != "" {
+		t.Fatalf("expected -6%% price move to bypass min hold at 10x, got %q", reason)
+	}
+}
+
+func TestTradeThrottleNoiseBandIsPriceBasisNotMarginBasis(t *testing.T) {
+	at := &AutoTrader{}
+	// Past min hold at 10x: +20% margin is only a +2% price move, still
+	// inside the -4%..+6% noise band — flat close must stay blocked.
+	ctx := leveragedThrottleContext("xyz:INTC", "long", 5*time.Hour, 20.0, 10)
+
+	reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "close_long"}, ctx, 0)
+	if !strings.Contains(reason, "noise band") {
+		t.Fatalf("expected +2%% price move to be blocked inside noise band at 10x, got %q", reason)
 	}
 }
 

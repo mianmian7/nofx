@@ -1,8 +1,9 @@
 """Replay recorded AI decisions under alternative risk/throttle parameters.
 
 Mirrors the live semantics of trader/auto_trader_throttle.go:
-  - throttle thresholds compare MARGIN-based PnL% (leverage-multiplied price move),
-    because auto_trader_loop.go computes UnrealizedPnLPct = pnl / margin
+  - throttle thresholds compare PRICE-basis PnL% (leverage-independent),
+    matching the 2026-07-24 fix that converted the live thresholds from
+    margin basis to price basis
   - stop-loss / take-profit are exchange trigger orders -> intra-candle fills
   - opens are gated by confidence, per-cycle/per-hour caps, re-entry cooldown,
     max positions and available margin
@@ -38,9 +39,9 @@ class Params:
     max_positions: int = 2
     leverage: float = 10.0
     ratio: float = 5.0                # per-position notional = ratio x equity
-    sl_bypass: float = -5.0           # margin-PnL% allowing early AI close
+    sl_bypass: float = -5.0           # price-PnL% allowing early AI close
     tp_bypass: float = 12.0
-    noise_floor: float = -4.0         # margin-PnL% band blocking flat closes
+    noise_floor: float = -4.0         # price-PnL% band blocking flat closes
     noise_ceiling: float = 6.0
     sl_mult: float = 1.0              # scale AI stop distance from entry
     tp_mult: float = 1.0
@@ -138,11 +139,11 @@ class Simulator:
         i = bisect.bisect_right(times, ts) - 1
         return self.candles[symbol][i][4] if i >= 0 else None
 
-    def margin_pnl_pct(self, pos, price, leverage):
+    def price_pnl_pct(self, pos, price):
         move = (price - pos.entry) / pos.entry
         if pos.side == "short":
             move = -move
-        return move * leverage * 100.0
+        return move * 100.0
 
     def run(self, p: Params, start=None, end=None):
         equity = self.start_equity
@@ -223,7 +224,7 @@ class Simulator:
                     price = self.price_at(sym, cycle_id, ts) or pos.last_price
                     if not price:
                         continue
-                    pnl_pct = self.margin_pnl_pct(pos, price, p.leverage)
+                    pnl_pct = self.price_pnl_pct(pos, price)
                     held = ts - pos.entry_ts
                     if held >= min_hold:
                         allowed = (held >= noise_hold

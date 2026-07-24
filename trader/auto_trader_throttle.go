@@ -21,15 +21,30 @@ const (
 	// Drastically cut churn: at most a couple of new positions per hour/cycle.
 	autopilotMaxOpensPerHour        = 3
 	autopilotMaxOpensPerCycle       = 2
-	// Wide, asymmetric exits. Cut a loser only at a real -5% (at 5x leverage
-	// that is -25% of margin — survivable), let a winner run to +12% before
-	// any early take-profit. The noise band (-4%..+6%) blocks closing on the
-	// small moves that were grinding the account to nothing.
+	// Wide, asymmetric exits, expressed as PRICE-move percentages so their
+	// meaning does not drift with leverage (the exchange reports margin-based
+	// PnL%, which is the price move multiplied by leverage — comparing these
+	// thresholds against that let a -0.5% wiggle bypass the min hold at 10x).
+	// Cut a loser only at a real -5% price move, let a winner run to +12%
+	// before any early take-profit. The noise band (-4%..+6%) blocks closing
+	// on the small moves that were grinding the account to nothing.
 	earlyCloseStopLossBypassPct     = -5.0
 	earlyCloseTakeProfitBypassPct   = 12.0
 	noiseCloseLossFloorPct          = -4.0
 	noiseCloseProfitCeilingPct      = 6.0
 )
+
+// positionPricePnLPct converts the margin-based UnrealizedPnLPct reported for
+// a position into the underlying price-move percentage.
+func positionPricePnLPct(pos *kernel.PositionInfo) float64 {
+	if pos == nil {
+		return 0
+	}
+	if pos.Leverage > 1 {
+		return pos.UnrealizedPnLPct / float64(pos.Leverage)
+	}
+	return pos.UnrealizedPnLPct
+}
 
 func isOpenAction(action string) bool {
 	switch strings.ToLower(strings.TrimSpace(action)) {
@@ -134,7 +149,7 @@ func (at *AutoTrader) closeThrottleReason(decision kernel.Decision, ctx *kernel.
 	pnlPct := 0.0
 	entryTime := int64(0)
 	if pos != nil {
-		pnlPct = pos.UnrealizedPnLPct
+		pnlPct = positionPricePnLPct(pos)
 		entryTime = pos.UpdateTime
 	}
 
@@ -158,7 +173,7 @@ func (at *AutoTrader) closeThrottleReason(decision kernel.Decision, ctx *kernel.
 
 		remaining := autopilotNoiseCloseHoldDuration - heldFor
 		return fmt.Sprintf(
-			"trade throttle: %s %s has been held for %s with PnL %.2f%%; it is still inside the noise band %.1f%% to %.1f%%, so wait about %s before a flat/small close",
+			"trade throttle: %s %s has been held for %s with price PnL %.2f%%; it is still inside the noise band %.1f%% to %.1f%%, so wait about %s before a flat/small close",
 			symbol,
 			side,
 			roundDuration(heldFor),
@@ -176,7 +191,7 @@ func (at *AutoTrader) closeThrottleReason(decision kernel.Decision, ctx *kernel.
 
 	remaining := autopilotMinHoldDuration - heldFor
 	return fmt.Sprintf(
-		"trade throttle: %s %s has only been held for %s with PnL %.2f%%; min AI-managed hold is %s unless loss <= %.1f%% or profit >= %.1f%%",
+		"trade throttle: %s %s has only been held for %s with price PnL %.2f%%; min AI-managed hold is %s unless price loss <= %.1f%% or price profit >= %.1f%%",
 		symbol,
 		side,
 		roundDuration(heldFor),
