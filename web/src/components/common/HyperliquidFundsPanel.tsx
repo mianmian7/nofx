@@ -21,11 +21,38 @@ const ARBITRUM_CHAIN_ID = '0xa4b1' // 42161
 const ARBITRUM_NATIVE_USDC = '0xaf88d065e77c8cC2239327C5EDb3A432268e5831'
 const HYPERLIQUID_BRIDGE2 = '0x2Df1c51E09aECF9cacB7bc98cB1742757f163dF7'
 const MIN_BRIDGE_DEPOSIT_USDC = 5
+const ARBITRUM_RPC = 'https://arb1.arbitrum.io/rpc'
 
 function erc20TransferData(to: string, amountUnits: bigint) {
   const addr = to.toLowerCase().replace(/^0x/, '').padStart(64, '0')
   const amount = amountUnits.toString(16).padStart(64, '0')
   return `0xa9059cbb${addr}${amount}`
+}
+
+async function arbitrumRpc(method: string, params: unknown[]): Promise<string> {
+  const res = await fetch(ARBITRUM_RPC, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+  })
+  const data = (await res.json()) as { result?: unknown }
+  return typeof data.result === 'string' ? data.result : '0x0'
+}
+
+/** On-chain Arbitrum balances of the main wallet — the funds a bridge deposit can draw from. */
+async function fetchArbitrumBalances(address: string) {
+  const padded = address.replace(/^0x/, '').padStart(64, '0')
+  const [usdcHex, ethHex] = await Promise.all([
+    arbitrumRpc('eth_call', [
+      { to: ARBITRUM_NATIVE_USDC, data: `0x70a08231${padded}` },
+      'latest',
+    ]),
+    arbitrumRpc('eth_getBalance', [address, 'latest']),
+  ])
+  return {
+    usdc: Number(BigInt(usdcHex)) / 1e6,
+    eth: Number(BigInt(ethHex)) / 1e18,
+  }
 }
 
 interface HyperliquidFundsPanelProps {
@@ -54,6 +81,10 @@ const TEXT = {
     bridgeMin: `最低入金 ${MIN_BRIDGE_DEPOSIT_USDC} USDC,低于此额度会丢失`,
     bridgeGasHint: '需要钱包里有少量 Arbitrum ETH 作为 gas。',
     bridgeSubmitted: '入金交易已提交,约 1 分钟后到账合约账户',
+    wallet: '钱包 (Arbitrum)',
+    depositable: '可入金',
+    gas: 'Gas',
+    noGas: 'Arbitrum ETH 为 0,无法支付 gas',
     copyAddress: '复制地址',
     addressCopied: '地址已复制',
     spotToPerp: '现货 → 合约',
@@ -91,6 +122,10 @@ const TEXT = {
     bridgeMin: `Minimum deposit ${MIN_BRIDGE_DEPOSIT_USDC} USDC — smaller amounts are lost`,
     bridgeGasHint: 'Requires a little Arbitrum ETH in the wallet for gas.',
     bridgeSubmitted: 'Deposit submitted, credited to the perp account in ~1 minute',
+    wallet: 'Wallet (Arbitrum)',
+    depositable: 'depositable',
+    gas: 'Gas',
+    noGas: 'No Arbitrum ETH for gas',
     copyAddress: 'Copy address',
     addressCopied: 'Address copied',
     spotToPerp: 'Spot → Perp',
@@ -126,14 +161,22 @@ export function HyperliquidFundsPanel({
   const [depositAmount, setDepositAmount] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [walletUsdc, setWalletUsdc] = useState<number | undefined>()
+  const [walletEth, setWalletEth] = useState<number | undefined>()
 
   const refresh = useCallback(async () => {
     if (!address) return
     setLoading(true)
     try {
-      setAccount(await api.getHyperliquidAccount(address))
-    } catch {
-      // keep the previous snapshot; the panel stays usable
+      const [summary, chain] = await Promise.allSettled([
+        api.getHyperliquidAccount(address),
+        fetchArbitrumBalances(address),
+      ])
+      if (summary.status === 'fulfilled') setAccount(summary.value)
+      if (chain.status === 'fulfilled') {
+        setWalletUsdc(chain.value.usdc)
+        setWalletEth(chain.value.eth)
+      }
     } finally {
       setLoading(false)
     }
@@ -217,6 +260,10 @@ export function HyperliquidFundsPanel({
     }
     if (parsed < MIN_BRIDGE_DEPOSIT_USDC) {
       setError(t.bridgeMin)
+      return
+    }
+    if (walletUsdc !== undefined && parsed > walletUsdc + 1e-9) {
+      setError(t.exceedsBalance)
       return
     }
     const provider = getPreferredWalletProvider()
@@ -306,7 +353,23 @@ export function HyperliquidFundsPanel({
         </button>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 text-sm">
+      <div className="grid grid-cols-3 gap-3 text-sm">
+        <div className="rounded-xl border border-nofx-gold/30 bg-nofx-gold/5 p-3">
+          <div className="text-nofx-text-muted text-xs">{t.wallet}</div>
+          <div className="font-mono font-medium text-nofx-text">
+            {formatUSDC(walletUsdc)} USDC
+          </div>
+          <div className="text-xs text-nofx-text-muted">
+            {walletEth !== undefined && walletEth <= 0 ? (
+              <span className="text-red-500">{t.noGas}</span>
+            ) : (
+              <>
+                {t.gas}: {walletEth === undefined ? '--' : walletEth.toFixed(4)}{' '}
+                ETH
+              </>
+            )}
+          </div>
+        </div>
         <div className="rounded-xl border border-[rgba(26,24,19,0.14)] bg-nofx-bg p-3">
           <div className="text-nofx-text-muted text-xs">{t.spot}</div>
           <div className="font-mono font-medium text-nofx-text">
@@ -343,8 +406,13 @@ export function HyperliquidFundsPanel({
           <p className="text-xs text-nofx-text-muted leading-5">{t.depositHint}</p>
           <p className="text-xs text-amber-500">{t.depositWarn}</p>
           <div className="rounded-xl border border-[rgba(26,24,19,0.14)] bg-nofx-bg p-3 space-y-2">
-            <div className="text-xs font-semibold text-nofx-text">
-              {t.bridgeTitle}
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-nofx-text">
+                {t.bridgeTitle}
+              </span>
+              <span className="text-xs text-nofx-text-muted">
+                {t.depositable}: {formatUSDC(walletUsdc)} USDC
+              </span>
             </div>
             <div className="flex gap-2">
               <input
@@ -356,6 +424,16 @@ export function HyperliquidFundsPanel({
                 className="flex-1 rounded-xl border border-[rgba(26,24,19,0.14)] bg-nofx-bg-deeper px-3 py-1.5 text-sm font-mono text-nofx-text"
                 placeholder={t.bridgeAmount}
               />
+              <button
+                type="button"
+                onClick={() =>
+                  walletUsdc !== undefined &&
+                  setDepositAmount((Math.floor(walletUsdc * 100) / 100).toString())
+                }
+                className="px-3 py-1.5 rounded-xl border border-[rgba(26,24,19,0.14)] bg-nofx-bg-deeper text-sm text-nofx-text-muted hover:text-nofx-text"
+              >
+                {t.max}
+              </button>
               <button
                 type="button"
                 disabled={busy}
