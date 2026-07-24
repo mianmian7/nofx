@@ -14,6 +14,20 @@ import {
   signHyperliquidUserAction,
 } from '../../lib/hyperliquidWallet'
 
+// Hyperliquid only credits one canonical deposit route: NATIVE USDC on
+// Arbitrum One sent to the validator-controlled Bridge2 contract. The sender
+// address is the account that gets credited (min 5 USDC, ~1 minute).
+const ARBITRUM_CHAIN_ID = '0xa4b1' // 42161
+const ARBITRUM_NATIVE_USDC = '0xaf88d065e77c8cC2239327C5EDb3A432268e5831'
+const HYPERLIQUID_BRIDGE2 = '0x2Df1c51E09aECF9cacB7bc98cB1742757f163dF7'
+const MIN_BRIDGE_DEPOSIT_USDC = 5
+
+function erc20TransferData(to: string, amountUnits: bigint) {
+  const addr = to.toLowerCase().replace(/^0x/, '').padStart(64, '0')
+  const amount = amountUnits.toString(16).padStart(64, '0')
+  return `0xa9059cbb${addr}${amount}`
+}
+
 interface HyperliquidFundsPanelProps {
   language: Language
   walletAddress: string
@@ -30,8 +44,16 @@ const TEXT = {
     available: '可用',
     withdrawable: '可提取',
     depositHint:
-      '向下方地址转入 USDC 即可充值:通过 Arbitrum One 链转入会自动进入合约账户(最低 5 USDC);从其他 Hyperliquid 账户现货转账则进入现货,需再划转到合约。',
-    depositWarn: '仅支持 USDC。请勿从交易所直接提现其他币种或其他链到此地址。',
+      '二维码是你的主钱包地址。第一步:把 USDC 通过 Arbitrum One 链提现/转账到这个地址(只是进钱包,不会自动进交易所)。第二步:用下方按钮把钱包里的 Arbitrum USDC 存入 Hyperliquid,约 1 分钟到账合约账户。',
+    depositWarn:
+      '入金只认 Arbitrum One 上的原生 USDC。USDT 或其他链的资产需先兑换成 Arbitrum USDC。',
+    bridgeTitle: '存入 Hyperliquid(钱包 → 交易账户)',
+    bridgeAmount: '入金数量 (USDC)',
+    bridgeSubmit: '存入交易账户',
+    bridgeSubmitting: '存入中…',
+    bridgeMin: `最低入金 ${MIN_BRIDGE_DEPOSIT_USDC} USDC,低于此额度会丢失`,
+    bridgeGasHint: '需要钱包里有少量 Arbitrum ETH 作为 gas。',
+    bridgeSubmitted: '入金交易已提交,约 1 分钟后到账合约账户',
     copyAddress: '复制地址',
     addressCopied: '地址已复制',
     spotToPerp: '现货 → 合约',
@@ -59,9 +81,16 @@ const TEXT = {
     available: 'available',
     withdrawable: 'withdrawable',
     depositHint:
-      'Send USDC to the address below: transfers on Arbitrum One are auto-credited to the perp account (min 5 USDC); spot transfers from another Hyperliquid account arrive in spot and need a transfer to perp.',
+      'The QR is your main wallet address. Step 1: withdraw/send USDC to it on Arbitrum One (this only funds the wallet, not the exchange). Step 2: use the button below to deposit the wallet USDC into Hyperliquid — it credits the perp account in about a minute.',
     depositWarn:
-      'USDC only. Do not withdraw other tokens or use other chains to this address.',
+      'Deposits only accept native USDC on Arbitrum One. Swap USDT or assets on other chains into Arbitrum USDC first.',
+    bridgeTitle: 'Deposit to Hyperliquid (wallet → trading account)',
+    bridgeAmount: 'Deposit amount (USDC)',
+    bridgeSubmit: 'Deposit to trading account',
+    bridgeSubmitting: 'Depositing…',
+    bridgeMin: `Minimum deposit ${MIN_BRIDGE_DEPOSIT_USDC} USDC — smaller amounts are lost`,
+    bridgeGasHint: 'Requires a little Arbitrum ETH in the wallet for gas.',
+    bridgeSubmitted: 'Deposit submitted, credited to the perp account in ~1 minute',
     copyAddress: 'Copy address',
     addressCopied: 'Address copied',
     spotToPerp: 'Spot → Perp',
@@ -94,6 +123,7 @@ export function HyperliquidFundsPanel({
   const [loading, setLoading] = useState(false)
   const [toPerp, setToPerp] = useState(true)
   const [amount, setAmount] = useState('')
+  const [depositAmount, setDepositAmount] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
@@ -171,6 +201,59 @@ export function HyperliquidFundsPanel({
       // Hyperliquid settles the class transfer near-instantly; one refresh
       // shortly after covers indexing lag.
       setTimeout(() => void refresh(), 1500)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t.failed)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function submitBridgeDeposit() {
+    setError('')
+    const parsed = Number(depositAmount)
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      setError(t.invalidAmount)
+      return
+    }
+    if (parsed < MIN_BRIDGE_DEPOSIT_USDC) {
+      setError(t.bridgeMin)
+      return
+    }
+    const provider = getPreferredWalletProvider()
+    if (!provider) {
+      setError(t.noProvider)
+      return
+    }
+    setBusy(true)
+    try {
+      const accounts = (await provider.request({
+        method: 'eth_requestAccounts',
+      })) as string[]
+      const signer = normalizeAddress(accounts?.[0] ?? '')
+      if (!signer) throw new Error(t.connectFirst)
+      // The bridge credits the SENDER: sending from any other wallet would
+      // fund that wallet's Hyperliquid account instead of this one.
+      if (signer !== address) {
+        throw new Error(t.wrongWallet(shortAddress(address), shortAddress(signer)))
+      }
+      await provider.request({
+        method: 'wallet_switchEthereumChain',
+        params: [{ chainId: ARBITRUM_CHAIN_ID }],
+      })
+      const units = BigInt(Math.round(parsed * 1e6))
+      await provider.request({
+        method: 'eth_sendTransaction',
+        params: [
+          {
+            from: signer,
+            to: ARBITRUM_NATIVE_USDC,
+            data: erc20TransferData(HYPERLIQUID_BRIDGE2, units),
+          },
+        ],
+      })
+      toast.success(t.bridgeSubmitted)
+      setDepositAmount('')
+      setTimeout(() => void refresh(), 60_000)
     } catch (err) {
       setError(err instanceof Error ? err.message : t.failed)
     } finally {
@@ -259,6 +342,35 @@ export function HyperliquidFundsPanel({
           </button>
           <p className="text-xs text-nofx-text-muted leading-5">{t.depositHint}</p>
           <p className="text-xs text-amber-500">{t.depositWarn}</p>
+          <div className="rounded-xl border border-[rgba(26,24,19,0.14)] bg-nofx-bg p-3 space-y-2">
+            <div className="text-xs font-semibold text-nofx-text">
+              {t.bridgeTitle}
+            </div>
+            <div className="flex gap-2">
+              <input
+                type="number"
+                min={MIN_BRIDGE_DEPOSIT_USDC}
+                step="0.01"
+                value={depositAmount}
+                onChange={(e) => setDepositAmount(e.target.value)}
+                className="flex-1 rounded-xl border border-[rgba(26,24,19,0.14)] bg-nofx-bg-deeper px-3 py-1.5 text-sm font-mono text-nofx-text"
+                placeholder={t.bridgeAmount}
+              />
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void submitBridgeDeposit()}
+                className="flex items-center gap-2 rounded-xl border border-nofx-gold/30 bg-nofx-gold/10 px-4 py-1.5 text-sm font-bold text-nofx-gold transition hover:bg-nofx-gold/20 disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {busy && <Loader2 size={14} className="animate-spin" />}
+                {busy ? t.bridgeSubmitting : t.bridgeSubmit}
+              </button>
+            </div>
+            {error && <p className="text-xs text-red-500">{error}</p>}
+            <p className="text-xs text-nofx-text-muted">
+              {t.bridgeMin} · {t.bridgeGasHint}
+            </p>
+          </div>
         </div>
       ) : (
         <div className="space-y-3">
