@@ -58,6 +58,14 @@ async function fetchArbitrumBalances(address: string) {
 interface HyperliquidFundsPanelProps {
   language: Language
   walletAddress: string
+  /**
+   * Hyperliquid "unified account" mode (the default, and HL's recommendation):
+   * one USDC balance collateralizes spot, validator perps and HIP-3 perps, so
+   * there is no spot/perp split and no class transfer — the transfer tab is
+   * hidden and a single account card is shown. Manual/standard-mode accounts
+   * keep the split view with the spot<->perp transfer.
+   */
+  unifiedAccount?: boolean
   onTransferred?: () => void | Promise<void>
 }
 
@@ -71,7 +79,11 @@ const TEXT = {
     available: '可用',
     withdrawable: '可提取',
     depositHint:
-      '二维码是你的主钱包地址。第一步:把 USDC 通过 Arbitrum One 链提现/转账到这个地址(只是进钱包,不会自动进交易所)。第二步:用下方按钮把钱包里的 Arbitrum USDC 存入 Hyperliquid,约 1 分钟到账合约账户。',
+      '二维码是你的主钱包地址。第一步:通过 Arbitrum One 链把 USDC 转到这个地址(进钱包)。第二步:用下方按钮存入 Hyperliquid,约 1 分钟到账,到账后即可直接用于交易。',
+    hlAccount: 'Hyperliquid 账户',
+    total: '总额',
+    tradable: '可交易',
+    marginInUse: '保证金占用',
     depositWarn:
       '入金只认 Arbitrum One 上的原生 USDC。USDT 或其他链的资产需先兑换成 Arbitrum USDC。',
     bridgeTitle: '存入 Hyperliquid(钱包 → 交易账户)',
@@ -112,7 +124,11 @@ const TEXT = {
     available: 'available',
     withdrawable: 'withdrawable',
     depositHint:
-      'The QR is your main wallet address. Step 1: withdraw/send USDC to it on Arbitrum One (this only funds the wallet, not the exchange). Step 2: use the button below to deposit the wallet USDC into Hyperliquid — it credits the perp account in about a minute.',
+      'The QR is your main wallet address. Step 1: send USDC to it on Arbitrum One (funds the wallet). Step 2: deposit into Hyperliquid with the button below — credited in about a minute and immediately tradable.',
+    hlAccount: 'Hyperliquid account',
+    total: 'Total',
+    tradable: 'Tradable',
+    marginInUse: 'Margin in use',
     depositWarn:
       'Deposits only accept native USDC on Arbitrum One. Swap USDT or assets on other chains into Arbitrum USDC first.',
     bridgeTitle: 'Deposit to Hyperliquid (wallet → trading account)',
@@ -149,6 +165,7 @@ const TEXT = {
 export function HyperliquidFundsPanel({
   language,
   walletAddress,
+  unifiedAccount = true,
   onTransferred,
 }: HyperliquidFundsPanelProps) {
   const t = TEXT[language === 'zh' ? 'zh' : 'en']
@@ -326,18 +343,20 @@ export function HyperliquidFundsPanel({
             <QrCode size={14} />
             {t.deposit}
           </button>
-          <button
-            type="button"
-            onClick={() => setTab('transfer')}
-            className={`px-3 py-1.5 rounded-xl text-sm font-semibold flex items-center gap-1.5 ${
-              tab === 'transfer'
-                ? 'bg-nofx-gold text-white'
-                : 'bg-nofx-bg text-nofx-text-muted hover:text-nofx-text'
-            }`}
-          >
-            <ArrowDownUp size={14} />
-            {t.transfer}
-          </button>
+          {!unifiedAccount && (
+            <button
+              type="button"
+              onClick={() => setTab('transfer')}
+              className={`px-3 py-1.5 rounded-xl text-sm font-semibold flex items-center gap-1.5 ${
+                tab === 'transfer'
+                  ? 'bg-nofx-gold text-white'
+                  : 'bg-nofx-bg text-nofx-text-muted hover:text-nofx-text'
+              }`}
+            >
+              <ArrowDownUp size={14} />
+              {t.transfer}
+            </button>
+          )}
         </div>
         <button
           type="button"
@@ -370,24 +389,42 @@ export function HyperliquidFundsPanel({
             )}
           </div>
         </div>
-        <div className="rounded-xl border border-[rgba(26,24,19,0.14)] bg-nofx-bg p-3">
-          <div className="text-nofx-text-muted text-xs">{t.spot}</div>
-          <div className="font-mono font-medium text-nofx-text">
-            {formatUSDC(account?.spotUsdc)} USDC
+        {unifiedAccount ? (
+          <div className="rounded-xl border border-[rgba(26,24,19,0.14)] bg-nofx-bg p-3 col-span-2">
+            <div className="text-nofx-text-muted text-xs">{t.hlAccount}</div>
+            <div className="font-mono font-medium text-nofx-text">
+              {formatUSDC(account?.spotUsdc)} USDC
+            </div>
+            <div className="text-xs text-nofx-text-muted">
+              {t.tradable}: {formatUSDC(account?.spotUsdcAvailable)} ·{' '}
+              {t.marginInUse}:{' '}
+              {account
+                ? formatUSDC(account.spotUsdc - account.spotUsdcAvailable)
+                : '--'}
+            </div>
           </div>
-          <div className="text-xs text-nofx-text-muted">
-            {t.available}: {formatUSDC(account?.spotUsdcAvailable)}
-          </div>
-        </div>
-        <div className="rounded-xl border border-[rgba(26,24,19,0.14)] bg-nofx-bg p-3">
-          <div className="text-nofx-text-muted text-xs">{t.perp}</div>
-          <div className="font-mono font-medium text-nofx-text">
-            {formatUSDC(account?.accountValue)} USDC
-          </div>
-          <div className="text-xs text-nofx-text-muted">
-            {t.withdrawable}: {formatUSDC(account?.withdrawable)}
-          </div>
-        </div>
+        ) : (
+          <>
+            <div className="rounded-xl border border-[rgba(26,24,19,0.14)] bg-nofx-bg p-3">
+              <div className="text-nofx-text-muted text-xs">{t.spot}</div>
+              <div className="font-mono font-medium text-nofx-text">
+                {formatUSDC(account?.spotUsdc)} USDC
+              </div>
+              <div className="text-xs text-nofx-text-muted">
+                {t.available}: {formatUSDC(account?.spotUsdcAvailable)}
+              </div>
+            </div>
+            <div className="rounded-xl border border-[rgba(26,24,19,0.14)] bg-nofx-bg p-3">
+              <div className="text-nofx-text-muted text-xs">{t.perp}</div>
+              <div className="font-mono font-medium text-nofx-text">
+                {formatUSDC(account?.accountValue)} USDC
+              </div>
+              <div className="text-xs text-nofx-text-muted">
+                {t.withdrawable}: {formatUSDC(account?.withdrawable)}
+              </div>
+            </div>
+          </>
+        )}
       </div>
 
       {tab === 'deposit' ? (
