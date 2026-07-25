@@ -209,6 +209,12 @@ func (at *AutoTrader) enforcePositionValueRatio(positionSizeUSD float64, equity 
 	}
 
 	riskControl := at.config.StrategyConfig.RiskControl
+	// Margin-based strategies use the account's actual available balance as
+	// the dynamic margin budget. The legacy equity-ratio fields are retained
+	// for compatibility and must not become a second per-position cap.
+	if riskControl.IsMarginBased() {
+		return positionSizeUSD, false
+	}
 	maxPositionValue := riskControl.MaxPositionNotional(equity, leverage, isMajorAsset(symbol))
 	// Check if position size exceeds limit
 	if positionSizeUSD > maxPositionValue {
@@ -231,6 +237,12 @@ func (at *AutoTrader) applyAutopilotFullSizeOpen(decision *kernel.Decision, equi
 	}
 
 	riskControl := cfg.RiskControl
+	// Dynamic margin-based sizing is applied later by enforceOpenRiskBudget,
+	// after the live/paper account reports its current available balance. Do
+	// not overwrite the AI decision with the legacy fixed-size calculation.
+	if riskControl.IsMarginBased() {
+		return
+	}
 	leverage := riskControl.AltcoinMaxLeverage
 	if isMajorAsset(decision.Symbol) {
 		leverage = riskControl.BTCETHMaxLeverage

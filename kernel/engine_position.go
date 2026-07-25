@@ -69,7 +69,6 @@ func validateDecisionWithRisk(d *Decision, accountEquity float64, risk store.Ris
 				d.Symbol, d.Leverage, maxLeverage, maxLeverage)
 			d.Leverage = maxLeverage
 		}
-		maxPositionValue := risk.MaxPositionNotional(accountEquity, d.Leverage, isMajor)
 		if d.PositionSizeUSD <= 0 {
 			return fmt.Errorf("position size must be greater than 0: %.2f", d.PositionSizeUSD)
 		}
@@ -90,18 +89,28 @@ func validateDecisionWithRisk(d *Decision, accountEquity float64, risk store.Ris
 			}
 		}
 
-		// The prompt displays whole-USDT limits. Accept the displayed rounded
-		// boundary so an AI decision of 20 is not rejected when the exact cap is
-		// 19.63 due to account decimals.
-		tolerance := math.Max(maxPositionValue*0.01, 0.5)
-		if d.PositionSizeUSD > maxPositionValue+tolerance {
-			switch {
-			case d.Symbol == "BTCUSDT" || d.Symbol == "ETHUSDT":
-				return fmt.Errorf("BTC/ETH single coin position value cannot exceed %.0f USDT (%.1fx account equity), actual: %.0f", maxPositionValue, posRatio, d.PositionSizeUSD)
-			case market.IsXyzDexAsset(d.Symbol):
-				return fmt.Errorf("%s position value cannot exceed %.0f USDT (%.1fx account equity), actual: %.0f", d.Symbol, maxPositionValue, posRatio, d.PositionSizeUSD)
-			default:
-				return fmt.Errorf("altcoin single coin position value cannot exceed %.0f USDT (%.1fx account equity), actual: %.0f", maxPositionValue, posRatio, d.PositionSizeUSD)
+		// Margin-based strategies size from the account's live available margin
+		// during execution. Do not reject an otherwise valid AI decision here
+		// using the legacy per-position equity-ratio field: that field is not the
+		// available-margin budget and caused false failures such as a 5x order
+		// being rejected at an arbitrary 119 USDT cap. The execution layer applies
+		// the current available-balance ceiling, including fees and overhead.
+		// Legacy notional-based strategies retain their configured hard cap.
+		if !risk.IsMarginBased() {
+			maxPositionValue := risk.MaxPositionNotional(accountEquity, d.Leverage, isMajor)
+			// The prompt displays whole-USDT limits. Accept the displayed rounded
+			// boundary so an AI decision of 20 is not rejected when the exact cap is
+			// 19.63 due to account decimals.
+			tolerance := math.Max(maxPositionValue*0.01, 0.5)
+			if d.PositionSizeUSD > maxPositionValue+tolerance {
+				switch {
+				case d.Symbol == "BTCUSDT" || d.Symbol == "ETHUSDT":
+					return fmt.Errorf("BTC/ETH single coin position value cannot exceed %.0f USDT (%.1fx account equity), actual: %.0f", maxPositionValue, posRatio, d.PositionSizeUSD)
+				case market.IsXyzDexAsset(d.Symbol):
+					return fmt.Errorf("%s position value cannot exceed %.0f USDT (%.1fx account equity), actual: %.0f", d.Symbol, maxPositionValue, posRatio, d.PositionSizeUSD)
+				default:
+					return fmt.Errorf("altcoin single coin position value cannot exceed %.0f USDT (%.1fx account equity), actual: %.0f", maxPositionValue, posRatio, d.PositionSizeUSD)
+				}
 			}
 		}
 		if d.StopLoss <= 0 || d.TakeProfit <= 0 {

@@ -29,11 +29,11 @@ func TestBuildSystemPromptUsesVergexClaw402Prompt(t *testing.T) {
 	if !strings.Contains(prompt, "Direction must be data-driven") {
 		t.Fatalf("prompt should explain that direction is data-driven, not long-only:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "every open position must use exactly 3x") {
+	if !strings.Contains(prompt, "every open position must use at most 3x") {
 		t.Fatalf("prompt should apply the configured 3x leverage limit:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "use the full max notional per position") {
-		t.Fatalf("prompt should force full-size Claw402 opens:\n%s", prompt)
+	if !strings.Contains(prompt, "current available margin") {
+		t.Fatalf("prompt should size Claw402 opens from current available margin:\n%s", prompt)
 	}
 	for _, phrase := range []string{
 		"at least 4h",
@@ -56,6 +56,9 @@ func TestBuildSystemPromptUsesVergexClaw402Prompt(t *testing.T) {
 		"LONG-ONLY",
 		"Do not short",
 		"MUST open a long",
+		"25% of account equity",
+		"20-25%",
+		"2-3x leverage when conditions are uncertain",
 	}
 	for _, phrase := range legacyPhrases {
 		if strings.Contains(prompt, phrase) {
@@ -97,6 +100,36 @@ func TestBuildSystemPromptFallsBackToEnglishWhenConfiguredLanguageIsChinese(t *t
 	}
 	if containsCJK(prompt) {
 		t.Fatalf("system prompt must be English-only, got CJK text:\n%s", prompt)
+	}
+}
+
+func TestMarginBasedPromptUsesAvailableMarginInsteadOfLegacyFixedCap(t *testing.T) {
+	cfg := store.GetDefaultStrategyConfig("en")
+	cfg.CoinSource.SourceType = "static"
+	cfg.CoinSource.StaticCoins = []string{"SAMSUNGUSDT"}
+	cfg.RiskControl.PositionSizingMode = "margin_based"
+	cfg.RiskControl.AltcoinMaxLeverage = 5
+	cfg.RiskControl.AltcoinMaxMarginRatio = 0.25
+	cfg.RiskControl.AltcoinMaxPositionValueRatio = 2
+
+	prompt := NewStrategyEngine(&cfg).BuildSystemPrompt(94.87, "balanced", 195)
+	for _, phrase := range []string{
+		"dynamic available-margin based",
+		"current available margin",
+		"selected leverage",
+	} {
+		if !strings.Contains(prompt, phrase) {
+			t.Fatalf("margin-based prompt missing dynamic sizing guidance %q:\n%s", phrase, prompt)
+		}
+	}
+	for _, phrase := range []string{
+		"25% of account equity",
+		"2.0x account equity",
+		"configured per-position margin budget",
+	} {
+		if strings.Contains(prompt, phrase) {
+			t.Fatalf("margin-based prompt still contains stale fixed-cap guidance %q:\n%s", phrase, prompt)
+		}
 	}
 }
 

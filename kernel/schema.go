@@ -94,8 +94,8 @@ var DataDictionary = map[string]map[string]BilingualFieldDef{
 			Unit:      "%",
 			FormulaZH: "Total Used Margin / Total Equity × 100",
 			FormulaEN: "Total Used Margin / Total Equity × 100",
-			DescZH:    "The higher this value, the greater the account risk. Safe <30%, Dangerous >70%",
-			DescEN:    "Higher value = higher risk. Safe <30%, Dangerous >70%",
+			DescZH:    "数值越高表示占用保证金越多；开仓能力以当前可用保证金、所选杠杆和策略/交易所风控为准",
+			DescEN:    "Higher values mean more margin is reserved; opening capacity follows current available margin, selected leverage, and active strategy/exchange controls",
 		},
 	},
 
@@ -255,11 +255,11 @@ var TradingRules = struct {
 }{
 	RiskManagement: map[string]BilingualRuleDef{
 		"MaxMarginUsage": {
-			Value:    0.30,
-			DescZH:   "Margin usage must not exceed 30%",
-			DescEN:   "Margin usage must not exceed 30%",
-			ReasonZH: "Reserve 70% capital for extreme market conditions and margin calls",
-			ReasonEN: "Reserve 70% capital for extreme market conditions and margin calls",
+			Value:    "dynamic",
+			DescZH:   "开仓规模按当前可用保证金、实际杠杆和生效的策略/交易所风控动态计算",
+			DescEN:   "Opening size is calculated dynamically from current available margin, selected leverage, and active strategy/exchange controls",
+			ReasonZH: "避免用过时的固定百分比覆盖真实账户可用保证金",
+			ReasonEN: "Avoid overriding the account's real available margin with a stale fixed percentage",
 		},
 		"MaxPositionLoss": {
 			Value:    -0.05,

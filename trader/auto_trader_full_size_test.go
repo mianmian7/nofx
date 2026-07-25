@@ -54,3 +54,27 @@ func TestApplyAutopilotFullSizeOpenSkipsNonClaw402Strategies(t *testing.T) {
 		t.Fatalf("non-Claw402 strategies should not be rewritten, got leverage=%d size=%.2f", decision.Leverage, decision.PositionSizeUSD)
 	}
 }
+
+func TestApplyAutopilotFullSizeOpenSkipsFixedCapForMarginBasedSizing(t *testing.T) {
+	cfg := store.GetDefaultStrategyConfig("en")
+	cfg.CoinSource.SourceType = "vergex_signal"
+	cfg.RiskControl.PositionSizingMode = "margin_based"
+	cfg.RiskControl.BTCETHMaxLeverage = 50
+	cfg.RiskControl.AltcoinMaxLeverage = 50
+	cfg.RiskControl.BTCETHMaxMarginRatio = 0.25
+	cfg.RiskControl.AltcoinMaxMarginRatio = 0.25
+
+	at := &AutoTrader{config: AutoTraderConfig{StrategyConfig: &cfg}}
+	decision := &kernel.Decision{
+		Symbol:          "xyz:INTC",
+		Action:          "open_long",
+		Leverage:        8,
+		PositionSizeUSD: 220,
+	}
+
+	at.applyAutopilotFullSizeOpen(decision, 94.87)
+
+	if decision.Leverage != 8 || decision.PositionSizeUSD != 220 {
+		t.Fatalf("margin-based sizing should preserve the AI decision until live available balance is checked, got leverage=%d size=%.2f", decision.Leverage, decision.PositionSizeUSD)
+	}
+}

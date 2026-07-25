@@ -221,12 +221,12 @@ export interface RiskControlConfig {
   btc_eth_max_leverage: number // BTC/ETH max exchange leverage
   altcoin_max_leverage: number // Altcoin max exchange leverage
 
-  // Position Value Ratio - single position notional value / account equity (CODE ENFORCED)
-  // Max position value = equity × this ratio
+  // Legacy notional sizing fields. Margin-based live execution sizes from
+  // current available margin and does not use these as a per-position cap.
   btc_eth_max_position_value_ratio?: number // default: 5 (BTC/ETH max position = 5x equity)
   altcoin_max_position_value_ratio?: number // default: 1 (Altcoin max position = 1x equity)
-  btc_eth_max_margin_ratio?: number
-  altcoin_max_margin_ratio?: number
+  btc_eth_max_margin_ratio?: number // retained for backward-compatible configs
+  altcoin_max_margin_ratio?: number // retained for backward-compatible configs
 
   // Risk Parameters
   max_margin_usage: number // Max margin utilization, e.g. 0.9 = 90% (CODE ENFORCED)

@@ -52,6 +52,11 @@ type Scope =
   | 'forex'
   | 'pre_ipo'
 type ListMode = 'claw402' | 'pool'
+type CandidateSource =
+  | 'binance_dynamic'
+  | 'static'
+  | 'watchlist'
+  | 'vergex_signal'
 
 const scopeOptions: Array<{ value: Scope; zh: string; en: string }> = [
   { value: 'all', zh: '全部', en: 'All' },
@@ -293,8 +298,7 @@ function defaultTradeThrottle(
       throttle?.early_close_stop_loss_bypass_pct ?? -2.5,
     early_close_take_profit_bypass_pct:
       throttle?.early_close_take_profit_bypass_pct ?? 5,
-    noise_close_loss_floor_pct:
-      throttle?.noise_close_loss_floor_pct ?? -1,
+    noise_close_loss_floor_pct: throttle?.noise_close_loss_floor_pct ?? -1,
     noise_close_profit_ceiling_pct:
       throttle?.noise_close_profit_ceiling_pct ?? 2,
   }
@@ -1143,6 +1147,7 @@ export function StrategyStudioPage() {
   const [detailLiqBand, setDetailLiqBand] = useState('15')
   const [listMode, setListMode] = useState<ListMode>('pool')
   const [scope, setScopeValue] = useState<Scope>('all')
+  const [candidateQuery, setCandidateQuery] = useState('')
   const [staticInput, setStaticInput] = useState('')
   const [watchlistInput, setWatchlistInput] = useState('')
   const [watchlistLoading, setWatchlistLoading] = useState(false)
@@ -1165,6 +1170,7 @@ export function StrategyStudioPage() {
   const [backtestMaxCalls, setBacktestMaxCalls] = useState(12)
   const [backtestJob, setBacktestJob] = useState<BacktestJob | null>(null)
   const [backtestStarting, setBacktestStarting] = useState(false)
+  const [creatingStrategy, setCreatingStrategy] = useState(false)
 
   const aiConfig = editingConfig?.ai_config || null
   const coinSource = aiConfig?.coin_source
@@ -1198,7 +1204,15 @@ export function StrategyStudioPage() {
       scope === 'all'
         ? candidateSymbols
         : candidateSymbols.filter((item) => item.category === scope)
-    return [...scoped].sort((a, b) => {
+    const query = candidateQuery.trim().toUpperCase()
+    const filtered = query
+      ? scoped.filter((item) =>
+          [item.symbol, item.display, item.name]
+            .filter(Boolean)
+            .some((value) => value!.toUpperCase().includes(query))
+        )
+      : scoped
+    return [...filtered].sort((a, b) => {
       const aSignal = signalMap.get(normalizeSymbol(a.symbol))
       const bSignal = signalMap.get(normalizeSymbol(b.symbol))
       const aRank = aSignal?.rank || Number.MAX_SAFE_INTEGER
@@ -1207,6 +1221,7 @@ export function StrategyStudioPage() {
       return (b.volume_24h || 0) - (a.volume_24h || 0)
     })
   }, [
+    candidateQuery,
     scope,
     signalMap,
     symbols,
@@ -1220,8 +1235,16 @@ export function StrategyStudioPage() {
       scope === 'all'
         ? signals
         : signals.filter((item) => item.category === scope)
-    return scoped.slice().sort(compareSignalItems)
-  }, [scope, signals])
+    const query = candidateQuery.trim().toUpperCase()
+    const filtered = query
+      ? scoped.filter((item) =>
+          [item.symbol, item.market_type, item.category]
+            .filter(Boolean)
+            .some((value) => value!.toUpperCase().includes(query))
+        )
+      : scoped
+    return filtered.slice().sort(compareSignalItems)
+  }, [candidateQuery, scope, signals])
 
   const selectedSet = useMemo(
     () => new Set(selectedSymbols.map(normalizeSymbol)),
@@ -1244,6 +1267,13 @@ export function StrategyStudioPage() {
           null
         setSelectedStrategy(next)
         setEditingConfig(next ? simplifyConfig(next.config) : null)
+        setListMode(
+          next?.config?.ai_config?.coin_source?.source_type === 'vergex_signal'
+            ? 'claw402'
+            : 'pool'
+        )
+        setCandidateQuery('')
+        setScopeValue('all')
         setHasChanges(false)
       } catch (err) {
         notify.error(
@@ -1503,7 +1533,8 @@ export function StrategyStudioPage() {
   }
 
   const createStrategy = async () => {
-    if (!token) return
+    if (!token || creatingStrategy) return
+    setCreatingStrategy(true)
     try {
       const response = await fetch(
         `${API_BASE}/api/strategies/default-config?lang=${language}`,
@@ -1536,16 +1567,20 @@ export function StrategyStudioPage() {
         }),
         risk_control: defaultRisk({
           ...defaultConfig.ai_config?.risk_control,
-          max_positions: 2,
+          // Match the server-provisioned NOFX local dynamic strategy so that
+          // a strategy created from the editor starts from the same baseline.
+          max_positions: 3,
           position_sizing_mode: 'margin_based',
           btc_eth_max_leverage: 3,
           altcoin_max_leverage: 3,
-          btc_eth_max_position_value_ratio: 1.5,
-          altcoin_max_position_value_ratio: 1.5,
+          btc_eth_max_position_value_ratio: 1,
+          altcoin_max_position_value_ratio: 0.5,
           btc_eth_max_margin_ratio: 0.15,
           altcoin_max_margin_ratio: 0.15,
           max_margin_usage: 0.5,
-          min_confidence: 78,
+          min_position_size: 12,
+          min_risk_reward_ratio: 2,
+          min_confidence: 75,
           trade_throttle: bigMoveTradeThrottle,
         }),
         custom_prompt:
@@ -1571,6 +1606,8 @@ export function StrategyStudioPage() {
       notify.error(
         err instanceof Error ? err.message : 'Failed to create strategy'
       )
+    } finally {
+      setCreatingStrategy(false)
     }
   }
 
@@ -1816,11 +1853,53 @@ export function StrategyStudioPage() {
 
   const setScope = (nextScope: Scope) => {
     setScopeValue(nextScope)
+  }
+
+  const selectCandidateSource = (source: CandidateSource) => {
+    setCandidateQuery('')
+    setScopeValue('all')
+
+    if (source === 'binance_dynamic') {
+      setListMode('pool')
+      patchCoinSource({
+        source_type: 'binance_dynamic',
+        static_coins: [],
+        use_watchlist: false,
+        binance_dynamic_limit: 10,
+      })
+      void loadSymbols()
+      return
+    }
+
+    if (source === 'watchlist') {
+      if (watchlist.length === 0) return
+      enableWatchlistCandidates()
+      void loadWatchlistSymbols()
+      return
+    }
+
+    if (source === 'static') {
+      if (selectedSymbols.length === 0) return
+      setListMode('pool')
+      patchCoinSource({
+        source_type: 'static',
+        static_coins: selectedSymbols,
+        use_watchlist: false,
+        binance_dynamic_limit: 10,
+      })
+      return
+    }
+
+    setListMode('claw402')
     patchCoinSource({
-      hyper_rank_category: nextScope,
+      source_type: 'vergex_signal',
       static_coins: [],
+      use_watchlist: false,
+      vergex_limit: Math.min(Math.max(coinSource?.vergex_limit || 10, 1), 10),
       vergex_market_type: 'all',
+      vergex_chain: coinSource?.vergex_chain || 'hyperliquid',
     })
+    void loadSignals()
   }
 
   const setTimeframe = (timeframe: string) => {
@@ -1892,6 +1971,15 @@ export function StrategyStudioPage() {
     setHasChanges(true)
   }
 
+  const activeCandidateSource: CandidateSource =
+    coinSource?.source_type === 'vergex_signal'
+      ? 'vergex_signal'
+      : coinSource?.source_type === 'static' && watchlistCandidateMode
+        ? 'watchlist'
+        : coinSource?.source_type === 'static'
+          ? 'static'
+          : 'binance_dynamic'
+
   if (loading) {
     return (
       <div className="flex min-h-[70vh] items-center justify-center">
@@ -1934,8 +2022,25 @@ export function StrategyStudioPage() {
 
       <div className="grid min-h-[calc(100vh-137px)] grid-cols-1 lg:grid-cols-[280px_minmax(0,1fr)]">
         <aside className="border-r border-[rgba(26,24,19,0.14)] bg-nofx-bg-deeper p-3">
-          <div className="mb-2 px-2 text-xs font-medium uppercase tracking-wide text-nofx-text-muted">
-            {text(language, '我的策略', 'My strategies')}
+          <div className="mb-2 flex items-center justify-between gap-2 px-2">
+            <div className="text-xs font-medium uppercase tracking-wide text-nofx-text-muted">
+              {text(language, '我的策略', 'My strategies')}
+            </div>
+            <button
+              type="button"
+              onClick={createStrategy}
+              disabled={creatingStrategy}
+              title={text(language, '新建策略', 'New strategy')}
+              aria-label={text(language, '新建策略', 'New strategy')}
+              className="inline-flex items-center gap-1 rounded-md border border-nofx-gold/30 bg-nofx-gold/10 px-2 py-1 text-xs font-semibold text-nofx-gold hover:bg-nofx-gold/15 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {creatingStrategy ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Plus className="h-3.5 w-3.5" />
+              )}
+              {text(language, '新建', 'New')}
+            </button>
           </div>
           <div className="space-y-2">
             {strategies.map((strategy) => (
@@ -1945,6 +2050,14 @@ export function StrategyStudioPage() {
                 onClick={() => {
                   setSelectedStrategy(strategy)
                   setEditingConfig(simplifyConfig(strategy.config))
+                  setListMode(
+                    strategy.config?.ai_config?.coin_source?.source_type ===
+                      'vergex_signal'
+                      ? 'claw402'
+                      : 'pool'
+                  )
+                  setCandidateQuery('')
+                  setScopeValue('all')
                   setHasChanges(false)
                 }}
                 className={`w-full rounded-lg border px-3 py-3 text-left transition ${
@@ -2518,20 +2631,10 @@ export function StrategyStudioPage() {
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
-                      onClick={() => {
-                        setListMode('pool')
-                        patchCoinSource({
-                          source_type: 'binance_dynamic',
-                          static_coins: [],
-                          use_watchlist: false,
-                          binance_dynamic_limit: 10,
-                        })
-                        void loadSymbols()
-                      }}
+                      onClick={() => selectCandidateSource('binance_dynamic')}
                       disabled={symbolsLoading}
                       className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs disabled:opacity-50 ${
-                        listMode === 'pool' &&
-                        coinSource.source_type === 'binance_dynamic'
+                        activeCandidateSource === 'binance_dynamic'
                           ? 'border-nofx-gold bg-nofx-gold/10 text-nofx-gold'
                           : 'border-[rgba(26,24,19,0.14)] text-nofx-text-muted hover:text-nofx-text'
                       }`}
@@ -2543,19 +2646,46 @@ export function StrategyStudioPage() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => {
-                        enableWatchlistCandidates()
-                        void loadWatchlistSymbols()
-                      }}
+                      onClick={() => selectCandidateSource('watchlist')}
                       disabled={watchlistLoading || watchlist.length === 0}
                       className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs disabled:opacity-50 ${
-                        listMode === 'pool' && watchlistCandidateMode
+                        activeCandidateSource === 'watchlist'
                           ? 'border-nofx-gold bg-nofx-gold/10 text-nofx-gold'
                           : 'border-[rgba(26,24,19,0.14)] text-nofx-text-muted hover:text-nofx-text'
                       }`}
                     >
                       <Target className="h-3.5 w-3.5" />
                       {text(language, '我的自选候选', 'My watchlist')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => selectCandidateSource('static')}
+                      disabled={selectedSymbols.length === 0}
+                      className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs disabled:opacity-50 ${
+                        activeCandidateSource === 'static'
+                          ? 'border-nofx-gold bg-nofx-gold/10 text-nofx-gold'
+                          : 'border-[rgba(26,24,19,0.14)] text-nofx-text-muted hover:text-nofx-text'
+                      }`}
+                    >
+                      <Target className="h-3.5 w-3.5" />
+                      {text(language, '固定交易对', 'Fixed symbols')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => selectCandidateSource('vergex_signal')}
+                      disabled={signalsLoading}
+                      className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs disabled:opacity-50 ${
+                        activeCandidateSource === 'vergex_signal'
+                          ? 'border-nofx-gold bg-nofx-gold/10 text-nofx-gold'
+                          : 'border-[rgba(26,24,19,0.14)] text-nofx-text-muted hover:text-nofx-text'
+                      }`}
+                    >
+                      <Sparkles className="h-3.5 w-3.5" />
+                      {text(
+                        language,
+                        'Claw402/Vergex（可选付费）',
+                        'Claw402/Vergex (optional paid)'
+                      )}
                     </button>
                     <button
                       type="button"
@@ -2579,21 +2709,41 @@ export function StrategyStudioPage() {
                     {selectedSymbols.length > 0 ? (
                       <button
                         type="button"
-                        onClick={() =>
-                          patchCoinSource({
-                            source_type: 'binance_dynamic',
-                            static_coins: [],
-                            use_watchlist: false,
-                            binance_dynamic_limit: 10,
-                            vergex_market_type: 'all',
-                          })
-                        }
+                        onClick={() => selectCandidateSource('binance_dynamic')}
                         className="inline-flex rounded-lg border border-[rgba(26,24,19,0.14)] px-3 py-2 text-xs text-nofx-text-muted hover:text-nofx-text"
                       >
                         {text(language, '清除固定选择', 'Clear selected')}
                       </button>
                     ) : null}
                   </div>
+                </div>
+
+                <div className="mb-4 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
+                  <input
+                    type="search"
+                    value={candidateQuery}
+                    onChange={(event) => setCandidateQuery(event.target.value)}
+                    placeholder={text(
+                      language,
+                      '搜索候选交易对，例如 BTC、ETH 或 QQQ',
+                      'Search candidates, e.g. BTC, ETH, or QQQ'
+                    )}
+                    aria-label={text(
+                      language,
+                      '搜索候选交易对',
+                      'Search candidate symbols'
+                    )}
+                    className="rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text outline-none focus:border-nofx-gold"
+                  />
+                  {candidateQuery ? (
+                    <button
+                      type="button"
+                      onClick={() => setCandidateQuery('')}
+                      className="rounded-lg border border-[rgba(26,24,19,0.14)] px-4 py-2 text-sm text-nofx-text-muted hover:text-nofx-text"
+                    >
+                      {text(language, '清除搜索', 'Clear search')}
+                    </button>
+                  ) : null}
                 </div>
 
                 {listMode === 'claw402' ? (
@@ -2840,11 +2990,17 @@ export function StrategyStudioPage() {
                 signals.length > 0 &&
                 visibleSignalItems.length === 0 ? (
                   <div className="rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-deeper px-3 py-3 text-sm text-nofx-text-muted">
-                    {text(
-                      language,
-                      'Claw402/Vergex 当前没有可用市场。',
-                      'No Claw402/Vergex markets available.'
-                    )}
+                    {candidateQuery
+                      ? text(
+                          language,
+                          '没有匹配的候选交易对，请更换搜索词。',
+                          'No candidates match this search.'
+                        )
+                      : text(
+                          language,
+                          'Claw402/Vergex 当前没有可用市场。',
+                          'No Claw402/Vergex markets available.'
+                        )}
                   </div>
                 ) : null}
 
@@ -2852,11 +3008,17 @@ export function StrategyStudioPage() {
                 visibleSymbols.length === 0 &&
                 !symbolsLoading ? (
                   <div className="rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-deeper px-3 py-3 text-sm text-nofx-text-muted">
-                    {text(
-                      language,
-                      'Binance 动态候选暂不可用，请稍后刷新。',
-                      'Binance dynamic candidates are unavailable; refresh later.'
-                    )}
+                    {candidateQuery
+                      ? text(
+                          language,
+                          '没有匹配的候选交易对，请更换搜索词。',
+                          'No candidates match this search.'
+                        )
+                      : text(
+                          language,
+                          'Binance 动态候选暂不可用，请稍后刷新。',
+                          'Binance dynamic candidates are unavailable; refresh later.'
+                        )}
                   </div>
                 ) : null}
               </section>
@@ -3018,45 +3180,15 @@ export function StrategyStudioPage() {
                     <div className="mb-4 text-sm font-semibold text-nofx-text">
                       {text(
                         language,
-                        '单仓保证金上限',
-                        'Margin limit per position'
+                        '动态保证金开仓',
+                        'Dynamic margin sizing'
                       )}
                     </div>
-                    <label className="block max-w-sm space-y-2">
-                      <span className="text-xs text-nofx-text-muted">
-                        {text(
-                          language,
-                          '每个仓位最多使用净值的百分比',
-                          'Maximum equity percentage used as margin per position'
-                        )}
-                      </span>
-                      <input
-                        type="number"
-                        min={1}
-                        max={100}
-                        step={1}
-                        value={Math.round(
-                          (risk.altcoin_max_margin_ratio || 0.15) * 100
-                        )}
-                        onChange={(event) => {
-                          const ratio = Math.min(
-                            1,
-                            Math.max(0.01, Number(event.target.value) / 100)
-                          )
-                          patchRisk({
-                            position_sizing_mode: 'margin_based',
-                            btc_eth_max_margin_ratio: ratio,
-                            altcoin_max_margin_ratio: ratio,
-                          })
-                        }}
-                        className="w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
-                      />
-                    </label>
-                    <div className="mt-4 rounded-lg bg-nofx-bg p-3 text-xs text-nofx-text-muted">
+                    <div className="rounded-lg bg-nofx-bg p-3 text-xs leading-5 text-nofx-text-muted">
                       {text(
                         language,
-                        `示例净值 100 USDT：单仓保证金 ${(risk.altcoin_max_margin_ratio || 0.15) * 100} USDT × ${risk.altcoin_max_leverage}x = 名义仓位 ${(100 * (risk.altcoin_max_margin_ratio || 0.15) * risk.altcoin_max_leverage).toFixed(0)} USDT。实际下单仍受可用余额和交易所最大杠杆限制。${risk.position_sizing_mode === 'margin_based' ? '' : ' 修改此数值并保存后启用按保证金分配。'}`,
-                        `Example at 100 USDT equity: ${(risk.altcoin_max_margin_ratio || 0.15) * 100} USDT margin × ${risk.altcoin_max_leverage}x = ${(100 * (risk.altcoin_max_margin_ratio || 0.15) * risk.altcoin_max_leverage).toFixed(0)} USDT notional. Actual execution remains limited by available balance and exchange leverage.${risk.position_sizing_mode === 'margin_based' ? '' : ' Change this value and save to enable margin-based sizing.'}`
+                        '保证金模式不再使用固定的单仓净值百分比。每轮根据账户当前可用保证金和本次实际杠杆计算名义仓位；后端会在下单前自动扣除手续费、保证金开销和价格变化缓冲。旧策略中的单仓保证金字段仅为兼容保留，不再作为硬上限。',
+                        'Margin mode no longer uses a fixed per-position equity percentage. Each cycle sizes from the account’s current available margin and selected leverage; the backend applies fee, margin-overhead, and price-change buffers before execution. Legacy per-position margin fields remain for compatibility but are not hard caps.'
                       )}
                     </div>
                   </div>
@@ -3076,7 +3208,11 @@ export function StrategyStudioPage() {
                   <div className="grid gap-4 sm:grid-cols-3">
                     <label className="space-y-2">
                       <span className="text-xs text-nofx-text-muted">
-                        {text(language, '最短持仓（分钟）', 'Minimum hold (min)')}
+                        {text(
+                          language,
+                          '最短持仓（分钟）',
+                          'Minimum hold (min)'
+                        )}
                       </span>
                       <input
                         type="number"
@@ -3097,7 +3233,11 @@ export function StrategyStudioPage() {
                     </label>
                     <label className="space-y-2">
                       <span className="text-xs text-nofx-text-muted">
-                        {text(language, '噪声窗口（分钟）', 'Noise window (min)')}
+                        {text(
+                          language,
+                          '噪声窗口（分钟）',
+                          'Noise window (min)'
+                        )}
                       </span>
                       <input
                         type="number"
@@ -3118,7 +3258,11 @@ export function StrategyStudioPage() {
                     </label>
                     <label className="space-y-2">
                       <span className="text-xs text-nofx-text-muted">
-                        {text(language, '重入冷却（分钟）', 'Re-entry cooldown (min)')}
+                        {text(
+                          language,
+                          '重入冷却（分钟）',
+                          'Re-entry cooldown (min)'
+                        )}
                       </span>
                       <input
                         type="number"
@@ -3160,7 +3304,11 @@ export function StrategyStudioPage() {
                     </label>
                     <label className="space-y-2">
                       <span className="text-xs text-nofx-text-muted">
-                        {text(language, '每周期最大开仓', 'Max opens per cycle')}
+                        {text(
+                          language,
+                          '每周期最大开仓',
+                          'Max opens per cycle'
+                        )}
                       </span>
                       <input
                         type="number"
@@ -3181,7 +3329,11 @@ export function StrategyStudioPage() {
                     </label>
                     <label className="space-y-2">
                       <span className="text-xs text-nofx-text-muted">
-                        {text(language, '提前止损阈值（%）', 'Early stop bypass (%)')}
+                        {text(
+                          language,
+                          '提前止损阈值（%）',
+                          'Early stop bypass (%)'
+                        )}
                       </span>
                       <input
                         type="number"
@@ -3202,7 +3354,11 @@ export function StrategyStudioPage() {
                     </label>
                     <label className="space-y-2">
                       <span className="text-xs text-nofx-text-muted">
-                        {text(language, '提前止盈阈值（%）', 'Early profit bypass (%)')}
+                        {text(
+                          language,
+                          '提前止盈阈值（%）',
+                          'Early profit bypass (%)'
+                        )}
                       </span>
                       <input
                         type="number"
@@ -3223,7 +3379,11 @@ export function StrategyStudioPage() {
                     </label>
                     <label className="space-y-2">
                       <span className="text-xs text-nofx-text-muted">
-                        {text(language, '噪声亏损下限（%）', 'Noise loss floor (%)')}
+                        {text(
+                          language,
+                          '噪声亏损下限（%）',
+                          'Noise loss floor (%)'
+                        )}
                       </span>
                       <input
                         type="number"
@@ -3244,7 +3404,11 @@ export function StrategyStudioPage() {
                     </label>
                     <label className="space-y-2">
                       <span className="text-xs text-nofx-text-muted">
-                        {text(language, '噪声盈利上限（%）', 'Noise profit ceiling (%)')}
+                        {text(
+                          language,
+                          '噪声盈利上限（%）',
+                          'Noise profit ceiling (%)'
+                        )}
                       </span>
                       <input
                         type="number"
@@ -3290,10 +3454,15 @@ export function StrategyStudioPage() {
               <button
                 type="button"
                 onClick={createStrategy}
+                disabled={creatingStrategy}
                 className="inline-flex items-center gap-2 rounded-lg bg-nofx-gold px-4 py-2 text-sm font-semibold text-nofx-bg hover:bg-nofx-gold-highlight"
               >
-                <Plus className="h-4 w-4" />
-                {text(language, 'Initialize Autopilot', 'Initialize Autopilot')}
+                {creatingStrategy ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Plus className="h-4 w-4" />
+                )}
+                {text(language, '新建策略', 'New strategy')}
               </button>
             </div>
           )}

@@ -9,6 +9,7 @@ const apiMocks = vi.hoisted(() => ({
   getSymbols: vi.fn(),
   getVergexSignalRanking: vi.fn(),
   getModelConfigs: vi.fn(),
+  createStrategy: vi.fn(),
   startStrategyBacktest: vi.fn(),
   getStrategyBacktest: vi.fn(),
 }))
@@ -40,7 +41,7 @@ describe('StrategyStudioPage initial data policy', () => {
   })
 
   beforeEach(() => {
-    vi.clearAllMocks()
+    vi.resetAllMocks()
     apiMocks.getStrategies.mockResolvedValue([
       {
         id: 'strategy-1',
@@ -69,6 +70,18 @@ describe('StrategyStudioPage initial data policy', () => {
       count: 0,
     })
     apiMocks.getModelConfigs.mockResolvedValue([])
+    apiMocks.createStrategy.mockResolvedValue({
+      id: 'strategy-new',
+      name: 'NOFX 本地动态策略',
+      description: '',
+      is_active: false,
+      is_default: false,
+      is_public: false,
+      config_visible: false,
+      created_at: '',
+      updated_at: '',
+      config: {},
+    })
     apiMocks.getVergexSignalRanking.mockRejectedValue(
       new Error('paid upstream should not load on mount')
     )
@@ -93,8 +106,103 @@ describe('StrategyStudioPage initial data policy', () => {
     expect(screen.getByRole('button', { name: '保存' })).toBeVisible()
     expect(screen.getByText('历史 AI 回放')).toBeVisible()
     expect(
-      screen.queryByRole('button', { name: 'Claw402/Vergex（可选付费）' })
+      screen.getByRole('button', { name: 'Claw402/Vergex（可选付费）' })
+    ).toBeVisible()
+  })
+
+  it('exposes a new strategy button and keeps the local dynamic defaults', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        strategy_type: 'ai_trading',
+        ai_config: {
+          coin_source: { source_type: 'binance_dynamic' },
+          indicators: {
+            klines: { primary_timeframe: '15m', primary_count: 30 },
+          },
+          risk_control: {},
+        },
+      }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    apiMocks.getStrategies.mockResolvedValueOnce([]).mockResolvedValueOnce([])
+
+    render(
+      <MemoryRouter>
+        <StrategyStudioPage />
+      </MemoryRouter>
+    )
+
+    const newStrategyButtons = await screen.findAllByRole('button', {
+      name: '新建策略',
+    })
+    fireEvent.click(newStrategyButtons[0])
+
+    await waitFor(() => expect(apiMocks.createStrategy).toHaveBeenCalledOnce())
+    const payload = apiMocks.createStrategy.mock.calls[0][0]
+    expect(payload.name).toBe('NOFX 本地动态策略')
+    expect(payload.config.ai_config.coin_source.source_type).toBe(
+      'binance_dynamic'
+    )
+    expect(payload.config.ai_config.indicators.klines.primary_timeframe).toBe(
+      '15m'
+    )
+    expect(payload.config.ai_config.risk_control.max_positions).toBe(3)
+    expect(payload.config.ai_config.risk_control.trade_throttle).toMatchObject({
+      min_hold_minutes: 240,
+      noise_close_hold_minutes: 480,
+      reentry_cooldown_minutes: 180,
+      max_opens_per_hour: 3,
+      max_opens_per_cycle: 2,
+    })
+  })
+
+  it('filters candidate symbols without changing the selected source', async () => {
+    apiMocks.getSymbols.mockImplementation(async (exchange: string) =>
+      exchange === 'binance'
+        ? {
+            exchange,
+            count: 2,
+            symbols: [
+              {
+                symbol: 'BTCUSDT',
+                display: 'BTCUSDT',
+                name: 'BTC',
+                category: 'crypto',
+                exchange,
+              },
+              {
+                symbol: 'ETHUSDT',
+                display: 'ETHUSDT',
+                name: 'ETH',
+                category: 'crypto',
+                exchange,
+              },
+            ],
+          }
+        : { exchange, symbols: [], count: 0 }
+    )
+
+    render(
+      <MemoryRouter>
+        <StrategyStudioPage />
+      </MemoryRouter>
+    )
+
+    expect(await screen.findByRole('button', { name: /BTCUSDT/ })).toBeVisible()
+    expect(screen.getByRole('button', { name: /ETHUSDT/ })).toBeVisible()
+
+    fireEvent.change(screen.getByLabelText('搜索候选交易对'), {
+      target: { value: 'BTC' },
+    })
+
+    expect(screen.getByRole('button', { name: /BTCUSDT/ })).toBeVisible()
+    expect(
+      screen.queryByRole('button', { name: /ETHUSDT/ })
     ).not.toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'Binance 动态候选' })
+    ).toBeVisible()
   })
 
   it('shows modified preset parameters as custom and labels the leverage cap', async () => {

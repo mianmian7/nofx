@@ -56,7 +56,7 @@ func (pb *PromptBuilder) buildSystemPromptZH() string {
 ## Decision Principles
 
 ### Risk First
-- Margin usage must not exceed 30%
+- Opening capacity follows current available margin, selected leverage, and the active strategy/exchange risk controls
 - A single position losing -5% must be stopped out
 - Protect capital first, then consider profit
 
@@ -191,7 +191,7 @@ func (pb *PromptBuilder) buildSystemPromptEN() string {
 ## Decision Principles
 
 ### Risk First
-- Margin usage must not exceed 30%
+- Opening capacity follows current available margin, selected leverage, and the active strategy/exchange risk controls
 - Must stop-loss when single position loss reaches -5%
 - Capital protection first, profit second
 

@@ -1170,8 +1170,10 @@ type RiskControlConfig struct {
 	BTCETHMaxPositionValueRatio float64 `json:"btc_eth_max_position_value_ratio"`
 	// Altcoin single position max value = equity × this ratio (CODE ENFORCED, default: 1)
 	AltcoinMaxPositionValueRatio float64 `json:"altcoin_max_position_value_ratio"`
-	BTCETHMaxMarginRatio         float64 `json:"btc_eth_max_margin_ratio,omitempty"`
-	AltcoinMaxMarginRatio        float64 `json:"altcoin_max_margin_ratio,omitempty"`
+	// Legacy per-position margin ratios retained for config compatibility. Live
+	// margin-based execution sizes from current available margin instead.
+	BTCETHMaxMarginRatio  float64 `json:"btc_eth_max_margin_ratio,omitempty"`
+	AltcoinMaxMarginRatio float64 `json:"altcoin_max_margin_ratio,omitempty"`
 
 	// Max margin utilization (e.g. 0.9 = 90%) (CODE ENFORCED)
 	MaxMarginUsage float64 `json:"max_margin_usage"`
@@ -1195,9 +1197,10 @@ func (r RiskControlConfig) EffectiveTradeThrottle() TradeThrottleConfig {
 	return r.TradeThrottle.Effective()
 }
 
-// MaxPositionNotional returns the hard per-position notional cap. In margin
-// mode leverage converts the per-position initial-margin budget into notional.
-// Legacy strategies continue to use their notional ratio.
+// MaxPositionNotional returns the configured/reference notional amount. Legacy
+// notional-based strategies use it as a hard cap. Live margin-based execution
+// no longer treats the stored margin ratio as a hard per-position cap; it uses
+// the account's current available margin at execution time.
 func (r RiskControlConfig) MaxPositionNotional(equity float64, leverage int, major bool) float64 {
 	if equity <= 0 || leverage <= 0 {
 		return 0

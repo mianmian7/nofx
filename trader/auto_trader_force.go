@@ -37,6 +37,12 @@ func (at *AutoTrader) ensureLongShortCoverage(decisions []kernel.Decision, ctx *
 	if at.config.StrategyConfig == nil || at.config.StrategyConfig.CoinSource.SourceType != "vergex_signal" {
 		return decisions
 	}
+	// Dynamic margin-based sizing needs the live available balance at the
+	// execution boundary. Forced coverage has no account snapshot here, so do
+	// not synthesize zero-sized decisions that would fail validation.
+	if at.config.StrategyConfig.RiskControl.IsMarginBased() {
+		return decisions
+	}
 	if at.strategyEngine == nil || equity <= 0 {
 		return decisions
 	}
