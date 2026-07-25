@@ -2,6 +2,7 @@ package trader
 
 import (
 	"nofx/kernel"
+	"nofx/store"
 	"strings"
 	"testing"
 	"time"
@@ -37,7 +38,7 @@ func TestTradeThrottleBlocksEarlyNoiseClose(t *testing.T) {
 
 func TestTradeThrottleAllowsEarlyHardStop(t *testing.T) {
 	at := &AutoTrader{}
-	// Only a real -5% stop bypasses the min hold now.
+	// A price loss beyond the default -3% bypass unlocks the min hold.
 	ctx := throttleContext("xyz:INTC", "long", 20*time.Minute, -6.0)
 
 	reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "close_long"}, ctx, 0)
@@ -68,8 +69,8 @@ func TestTradeThrottleBypassIsPriceBasisNotMarginBasis(t *testing.T) {
 func TestTradeThrottleNoiseBandIsPriceBasisNotMarginBasis(t *testing.T) {
 	at := &AutoTrader{}
 	// Past min hold at 10x: +20% margin is only a +2% price move, still
-	// inside the -4%..+6% noise band — flat close must stay blocked.
-	ctx := leveragedThrottleContext("xyz:INTC", "long", 5*time.Hour, 20.0, 10)
+	// inside the default -2%..+3% noise band — flat close must stay blocked.
+	ctx := leveragedThrottleContext("xyz:INTC", "long", 2*time.Hour, 20.0, 10)
 
 	reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "close_long"}, ctx, 0)
 	if !strings.Contains(reason, "noise band") {
@@ -79,8 +80,9 @@ func TestTradeThrottleNoiseBandIsPriceBasisNotMarginBasis(t *testing.T) {
 
 func TestTradeThrottleBlocksFlatCloseInsideNoiseWindow(t *testing.T) {
 	at := &AutoTrader{}
-	// Held past the 4h min hold but still inside the wide -4%..+6% noise band.
-	ctx := throttleContext("xyz:INTC", "long", 5*time.Hour, 0.4)
+	// Held past the default 90m min hold but still inside the noise band and
+	// under the 3h noise window.
+	ctx := throttleContext("xyz:INTC", "long", 2*time.Hour, 0.4)
 
 	reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "close_long"}, ctx, 0)
 	if !strings.Contains(reason, "noise band") {
@@ -90,12 +92,33 @@ func TestTradeThrottleBlocksFlatCloseInsideNoiseWindow(t *testing.T) {
 
 func TestTradeThrottleAllowsConfirmedLossAfterMinimumHold(t *testing.T) {
 	at := &AutoTrader{}
-	// Past the 4h min hold, loss beyond the -4% noise floor → close allowed.
-	ctx := throttleContext("xyz:INTC", "long", 5*time.Hour, -4.5)
+	// Past the min hold, loss beyond the -2% noise floor → close allowed.
+	ctx := throttleContext("xyz:INTC", "long", 2*time.Hour, -2.5)
 
 	reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "close_long"}, ctx, 0)
 	if reason != "" {
 		t.Fatalf("expected confirmed loss after min hold to pass, got %q", reason)
+	}
+}
+
+func TestTradeThrottleRespectsConfiguredGates(t *testing.T) {
+	// Strategy config overrides the built-in defaults (hot-reloaded from DB).
+	strict := &AutoTrader{config: AutoTraderConfig{StrategyConfig: &store.StrategyConfig{
+		RiskControl: store.RiskControlConfig{MinHoldMinutes: 600, EarlyStopBypassPct: -10},
+	}}}
+	ctx := throttleContext("xyz:INTC", "long", 5*time.Hour, -4.0)
+	reason := strict.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "close_long"}, ctx, 0)
+	if !strings.Contains(reason, "min AI-managed hold") {
+		t.Fatalf("expected configured 10h min hold to block a 5h close, got %q", reason)
+	}
+
+	loose := &AutoTrader{config: AutoTraderConfig{StrategyConfig: &store.StrategyConfig{
+		RiskControl: store.RiskControlConfig{MinHoldMinutes: 30, NoiseHoldMinutes: 40},
+	}}}
+	ctx = throttleContext("xyz:INTC", "long", 45*time.Minute, 0.1)
+	reason = loose.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "close_long"}, ctx, 0)
+	if reason != "" {
+		t.Fatalf("expected 45m close to pass with a 40m noise window, got %q", reason)
 	}
 }
 

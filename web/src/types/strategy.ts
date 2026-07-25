@@ -209,4 +209,14 @@ export interface RiskControlConfig {
   min_position_size: number;       // Min position size in USDT (CODE ENFORCED)
   min_risk_reward_ratio: number;   // Min take_profit / stop_loss ratio (AI guided)
   min_confidence: number;          // Min AI confidence to open position (AI guided)
+
+  // Exit throttle gates (CODE ENFORCED, 0/absent = backend defaults).
+  // PnL thresholds are PRICE-move percentages (leverage-independent).
+  min_hold_minutes?: number;        // AI closes blocked before this unless a bypass fires
+  noise_hold_minutes?: number;      // flat closes inside the noise band blocked until this
+  reentry_cooldown_minutes?: number; // same-symbol reopen cooldown after a close
+  early_stop_bypass_pct?: number;   // price loss unlocking an early close (negative)
+  early_tp_bypass_pct?: number;     // price profit unlocking an early close (positive)
+  noise_loss_floor_pct?: number;    // noise band lower edge (negative)
+  noise_profit_ceiling_pct?: number; // noise band upper edge (positive)
 }

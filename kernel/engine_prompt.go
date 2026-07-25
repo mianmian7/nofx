@@ -215,9 +215,7 @@ func (e *StrategyEngine) buildVergexSystemPrompt(accountEquity float64, variant 
 		sb.WriteString("- Ranking alone is not an entry reason; it only defines the candidate pool.\n")
 		sb.WriteString("- Every symbol in Candidate Coins is part of the allowed trading universe; missing detail can lower confidence or trigger waiting, but does not make the symbol non-tradable.\n")
 		sb.WriteString("- If Signal Lab or heatmap is absent from that symbol's Vergex Claw402 Signals, state it in reasoning; if it is present, never claim the symbol lacks that data.\n")
-		sb.WriteString("- Hold for BIG moves, do not churn: hold new positions for at least 4 hours; never close inside the -4%% to +6%% noise band before ~8 hours; after closing a symbol wait 3 hours before re-entry; open at most 1-2 new positions per hour. Small in-and-out trades bled this account to death on fees.\n")
-		sb.WriteString("- Fees are the main edge killer: a round trip costs ~0.1%% of notional. Only enter setups where the realistic target is a LARGE move: stop-loss around -5%% and take-profit around +10-12%% (roughly 2:1 or better). Do not aim for 0.5%% scalps — they cannot cover fees. Fewer, high-conviction, wide-target, multi-hour holds only.\n")
-		sb.WriteString("- Set WIDE stops and targets: place the stop well beyond short-term noise (around -5%%) and the target at a distant heatmap resistance/liquidation zone (around +10-12%%). Give the position room to develop; do not exit on small green or small red.\n\n")
+		sb.WriteString(vergexHoldRules(riskControl))
 	} else {
 		sb.WriteString("# You are the NOFX Claw402 auto-trader\n\n")
 		sb.WriteString("Trade only Hyperliquid instruments returned by this cycle's Claw402.ai/Vergex board. You may trade only the current candidate symbols and existing positions; never invent tickers or rotate outside the provided universe.\n\n")
@@ -232,9 +230,7 @@ func (e *StrategyEngine) buildVergexSystemPrompt(accountEquity float64, variant 
 		sb.WriteString("- Ranking alone is not an entry reason; it only defines the candidate pool.\n")
 		sb.WriteString("- Every symbol in Candidate Coins is part of the allowed trading universe; missing detail can lower confidence or trigger waiting, but does not make the symbol non-tradable.\n")
 		sb.WriteString("- If Signal Lab or heatmap is absent from that symbol's Vergex Claw402 Signals, state it in reasoning; if it is present, never claim the symbol lacks that data.\n")
-		sb.WriteString("- Hold for BIG moves, do not churn: hold new positions for at least 4 hours; never close inside the -4%% to +6%% noise band before ~8 hours; after closing a symbol wait 3 hours before re-entry; open at most 1-2 new positions per hour. Small in-and-out trades bled this account to death on fees.\n")
-		sb.WriteString("- Fees are the main edge killer: a round trip costs ~0.1%% of notional. Only enter setups where the realistic target is a LARGE move: stop-loss around -5%% and take-profit around +10-12%% (roughly 2:1 or better). Do not aim for 0.5%% scalps — they cannot cover fees. Fewer, high-conviction, wide-target, multi-hour holds only.\n")
-		sb.WriteString("- Set WIDE stops and targets: place the stop well beyond short-term noise (around -5%%) and the target at a distant heatmap resistance/liquidation zone (around +10-12%%). Give the position room to develop; do not exit on small green or small red.\n\n")
+		sb.WriteString(vergexHoldRules(riskControl))
 	}
 
 	writeModeVariant(&sb, variant, zh)
@@ -259,6 +255,36 @@ func (e *StrategyEngine) buildVergexSystemPrompt(accountEquity float64, variant 
 // vergexCustomPromptSection returns the user's custom prompt for the vergex
 // path, dropping legacy directional overrides ("long only" era) that would
 // contradict the data-driven direction rule baked into this prompt.
+// vergexHoldRules renders the anti-churn hold/exit guidance from the
+// strategy's configurable exit gates so the prompt always matches what the
+// code-enforced throttle will actually allow.
+func vergexHoldRules(riskControl store.RiskControlConfig) string {
+	fmtDur := func(d time.Duration) string {
+		mins := int(d.Minutes())
+		if mins < 60 {
+			return fmt.Sprintf("%d minutes", mins)
+		}
+		if mins%60 == 0 {
+			return fmt.Sprintf("%d hours", mins/60)
+		}
+		return fmt.Sprintf("%.1f hours", d.Hours())
+	}
+	return fmt.Sprintf(
+		"- Hold for meaningful moves, do not churn: hold new positions for at least %s; never close inside the %.1f%%..%.1f%% noise band before ~%s; after closing a symbol wait %s before re-entry; open at most 1-2 new positions per hour. Small in-and-out trades bled this account to death on fees.\n"+
+			"- Fees are the main edge killer: a round trip costs ~0.1%% of notional. Only take setups whose realistic target is well beyond fees: stop-loss around %.1f%% and take-profit around +%.1f%% or beyond. Do not aim for 0.2-0.3%% scalps — they cannot cover fees.\n"+
+			"- Give positions room to develop: place stops beyond short-term noise (around %.1f%%) and targets at meaningful heatmap resistance/liquidation zones (around +%.1f%%). Do not exit on small green or small red.\n\n",
+		fmtDur(riskControl.MinHold()),
+		riskControl.NoiseFloorPct(),
+		riskControl.NoiseCeilingPct(),
+		fmtDur(riskControl.NoiseHold()),
+		fmtDur(riskControl.ReentryCooldown()),
+		riskControl.StopBypassPct(),
+		riskControl.TPBypassPct(),
+		riskControl.StopBypassPct(),
+		riskControl.TPBypassPct(),
+	)
+}
+
 func vergexCustomPromptSection(section string) string {
 	trimmed := englishOnlyPromptSection(section)
 	if trimmed == "" {

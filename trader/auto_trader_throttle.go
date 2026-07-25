@@ -10,29 +10,21 @@ import (
 )
 
 const (
-	// "Hold for big moves, don't churn" regime. Live history showed the
-	// account bleeding to death by fees: 0.3-0.5% in/out moves where a ~0.14%
-	// round-trip fee ate 30-50% of every small winner. These values force
-	// positions to be held for hours and to develop meaningful moves before
-	// closing, and cut the trade frequency hard.
-	autopilotMinHoldDuration        = 4 * time.Hour
-	autopilotNoiseCloseHoldDuration = 8 * time.Hour
-	autopilotReentryCooldown        = 3 * time.Hour
-	// Drastically cut churn: at most a couple of new positions per hour/cycle.
-	autopilotMaxOpensPerHour        = 3
-	autopilotMaxOpensPerCycle       = 2
-	// Wide, asymmetric exits, expressed as PRICE-move percentages so their
-	// meaning does not drift with leverage (the exchange reports margin-based
-	// PnL%, which is the price move multiplied by leverage — comparing these
-	// thresholds against that let a -0.5% wiggle bypass the min hold at 10x).
-	// Cut a loser only at a real -5% price move, let a winner run to +12%
-	// before any early take-profit. The noise band (-4%..+6%) blocks closing
-	// on the small moves that were grinding the account to nothing.
-	earlyCloseStopLossBypassPct     = -5.0
-	earlyCloseTakeProfitBypassPct   = 12.0
-	noiseCloseLossFloorPct          = -4.0
-	noiseCloseProfitCeilingPct      = 6.0
+	// Anti-churn open caps: at most a couple of new positions per hour/cycle.
+	autopilotMaxOpensPerHour  = 3
+	autopilotMaxOpensPerCycle = 2
 )
+
+// exitGates returns the strategy-configurable exit throttle: minimum hold,
+// noise-close window, re-entry cooldown and the PRICE-basis PnL thresholds.
+// Values come from the strategy's RiskControl (hot-reloaded from the DB) with
+// built-in defaults for unset fields — see store.RiskControlConfig.
+func (at *AutoTrader) exitGates() store.RiskControlConfig {
+	if at != nil && at.config.StrategyConfig != nil {
+		return at.config.StrategyConfig.RiskControl
+	}
+	return store.RiskControlConfig{}
+}
 
 // positionPricePnLPct converts the margin-based UnrealizedPnLPct reported for
 // a position into the underlying price-move percentage.
@@ -126,9 +118,10 @@ func (at *AutoTrader) openThrottleReason(decision kernel.Decision, ctx *kernel.C
 		return fmt.Sprintf("trade throttle: %d open order already executed in the last hour; max is %d", openCount, autopilotMaxOpensPerHour)
 	}
 
-	if order := at.findRecentCloseOrder(symbol, time.Now().Add(-autopilotReentryCooldown)); order != nil {
+	reentryCooldown := at.exitGates().ReentryCooldown()
+	if order := at.findRecentCloseOrder(symbol, time.Now().Add(-reentryCooldown)); order != nil {
 		age := time.Since(time.UnixMilli(order.CreatedAt))
-		remaining := autopilotReentryCooldown - age
+		remaining := reentryCooldown - age
 		if remaining < 0 {
 			remaining = 0
 		}
@@ -145,6 +138,10 @@ func (at *AutoTrader) closeThrottleReason(decision kernel.Decision, ctx *kernel.
 		return ""
 	}
 
+	gates := at.exitGates()
+	minHold := gates.MinHold()
+	noiseHold := gates.NoiseHold()
+
 	pos := findContextPosition(ctx, symbol, side)
 	pnlPct := 0.0
 	entryTime := int64(0)
@@ -153,7 +150,7 @@ func (at *AutoTrader) closeThrottleReason(decision kernel.Decision, ctx *kernel.
 		entryTime = pos.UpdateTime
 	}
 
-	if order := at.findRecentOpenOrder(symbol, side, time.Now().Add(-autopilotNoiseCloseHoldDuration)); order != nil && order.CreatedAt > entryTime {
+	if order := at.findRecentOpenOrder(symbol, side, time.Now().Add(-noiseHold)); order != nil && order.CreatedAt > entryTime {
 		entryTime = order.CreatedAt
 	}
 	if entryTime <= 0 {
@@ -164,41 +161,41 @@ func (at *AutoTrader) closeThrottleReason(decision kernel.Decision, ctx *kernel.
 	if heldFor < 0 {
 		heldFor = 0
 	}
-	if heldFor >= autopilotMinHoldDuration {
-		if heldFor >= autopilotNoiseCloseHoldDuration ||
-			pnlPct <= noiseCloseLossFloorPct ||
-			pnlPct >= noiseCloseProfitCeilingPct {
+	if heldFor >= minHold {
+		if heldFor >= noiseHold ||
+			pnlPct <= gates.NoiseFloorPct() ||
+			pnlPct >= gates.NoiseCeilingPct() {
 			return ""
 		}
 
-		remaining := autopilotNoiseCloseHoldDuration - heldFor
+		remaining := noiseHold - heldFor
 		return fmt.Sprintf(
 			"trade throttle: %s %s has been held for %s with price PnL %.2f%%; it is still inside the noise band %.1f%% to %.1f%%, so wait about %s before a flat/small close",
 			symbol,
 			side,
 			roundDuration(heldFor),
 			pnlPct,
-			noiseCloseLossFloorPct,
-			noiseCloseProfitCeilingPct,
+			gates.NoiseFloorPct(),
+			gates.NoiseCeilingPct(),
 			roundDuration(remaining),
 		)
 	}
 
 	// Do not block true risk exits or unusually strong take-profit exits.
-	if pnlPct <= earlyCloseStopLossBypassPct || pnlPct >= earlyCloseTakeProfitBypassPct {
+	if pnlPct <= gates.StopBypassPct() || pnlPct >= gates.TPBypassPct() {
 		return ""
 	}
 
-	remaining := autopilotMinHoldDuration - heldFor
+	remaining := minHold - heldFor
 	return fmt.Sprintf(
 		"trade throttle: %s %s has only been held for %s with price PnL %.2f%%; min AI-managed hold is %s unless price loss <= %.1f%% or price profit >= %.1f%%",
 		symbol,
 		side,
 		roundDuration(heldFor),
 		pnlPct,
-		roundDuration(autopilotMinHoldDuration),
-		earlyCloseStopLossBypassPct,
-		earlyCloseTakeProfitBypassPct,
+		roundDuration(minHold),
+		gates.StopBypassPct(),
+		gates.TPBypassPct(),
 	) + fmt.Sprintf("; wait about %s", roundDuration(remaining))
 }
 

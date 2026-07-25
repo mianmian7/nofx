@@ -932,6 +932,88 @@ type RiskControlConfig struct {
 	MinRiskRewardRatio float64 `json:"min_risk_reward_ratio"`
 	// Min AI confidence to open position (AI guided)
 	MinConfidence int `json:"min_confidence"`
+
+	// Exit throttle gates (CODE ENFORCED). Zero values fall back to the
+	// built-in defaults below; PnL thresholds are PRICE-move percentages
+	// (leverage-independent). Signed: bypass/floor negative, ceiling positive.
+	MinHoldMinutes         int     `json:"min_hold_minutes"`          // AI closes blocked before this unless a bypass fires
+	NoiseHoldMinutes       int     `json:"noise_hold_minutes"`        // flat closes inside the noise band blocked until this
+	ReentryCooldownMinutes int     `json:"reentry_cooldown_minutes"`  // same-symbol reopen cooldown after a close
+	EarlyStopBypassPct     float64 `json:"early_stop_bypass_pct"`     // price loss unlocking an early close (negative)
+	EarlyTPBypassPct       float64 `json:"early_tp_bypass_pct"`       // price profit unlocking an early close (positive)
+	NoiseLossFloorPct      float64 `json:"noise_loss_floor_pct"`      // noise band lower edge (negative)
+	NoiseProfitCeilingPct  float64 `json:"noise_profit_ceiling_pct"`  // noise band upper edge (positive)
+}
+
+// Built-in exit-gate defaults, used when a strategy leaves the fields at zero.
+const (
+	DefaultMinHoldMinutes         = 90
+	DefaultNoiseHoldMinutes       = 180
+	DefaultReentryCooldownMinutes = 90
+	DefaultEarlyStopBypassPct     = -3.0
+	DefaultEarlyTPBypassPct       = 8.0
+	DefaultNoiseLossFloorPct      = -2.0
+	DefaultNoiseProfitCeilingPct  = 3.0
+)
+
+// MinHold returns the configured minimum AI-managed hold, or the default.
+func (r RiskControlConfig) MinHold() time.Duration {
+	if r.MinHoldMinutes > 0 {
+		return time.Duration(r.MinHoldMinutes) * time.Minute
+	}
+	return DefaultMinHoldMinutes * time.Minute
+}
+
+// NoiseHold returns the noise-close window, never shorter than MinHold.
+func (r RiskControlConfig) NoiseHold() time.Duration {
+	hold := time.Duration(DefaultNoiseHoldMinutes) * time.Minute
+	if r.NoiseHoldMinutes > 0 {
+		hold = time.Duration(r.NoiseHoldMinutes) * time.Minute
+	}
+	if min := r.MinHold(); hold < min {
+		return min
+	}
+	return hold
+}
+
+// ReentryCooldown returns the same-symbol reopen cooldown, or the default.
+func (r RiskControlConfig) ReentryCooldown() time.Duration {
+	if r.ReentryCooldownMinutes > 0 {
+		return time.Duration(r.ReentryCooldownMinutes) * time.Minute
+	}
+	return DefaultReentryCooldownMinutes * time.Minute
+}
+
+// StopBypassPct returns the early-close loss threshold (negative price %).
+func (r RiskControlConfig) StopBypassPct() float64 {
+	if r.EarlyStopBypassPct < 0 {
+		return r.EarlyStopBypassPct
+	}
+	return DefaultEarlyStopBypassPct
+}
+
+// TPBypassPct returns the early-close profit threshold (positive price %).
+func (r RiskControlConfig) TPBypassPct() float64 {
+	if r.EarlyTPBypassPct > 0 {
+		return r.EarlyTPBypassPct
+	}
+	return DefaultEarlyTPBypassPct
+}
+
+// NoiseFloorPct returns the noise band lower edge (negative price %).
+func (r RiskControlConfig) NoiseFloorPct() float64 {
+	if r.NoiseLossFloorPct < 0 {
+		return r.NoiseLossFloorPct
+	}
+	return DefaultNoiseLossFloorPct
+}
+
+// NoiseCeilingPct returns the noise band upper edge (positive price %).
+func (r RiskControlConfig) NoiseCeilingPct() float64 {
+	if r.NoiseProfitCeilingPct > 0 {
+		return r.NoiseProfitCeilingPct
+	}
+	return DefaultNoiseProfitCeilingPct
 }
 
 // NewStrategyStore creates a new StrategyStore
@@ -1023,6 +1105,13 @@ func GetDefaultStrategyConfig(lang string) StrategyConfig {
 			MinPositionSize:              12,  // Min 12 USDT per position (CODE ENFORCED)
 			MinRiskRewardRatio:           3.0, // Min 3:1 profit/loss ratio (AI guided)
 			MinConfidence:                78,  // Min 78% confidence (AI guided)
+			MinHoldMinutes:               DefaultMinHoldMinutes,         // exit gates: block fee-churn exits,
+			NoiseHoldMinutes:             DefaultNoiseHoldMinutes,       // user-tunable per strategy
+			ReentryCooldownMinutes:       DefaultReentryCooldownMinutes, //
+			EarlyStopBypassPct:           DefaultEarlyStopBypassPct,     // price-basis thresholds
+			EarlyTPBypassPct:             DefaultEarlyTPBypassPct,       //
+			NoiseLossFloorPct:            DefaultNoiseLossFloorPct,      //
+			NoiseProfitCeilingPct:        DefaultNoiseProfitCeilingPct,  //
 		},
 	}
 
