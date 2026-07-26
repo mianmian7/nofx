@@ -2321,68 +2321,6 @@ export function StrategyStudioPage() {
                         </select>
                       </label>
                     </div>
-                    <div className="mt-4 grid gap-4 sm:grid-cols-3">
-                      <label className="space-y-2">
-                        <span className="text-xs text-nofx-text-muted">
-                          {text(language, '最小持仓时间', 'Min hold')}
-                        </span>
-                        <select
-                          value={risk.min_hold_minutes ?? 90}
-                          onChange={(event) =>
-                            patchRisk({
-                              min_hold_minutes: Number(event.target.value),
-                            })
-                          }
-                          className="w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
-                        >
-                          {[30, 60, 90, 120, 180, 240].map((value) => (
-                            <option key={value} value={value}>
-                              {value >= 60 ? `${value / 60}h` : `${value}m`}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="space-y-2">
-                        <span className="text-xs text-nofx-text-muted">
-                          {text(language, '横盘仓锁定窗口', 'Flat-close window')}
-                        </span>
-                        <select
-                          value={risk.noise_hold_minutes ?? 180}
-                          onChange={(event) =>
-                            patchRisk({
-                              noise_hold_minutes: Number(event.target.value),
-                            })
-                          }
-                          className="w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
-                        >
-                          {[60, 120, 180, 240, 360, 480].map((value) => (
-                            <option key={value} value={value}>
-                              {`${value / 60}h`}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="space-y-2">
-                        <span className="text-xs text-nofx-text-muted">
-                          {text(language, '同币再入冷却', 'Re-entry cooldown')}
-                        </span>
-                        <select
-                          value={risk.reentry_cooldown_minutes ?? 90}
-                          onChange={(event) =>
-                            patchRisk({
-                              reentry_cooldown_minutes: Number(event.target.value),
-                            })
-                          }
-                          className="w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
-                        >
-                          {[30, 60, 90, 120, 180].map((value) => (
-                            <option key={value} value={value}>
-                              {value >= 60 ? `${value / 60}h` : `${value}m`}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
                   </div>
                 </div>
 
