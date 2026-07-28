@@ -640,7 +640,7 @@ function Claw402ConfigForm({
                     className="text-[10px] font-medium"
                     style={{ color: '#2E8B57' }}
                   >
-                    ${m.price} / call
+                    ${m.priceIn} in · ${m.priceOut} out /1M tok
                   </div>
                 </div>
                 {isSelected && (
