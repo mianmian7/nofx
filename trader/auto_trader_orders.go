@@ -108,9 +108,122 @@ func numericBalanceField(balance map[string]interface{}, key string) float64 {
 	return 0
 }
 
+func calculateMaximumAffordableNotional(availableMarginBudget float64, leverage int) float64 {
+	if availableMarginBudget <= 0 || leverage <= 0 {
+		return 0
+	}
+	marginFactor := marginOverheadFactor/float64(leverage) + takerFeeRate
+	return availableMarginBudget / marginFactor
+}
+
+func calculateRiskLimitedNotional(
+	action string,
+	entryPrice float64,
+	stopLoss float64,
+	riskUSD float64,
+) (float64, bool, error) {
+	if riskUSD <= 0 {
+		return 0, false, nil
+	}
+	if entryPrice <= 0 || stopLoss <= 0 {
+		return 0, false, fmt.Errorf(
+			"risk-based sizing requires positive entry and stop prices: entry %.8f stop %.8f",
+			entryPrice,
+			stopLoss,
+		)
+	}
+
+	switch action {
+	case "open_long":
+		if stopLoss >= entryPrice {
+			return 0, false, fmt.Errorf(
+				"long stop loss %.8f must be below current entry price %.8f",
+				stopLoss,
+				entryPrice,
+			)
+		}
+	case "open_short":
+		if stopLoss <= entryPrice {
+			return 0, false, fmt.Errorf(
+				"short stop loss %.8f must be above current entry price %.8f",
+				stopLoss,
+				entryPrice,
+			)
+		}
+	default:
+		return 0, false, nil
+	}
+
+	stopDistanceRatio := math.Abs(entryPrice-stopLoss) / entryPrice
+	// Include a conservative round-trip taker-fee allowance so risk_usd
+	// remains an upper bound rather than excluding execution costs.
+	totalLossRatio := stopDistanceRatio + 2*takerFeeRate
+	if totalLossRatio <= 0 {
+		return 0, false, fmt.Errorf("invalid stop-loss distance for risk-based sizing")
+	}
+	return riskUSD / totalLossRatio, true, nil
+}
+
+func calculateRemainingStrategyMargin(
+	equity float64,
+	maxMarginUsage float64,
+	positionMargin float64,
+	openOrderMargin float64,
+) float64 {
+	if equity <= 0 || maxMarginUsage <= 0 {
+		return 0
+	}
+	maximumStrategyMargin := equity * math.Min(maxMarginUsage, 1)
+	usedStrategyMargin := math.Max(positionMargin, 0) + math.Max(openOrderMargin, 0)
+	return math.Max(maximumStrategyMargin-usedStrategyMargin, 0)
+}
+
+func estimatePositionMargin(positions []map[string]interface{}) float64 {
+	totalPositionMargin := 0.0
+	for _, position := range positions {
+		if margin := numericBalanceField(position, "initial_margin"); margin > 0 {
+			totalPositionMargin += margin
+			continue
+		}
+		if margin := numericBalanceField(position, "margin_used"); margin > 0 {
+			totalPositionMargin += margin
+			continue
+		}
+		markPrice := numericBalanceField(position, "markPrice")
+		quantity := math.Abs(numericBalanceField(position, "positionAmt"))
+		leverage := numericBalanceField(position, "leverage")
+		if markPrice > 0 && quantity > 0 && leverage > 0 {
+			totalPositionMargin += markPrice * quantity / leverage
+		}
+	}
+	return totalPositionMargin
+}
+
+func extractAccountMarginUsage(
+	balance map[string]interface{},
+	positions []map[string]interface{},
+) (float64, float64) {
+	openOrderMargin := numericBalanceField(balance, "totalOpenOrderInitialMargin")
+	positionMargin := numericBalanceField(balance, "totalPositionInitialMargin")
+	if positionMargin <= 0 {
+		// Some exchange APIs expose only aggregate initial margin. Their aggregate
+		// commonly includes open orders, so subtract the separately reported open
+		// order amount before treating the remainder as position margin.
+		aggregateInitialMargin := numericBalanceField(balance, "totalInitialMargin")
+		if aggregateInitialMargin > 0 {
+			positionMargin = math.Max(aggregateInitialMargin-openOrderMargin, 0)
+		}
+	}
+	if positionMargin <= 0 && len(positions) > 0 {
+		positionMargin = estimatePositionMargin(positions)
+	}
+	return positionMargin, openOrderMargin
+}
+
 // enforceOpenRiskBudget is shared by Paper and Live. It applies the selected
-// per-position sizing model and the account's actual available-balance ceiling.
-func (at *AutoTrader) enforceOpenRiskBudget(decision *kernel.Decision) error {
+// sizing model, the strategy's portfolio margin limit, and the account's
+// actual available-balance ceiling.
+func (at *AutoTrader) enforceOpenRiskBudget(decision *kernel.Decision, entryPrices ...float64) error {
 	if at.config.StrategyConfig == nil {
 		return nil
 	}
@@ -142,7 +255,7 @@ func (at *AutoTrader) enforceOpenRiskBudget(decision *kernel.Decision) error {
 	}
 	equity := numericBalanceField(balance, "totalEquity")
 	if equity <= 0 {
-		equity = numericBalanceField(balance, "totalWalletBalance")
+		equity = numericBalanceField(balance, "totalWalletBalance") + numericBalanceField(balance, "totalUnrealizedProfit")
 	}
 	available := numericBalanceField(balance, "availableBalance")
 	if equity <= 0 || available < 0 {
@@ -156,10 +269,73 @@ func (at *AutoTrader) enforceOpenRiskBudget(decision *kernel.Decision) error {
 	if available <= 0 {
 		return fmt.Errorf("no available balance for a new position")
 	}
-	marginFactor := marginOverheadFactor/float64(decision.Leverage) + takerFeeRate
-	maxByPortfolio := available / marginFactor
+
+	entryPrice := 0.0
+	if len(entryPrices) > 0 {
+		entryPrice = entryPrices[0]
+	}
+	if decision.RiskUSD > 0 && entryPrice <= 0 {
+		entryPrice, err = account.GetMarketPrice(decision.Symbol)
+		if err != nil {
+			return fmt.Errorf("failed to get current price for risk-based sizing: %w", err)
+		}
+	}
+	maxByRisk, riskLimitEnabled, err := calculateRiskLimitedNotional(
+		decision.Action,
+		entryPrice,
+		decision.StopLoss,
+		decision.RiskUSD,
+	)
+	if err != nil {
+		return err
+	}
+	if riskLimitEnabled && decision.PositionSizeUSD > maxByRisk {
+		logger.Infof(
+			"  ⚠️ [RISK CONTROL] Position %.2f USDT exceeds risk_usd %.2f at entry %.8f and stop %.8f; reducing to %.2f USDT",
+			decision.PositionSizeUSD,
+			decision.RiskUSD,
+			entryPrice,
+			decision.StopLoss,
+			maxByRisk,
+		)
+		decision.PositionSizeUSD = maxByRisk
+	}
+
+	riskControl := at.config.StrategyConfig.RiskControl
+	maxMarginUsage := riskControl.MaxMarginUsage
+	if maxMarginUsage <= 0 {
+		// Preserve compatibility with old strategy JSON that predates this field.
+		maxMarginUsage = 1
+	}
+	maxMarginUsage = math.Min(maxMarginUsage, 1)
+	positionMargin, openOrderMargin := extractAccountMarginUsage(balance, positions)
+	remainingStrategyMargin := calculateRemainingStrategyMargin(
+		equity,
+		maxMarginUsage,
+		positionMargin,
+		openOrderMargin,
+	)
+	if remainingStrategyMargin <= 0 {
+		return fmt.Errorf(
+			"strategy margin usage limit reached: used %.2f of %.2f USDT",
+			positionMargin+openOrderMargin,
+			equity*maxMarginUsage,
+		)
+	}
+
+	availableMarginBudget := math.Min(available, remainingStrategyMargin)
+	maxByPortfolio := calculateMaximumAffordableNotional(availableMarginBudget, decision.Leverage)
 	if decision.PositionSizeUSD > maxByPortfolio {
-		decision.PositionSizeUSD = maxByPortfolio * positionSizeSafetyFactor
+		adjustedPositionSize := maxByPortfolio * positionSizeSafetyFactor
+		logger.Infof(
+			"  ⚠️ [RISK CONTROL] Position %.2f USDT exceeds remaining margin budget %.2f USDT at %dx; reducing to %.2f USDT (max margin usage %.0f%%)",
+			decision.PositionSizeUSD,
+			availableMarginBudget,
+			decision.Leverage,
+			adjustedPositionSize,
+			maxMarginUsage*100,
+		)
+		decision.PositionSizeUSD = adjustedPositionSize
 	}
 	return at.enforceMinPositionSize(decision.PositionSizeUSD)
 }
@@ -244,7 +420,7 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 			return err
 		}
 	}
-	if err := at.enforceOpenRiskBudget(decision); err != nil {
+	if err := at.enforceOpenRiskBudget(decision, marketData.CurrentPrice); err != nil {
 		return err
 	}
 
@@ -368,7 +544,7 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 			return err
 		}
 	}
-	if err := at.enforceOpenRiskBudget(decision); err != nil {
+	if err := at.enforceOpenRiskBudget(decision, marketData.CurrentPrice); err != nil {
 		return err
 	}
 

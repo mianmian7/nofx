@@ -184,6 +184,10 @@ func paperCloseSide(action string) (string, bool) {
 		return "long", true
 	case "close_short":
 		return "short", true
+	case "take_profit_long", "stop_loss_long", "liquidation_long":
+		return "long", true
+	case "take_profit_short", "stop_loss_short", "liquidation_short":
+		return "short", true
 	case "take_profit", "stop_loss", "liquidation":
 		return "", true
 	default:

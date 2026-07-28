@@ -1576,6 +1576,7 @@ func (b *PaperBroker) GetBalance() (map[string]interface{}, error) {
 		"totalUnrealizedProfit":       s.UnrealizedPnL,
 		"availableBalance":            s.AvailableBalance,
 		"totalInitialMargin":          s.UsedMargin,
+		"totalPositionInitialMargin":  s.UsedMargin,
 		"totalOpenOrderInitialMargin": math.Max(0, s.Balance-s.UsedMargin-s.AvailableBalance),
 		"totalEquity":                 s.Equity,
 	}, nil
