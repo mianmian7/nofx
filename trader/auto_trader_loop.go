@@ -131,9 +131,16 @@ func (at *AutoTrader) runCycle() error {
 		}
 	}
 
-	// Record AI charge (track cost regardless of decision outcome)
+	// Record AI charge (track cost regardless of decision outcome).
+	// Use the effective model name (custom model, e.g. "gpt-5.6") so the
+	// per-call price lookup matches what was actually invoked — at.aiModel is
+	// the provider id (e.g. "claw402") and would fall back to the default price.
 	if aiDecision != nil && at.store != nil {
-		if chargeErr := at.store.AICharge().Record(at.id, at.aiModel, at.config.AIModel); chargeErr != nil {
+		chargeModel := at.config.CustomModelName
+		if chargeModel == "" {
+			chargeModel = at.aiModel
+		}
+		if chargeErr := at.store.AICharge().Record(at.id, chargeModel, at.config.AIModel); chargeErr != nil {
 			at.logWarnf("⚠️ Failed to record AI charge: %v", chargeErr)
 		}
 	}

@@ -24,18 +24,12 @@ var modelPrices = map[string]float64{
 	"deepseek-reasoner": 0.005,
 	"deepseek-v4-flash": 0.003,
 	"deepseek-v4-pro":   0.01,
-	"gpt-5.4":           0.05,
-	"gpt-5.4-pro":       0.50,
-	"gpt-5.3":           0.01,
-	"gpt-5-mini":        0.005,
+	"gpt-5.6":           0.06,
+	"gpt-5.6-terra":     0.03,
+	"gpt-5.6-luna":      0.012,
+	"claude-fable":      0.24,
 	"claude-opus":       0.12,
-	"qwen-max":          0.01,
-	"qwen-plus":         0.005,
-	"qwen-turbo":        0.002,
-	"qwen-flash":        0.002,
-	"grok-4.1":          0.06,
-	"gemini-3.1-pro":    0.03,
-	"kimi-k2.5":         0.008,
+	"glm-5":             0.003,
 }
 
 // GetModelPrice returns the price per call for a given model
