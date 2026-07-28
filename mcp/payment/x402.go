@@ -527,6 +527,7 @@ func X402CallStream(c *mcp.Client, signFn X402SignFunc, tag string, systemPrompt
 	defer cancel()
 
 	c.LastCallSettledUSD = 0
+	c.LastCallUsage = nil
 	resp, err := DoX402RequestStream(ctx, c.HTTPClient, func() (*http.Request, error) {
 		return c.Hooks.BuildRequest(c.Hooks.BuildUrl(), jsonData)
 	}, signFn, tag, c.Log)
@@ -578,6 +579,7 @@ func X402CallStream(c *mcp.Client, signFn X402SignFunc, tag string, systemPrompt
 
 	text, usage, sseErr := mcp.ParseSSEStream(tee, onChunk, onLine)
 	mcp.ReportStreamUsage(usage, c.Provider, c.Model)
+	c.LastCallUsage = usage
 
 	if text != "" {
 		c.Log.Infof("📡 [%s] SSE stream complete, got %d chars", tag, len(text))

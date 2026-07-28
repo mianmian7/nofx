@@ -83,6 +83,12 @@ type Client struct {
 	// Zero when the last call carried no settlement information.
 	LastCallSettledUSD float64
 
+	// LastCallUsage is the token usage of the most recent streamed call.
+	// On SSE responses the gateway cannot deliver the settlement header
+	// (headers are flushed before usage is known), so callers derive the
+	// actual cost from this instead. Nil when the stream carried no usage.
+	LastCallUsage *TokenUsage
+
 	// Hooks are used to implement dynamic dispatch (polymorphism)
 	// When provider.DeepSeekClient embeds Client, Hooks point to DeepSeekClient
 	// This way methods called in Call() are automatically dispatched to the overridden version

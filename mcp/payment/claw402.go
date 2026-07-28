@@ -89,13 +89,20 @@ type Claw402Client struct {
 
 func (c *Claw402Client) BaseClient() *mcp.Client { return c.Client }
 
-// LastCallCostUSD reports the actually-settled cost of the most recent call,
-// taken from the gateway's X-Claw402-Settled-Usd header (upto scheme).
-// ok is false when the gateway did not report a settlement amount — callers
-// should then fall back to the flat catalog price.
+// LastCallCostUSD reports the actually-settled cost of the most recent call:
+// the gateway's X-Claw402-Settled-Usd header when available (non-streaming),
+// otherwise derived from streamed token usage via the gateway's own formula —
+// on SSE responses the header cannot be delivered because HTTP headers are
+// flushed before usage is known. ok is false when neither source is available;
+// callers should then fall back to the flat catalog price.
 func (c *Claw402Client) LastCallCostUSD() (float64, bool) {
 	if c.Client.LastCallSettledUSD > 0 {
 		return c.Client.LastCallSettledUSD, true
+	}
+	if u := c.Client.LastCallUsage; u != nil && u.PromptTokens+u.CompletionTokens > 0 {
+		if cost, ok := store.ComputeUsageCost(c.Model, u.PromptTokens, u.CompletionTokens); ok {
+			return cost, true
+		}
 	}
 	return 0, false
 }
