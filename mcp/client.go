@@ -78,6 +78,11 @@ type Client struct {
 	Log        Logger       // Exported for sub-packages
 	Cfg        *Config      // Exported for sub-packages
 
+	// LastCallSettledUSD is the actually-settled cost (USD) of the most
+	// recent call, reported by x402 upto gateways via response header.
+	// Zero when the last call carried no settlement information.
+	LastCallSettledUSD float64
+
 	// Hooks are used to implement dynamic dispatch (polymorphism)
 	// When provider.DeepSeekClient embeds Client, Hooks point to DeepSeekClient
 	// This way methods called in Call() are automatically dispatched to the overridden version

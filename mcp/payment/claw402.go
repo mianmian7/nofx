@@ -89,6 +89,17 @@ type Claw402Client struct {
 
 func (c *Claw402Client) BaseClient() *mcp.Client { return c.Client }
 
+// LastCallCostUSD reports the actually-settled cost of the most recent call,
+// taken from the gateway's X-Claw402-Settled-Usd header (upto scheme).
+// ok is false when the gateway did not report a settlement amount — callers
+// should then fall back to the flat catalog price.
+func (c *Claw402Client) LastCallCostUSD() (float64, bool) {
+	if c.Client.LastCallSettledUSD > 0 {
+		return c.Client.LastCallSettledUSD, true
+	}
+	return 0, false
+}
+
 // NewClaw402Client creates a claw402 client (backward compatible).
 func NewClaw402Client() mcp.AIClient {
 	return NewClaw402ClientWithOptions()

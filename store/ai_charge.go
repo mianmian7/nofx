@@ -56,12 +56,18 @@ func (s *AIChargeStore) initTables() error {
 
 // Record records a new AI charge
 func (s *AIChargeStore) Record(traderID, model, provider string) error {
-	cost := GetModelPrice(model)
+	return s.RecordWithCost(traderID, model, provider, GetModelPrice(model))
+}
+
+// RecordWithCost records a charge with an explicit cost — e.g. the actual
+// settled amount reported by the payment gateway (upto scheme) — instead of
+// the flat per-call estimate from modelPrices.
+func (s *AIChargeStore) RecordWithCost(traderID, model, provider string, costUSD float64) error {
 	charge := &AICharge{
 		TraderID: traderID,
 		Model:    model,
 		Provider: provider,
-		CostUSD:  cost,
+		CostUSD:  costUSD,
 	}
 	return s.db.Create(charge).Error
 }
