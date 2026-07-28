@@ -7,7 +7,7 @@ import (
 
 func TestNewAutoTraderRejectsUnknownAIProvider(t *testing.T) {
 	_, err := NewAutoTrader(AutoTraderConfig{
-		AIModel: "unknown-provider",
+		AIModel:  "unknown-provider",
 		Exchange: "binance",
 	}, nil, "user")
 	if err == nil || !strings.Contains(err.Error(), "unsupported AI provider") {
