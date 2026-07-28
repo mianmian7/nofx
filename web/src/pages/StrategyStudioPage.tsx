@@ -263,12 +263,10 @@ function defaultIndicators(
 }
 
 function defaultRisk(risk?: Partial<RiskControlConfig>): RiskControlConfig {
-  const leverage = risk?.altcoin_max_leverage || risk?.btc_eth_max_leverage || 3
   return {
     max_positions: risk?.max_positions ?? 2,
     position_sizing_mode: risk?.position_sizing_mode ?? 'notional_based',
-    btc_eth_max_leverage: leverage,
-    altcoin_max_leverage: leverage,
+    max_leverage: risk?.max_leverage ?? 3,
     btc_eth_max_position_value_ratio:
       risk?.btc_eth_max_position_value_ratio ?? 1.5,
     altcoin_max_position_value_ratio:
@@ -412,8 +410,7 @@ function profileFromConfig(
       config.coin_source.vergex_limit === profile.topN
     return (
       risk.max_positions === profile.maxPositions &&
-      risk.btc_eth_max_leverage === profile.leverage &&
-      risk.altcoin_max_leverage === profile.leverage &&
+      risk.max_leverage === profile.leverage &&
       risk.min_confidence === profile.confidence &&
       risk.position_sizing_mode === 'margin_based' &&
       risk.btc_eth_max_margin_ratio === profile.perPositionMargin &&
@@ -1571,8 +1568,7 @@ export function StrategyStudioPage() {
           // a strategy created from the editor starts from the same baseline.
           max_positions: 3,
           position_sizing_mode: 'margin_based',
-          btc_eth_max_leverage: 3,
-          altcoin_max_leverage: 3,
+          max_leverage: 3,
           btc_eth_max_position_value_ratio: 1,
           altcoin_max_position_value_ratio: 0.5,
           btc_eth_max_margin_ratio: 0.15,
@@ -1926,8 +1922,7 @@ export function StrategyStudioPage() {
 
   const setLeverage = (leverage: number) => {
     patchRisk({
-      btc_eth_max_leverage: leverage,
-      altcoin_max_leverage: leverage,
+      max_leverage: leverage,
     })
   }
 
@@ -1957,8 +1952,7 @@ export function StrategyStudioPage() {
             ...currentAI.risk_control,
             max_positions: profile.maxPositions,
             position_sizing_mode: 'margin_based',
-            btc_eth_max_leverage: profile.leverage,
-            altcoin_max_leverage: profile.leverage,
+            max_leverage: profile.leverage,
             btc_eth_max_margin_ratio: profile.perPositionMargin,
             altcoin_max_margin_ratio: profile.perPositionMargin,
             min_confidence: profile.confidence,
@@ -3138,7 +3132,7 @@ export function StrategyStudioPage() {
                           {text(language, '最大杠杆', 'Maximum leverage')}
                         </span>
                         <select
-                          value={risk.altcoin_max_leverage}
+                          value={risk.max_leverage}
                           onChange={(event) =>
                             setLeverage(Number(event.target.value))
                           }

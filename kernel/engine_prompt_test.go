@@ -108,7 +108,8 @@ func TestMarginBasedPromptUsesAvailableMarginInsteadOfLegacyFixedCap(t *testing.
 	cfg.CoinSource.SourceType = "static"
 	cfg.CoinSource.StaticCoins = []string{"SAMSUNGUSDT"}
 	cfg.RiskControl.PositionSizingMode = "margin_based"
-	cfg.RiskControl.AltcoinMaxLeverage = 5
+	cfg.RiskControl.MaxLeverage = 5
+	cfg.RiskControl.MaxMarginUsage = 0.5
 	cfg.RiskControl.AltcoinMaxMarginRatio = 0.25
 	cfg.RiskControl.AltcoinMaxPositionValueRatio = 2
 
@@ -117,6 +118,11 @@ func TestMarginBasedPromptUsesAvailableMarginInsteadOfLegacyFixedCap(t *testing.
 		"dynamic available-margin based",
 		"current available margin",
 		"selected leverage",
+		"Maximum total margin usage: 50%",
+		"Do not default to a habitual leverage",
+		"Prefer the lowest leverage that fits",
+		"will never increase leverage automatically",
+		"risk_usd` is a hard maximum loss budget",
 	} {
 		if !strings.Contains(prompt, phrase) {
 			t.Fatalf("margin-based prompt missing dynamic sizing guidance %q:\n%s", phrase, prompt)

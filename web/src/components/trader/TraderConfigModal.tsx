@@ -71,6 +71,7 @@ interface FormState {
   strategy_id: string
   is_cross_margin: boolean
   show_in_competition: boolean
+  invert_signals: boolean
   scan_interval_minutes: number
   execution_mode: 'paper' | 'live'
   initial_balance: number
@@ -103,6 +104,7 @@ export function TraderConfigModal({
     strategy_id: '',
     is_cross_margin: true,
     show_in_competition: true,
+    invert_signals: false,
     scan_interval_minutes: 15,
     execution_mode: 'paper',
     initial_balance: 10000,
@@ -152,6 +154,7 @@ export function TraderConfigModal({
         strategy_id: traderData.strategy_id || '',
         execution_mode: traderData.execution_mode || 'paper',
         initial_balance: traderData.initial_balance || 10000,
+        invert_signals: traderData.invert_signals ?? false,
       })
     } else if (!isEditMode) {
       setFormData({
@@ -161,6 +164,7 @@ export function TraderConfigModal({
         strategy_id: '',
         is_cross_margin: true,
         show_in_competition: true,
+        invert_signals: false,
         scan_interval_minutes: 15,
         execution_mode: 'paper',
         initial_balance: 10000,
@@ -201,6 +205,7 @@ export function TraderConfigModal({
         strategy_id: formData.strategy_id,
         is_cross_margin: formData.is_cross_margin,
         show_in_competition: formData.show_in_competition,
+        invert_signals: formData.invert_signals,
         scan_interval_minutes: formData.scan_interval_minutes,
         execution_mode: formData.execution_mode,
         initial_balance:
@@ -616,6 +621,42 @@ export function TraderConfigModal({
                 </div>
                 <p className="text-xs text-nofx-text-muted mt-1">
                   {t('hiddenInCompetition', language)}
+                </p>
+              </div>
+
+              {/* Signal Inversion */}
+              <div>
+                <label className="text-sm text-nofx-text block mb-2">
+                  {language === 'zh' ? '反向交易 / 信号取反' : 'Invert AI Signals'}
+                </label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleInputChange('invert_signals', true)}
+                    className={`flex-1 px-3 py-2 rounded text-sm ${
+                      formData.invert_signals
+                        ? 'bg-amber-600 text-white font-medium'
+                        : 'bg-nofx-bg-lighter text-nofx-text-muted border border-nofx-gold/20'
+                    }`}
+                  >
+                    {language === 'zh' ? '开启取反' : 'Enabled'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleInputChange('invert_signals', false)}
+                    className={`flex-1 px-3 py-2 rounded text-sm ${
+                      !formData.invert_signals
+                        ? 'bg-nofx-gold text-white'
+                        : 'bg-nofx-bg-lighter text-nofx-text-muted border border-nofx-gold/20'
+                    }`}
+                  >
+                    {language === 'zh' ? '正常方向' : 'Normal'}
+                  </button>
+                </div>
+                <p className="text-xs text-nofx-text-muted mt-1">
+                  {language === 'zh'
+                    ? '开启后，AI 决策结果将自动翻转：open_long 转换为 open_short，open_short 转换为 open_long'
+                    : 'When enabled, open_long automatically converts to open_short and open_short to open_long'}
                 </p>
               </div>
 

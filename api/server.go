@@ -369,8 +369,7 @@ StrategyConfig fields:
   indicators.enable_quant_data/enable_quant_oi/enable_quant_netflow: optional paid/external enrichment, disabled by default
   indicators.enable_oi_ranking/enable_netflow_ranking/enable_price_ranking: optional paid/external ranking, disabled by default
   risk_control.max_positions: max simultaneous positions (1=single coin, 3=diversified, 5=wide)
-  risk_control.btc_eth_max_leverage: BTC/ETH leverage (default 3; higher leverage requires explicit user choice)
-  risk_control.altcoin_max_leverage: altcoin leverage (usually lower than BTC leverage)
+  risk_control.max_leverage: unified maximum leverage for every asset (default 3; range 1-125)
   risk_control.btc_eth_max_position_value_ratio: max position size as multiple of equity (default 1)
   risk_control.altcoin_max_position_value_ratio: default 0.5
   risk_control.max_margin_usage: default 0.5
@@ -466,9 +465,7 @@ func (s *Server) handleHealth(c *gin.Context) {
 func (s *Server) handleGetSystemConfig(c *gin.Context) {
 	userCount, _ := s.store.User().Count()
 	c.JSON(http.StatusOK, gin.H{
-		"initialized":      userCount > 0,
-		"btc_eth_leverage": 10,
-		"altcoin_leverage": 5,
+		"initialized": userCount > 0,
 	})
 }
 

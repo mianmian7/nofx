@@ -218,8 +218,7 @@ export interface RiskControlConfig {
   position_sizing_mode?: 'notional_based' | 'margin_based'
 
   // Trading Leverage - exchange leverage for opening positions (AI guided)
-  btc_eth_max_leverage: number // BTC/ETH max exchange leverage
-  altcoin_max_leverage: number // Altcoin max exchange leverage
+  max_leverage: number // Unified maximum exchange leverage
 
   // Legacy notional sizing fields. Margin-based live execution sizes from
   // current available margin and does not use these as a per-position cap.

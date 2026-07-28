@@ -714,8 +714,7 @@ export function TerminalDashboard({
           </span>
           <span>
             <span className="tm-sc">{tt('leverage')} </span>
-            {config?.btc_eth_leverage ?? '—'}× /{' '}
-            {config?.altcoin_leverage ?? '—'}×
+            {config?.max_leverage ?? '—'}×
           </span>
           <span>
             <span className="tm-sc">{tt('scan')} </span>

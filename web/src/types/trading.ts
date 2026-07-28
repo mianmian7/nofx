@@ -12,6 +12,7 @@ export interface SystemStatus {
   last_reset_time: string
   ai_provider: string
   execution_mode?: 'paper' | 'live'
+  invert_signals?: boolean
   paper?: {
     balance: number
     equity: number
@@ -251,6 +252,7 @@ export interface TraderInfo {
   use_ai500?: boolean
   use_oi_top?: boolean
   system_prompt_template?: string
+  invert_signals?: boolean
 }
 
 // Competition related types
@@ -265,6 +267,7 @@ export interface CompetitionTraderData {
   position_count: number
   margin_used_pct: number
   is_running: boolean
+  invert_signals?: boolean
 }
 
 export interface CompetitionData {
@@ -282,13 +285,13 @@ export interface TraderConfigData {
   strategy_name?: string // Strategy name
   is_cross_margin: boolean
   show_in_competition: boolean // Whether to show in the competition arena
+  invert_signals?: boolean // Whether to invert AI trading decisions
   scan_interval_minutes: number
   initial_balance: number
   is_running: boolean
   execution_mode?: 'paper' | 'live'
-  // Legacy fields below (kept for backward compatibility)
-  btc_eth_leverage?: number
-  altcoin_leverage?: number
+  max_leverage?: number
+  max_positions?: number
   trading_symbols?: string
   custom_prompt?: string
   override_base_prompt?: boolean

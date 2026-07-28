@@ -139,6 +139,9 @@ type AutoTraderConfig struct {
 	// Position mode
 	IsCrossMargin bool // true=cross margin mode, false=isolated margin mode
 
+	// Signal inversion
+	InvertSignals bool // true=invert AI trading decisions (open_long <-> open_short, close_long <-> close_short)
+
 	// Competition visibility
 	ShowInCompetition bool // Whether to show in competition page
 
@@ -157,6 +160,7 @@ type AutoTrader struct {
 	paperBroker           *PaperBroker
 	exchangeID            string // Exchange account UUID
 	showInCompetition     bool   // Whether to show in competition page
+	invertSignals         bool   // Whether to invert AI trading decisions
 	config                AutoTraderConfig
 	trader                Trader // Use Trader interface (supports multiple platforms)
 	mcpClient             mcp.AIClient
@@ -293,7 +297,7 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 		priceSource := &binancePaperPriceSource{client: market.NewAPIClient()}
 		paperConfig := PaperBrokerConfig{
 			InitialBalance: config.InitialBalance,
-			MakerFirst: true, MakerFeeBPS: 2, TakerFeeBPS: 5, SlippageBPS: 2,
+			MakerFirst:     true, MakerFeeBPS: 2, TakerFeeBPS: 5, SlippageBPS: 2,
 			MakerTimeout: 15 * time.Second, MakerMaxReprices: 2,
 			FundingSource: priceSource,
 		}
@@ -426,6 +430,7 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 		paperBroker:           paperBroker,
 		exchangeID:            config.ExchangeID,
 		showInCompetition:     config.ShowInCompetition,
+		invertSignals:         config.InvertSignals,
 		config:                config,
 		trader:                trader,
 		mcpClient:             mcpClient,
@@ -696,6 +701,11 @@ func (at *AutoTrader) GetExchange() string {
 // GetShowInCompetition returns whether trader should be shown in competition
 func (at *AutoTrader) GetShowInCompetition() bool {
 	return at.showInCompetition
+}
+
+// GetInvertSignals returns whether AI decisions should be inverted
+func (at *AutoTrader) GetInvertSignals() bool {
+	return at.invertSignals
 }
 
 // SetShowInCompetition sets whether trader should be shown in competition

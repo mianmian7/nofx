@@ -7,13 +7,12 @@ import (
 // TestLeverageFallback tests automatic correction when leverage exceeds limit
 func TestLeverageFallback(t *testing.T) {
 	tests := []struct {
-		name            string
-		decision        Decision
-		accountEquity   float64
-		btcEthLeverage  int
-		altcoinLeverage int
-		wantLeverage    int // Expected leverage after correction
-		wantError       bool
+		name          string
+		decision      Decision
+		accountEquity float64
+		maxLeverage   int
+		wantLeverage  int // Expected leverage after correction
+		wantError     bool
 	}{
 		{
 			name: "Altcoin leverage exceeded - auto-correct to limit",
@@ -25,11 +24,10 @@ func TestLeverageFallback(t *testing.T) {
 				StopLoss:        50,
 				TakeProfit:      200,
 			},
-			accountEquity:   100,
-			btcEthLeverage:  10,
-			altcoinLeverage: 5, // Limit 5x
-			wantLeverage:    5, // Should be corrected to 5
-			wantError:       false,
+			accountEquity: 100,
+			maxLeverage:   5,
+			wantLeverage:  5, // Should be corrected to 5
+			wantError:     false,
 		},
 		{
 			name: "BTC leverage exceeded - auto-correct to limit",
@@ -41,11 +39,10 @@ func TestLeverageFallback(t *testing.T) {
 				StopLoss:        90000,
 				TakeProfit:      110000,
 			},
-			accountEquity:   100,
-			btcEthLeverage:  10, // Limit 10x
-			altcoinLeverage: 5,
-			wantLeverage:    10, // Should be corrected to 10
-			wantError:       false,
+			accountEquity: 100,
+			maxLeverage:   10,
+			wantLeverage:  10, // Should be corrected to 10
+			wantError:     false,
 		},
 		{
 			name: "Leverage within limit - no correction",
@@ -57,11 +54,10 @@ func TestLeverageFallback(t *testing.T) {
 				StopLoss:        4000,
 				TakeProfit:      3000,
 			},
-			accountEquity:   100,
-			btcEthLeverage:  10,
-			altcoinLeverage: 5,
-			wantLeverage:    5, // Stays unchanged
-			wantError:       false,
+			accountEquity: 100,
+			maxLeverage:   10,
+			wantLeverage:  5, // Stays unchanged
+			wantError:     false,
 		},
 		{
 			name: "Leverage is 0 - should error",
@@ -73,18 +69,17 @@ func TestLeverageFallback(t *testing.T) {
 				StopLoss:        50,
 				TakeProfit:      200,
 			},
-			accountEquity:   100,
-			btcEthLeverage:  10,
-			altcoinLeverage: 5,
-			wantLeverage:    0,
-			wantError:       true,
+			accountEquity: 100,
+			maxLeverage:   5,
+			wantLeverage:  0,
+			wantError:     true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Use default position value ratios for testing (10x for BTC/ETH, 1.5x for altcoins)
-			err := validateDecision(&tt.decision, tt.accountEquity, tt.btcEthLeverage, tt.altcoinLeverage, 10.0, 1.5)
+			err := validateDecision(&tt.decision, tt.accountEquity, tt.maxLeverage, 10.0, 1.5)
 
 			// Check error status
 			if (err != nil) != tt.wantError {
@@ -110,7 +105,7 @@ func TestClaw402XyzAllowsFullTenXNotional(t *testing.T) {
 		TakeProfit:      120,
 	}
 
-	if err := validateDecision(&decision, 30.68, 10, 10, 10.0, 10.0); err != nil {
+	if err := validateDecision(&decision, 30.68, 10, 10.0, 10.0); err != nil {
 		t.Fatalf("xyz TradeFi Claw402 full 10x notional should pass validation: %v", err)
 	}
 }

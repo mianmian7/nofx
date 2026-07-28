@@ -132,6 +132,14 @@ export function TraderConfigViewModal({
                   minutes: traderData.scan_interval_minutes || 15,
                 })}
               />
+              <InfoRow
+                label={language === 'zh' ? '信号决策模式' : 'Signal Decision Mode'}
+                value={
+                  traderData.invert_signals
+                    ? (language === 'zh' ? '🔄 开启反向交易 (开多↔开空取反)' : '🔄 Inverted Signals')
+                    : (language === 'zh' ? '➡️ 正向交易 (标准)' : '➡️ Standard Signals')
+                }
+              />
             </div>
           </div>
 

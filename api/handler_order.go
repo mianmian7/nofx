@@ -52,6 +52,7 @@ func (s *Server) handleTraderList(c *gin.Context) {
 			"strategy_id":         trader.StrategyID,
 			"strategy_name":       strategyName,
 			"execution_mode":      trader.ExecutionMode,
+			"invert_signals":      trader.InvertSignals,
 		})
 	}
 
@@ -86,6 +87,14 @@ func (s *Server) handleGetTraderConfig(c *gin.Context) {
 
 	// Return complete model ID without conversion, consistent with frontend model list
 	aiModelID := traderConfig.AIModelID
+	maxLeverage := 0
+	maxPositions := 0
+	if fullCfg.Strategy != nil {
+		if strategyConfig, parseErr := fullCfg.Strategy.ParseConfig(); parseErr == nil {
+			maxLeverage = strategyConfig.RiskControl.MaxLeverage
+			maxPositions = strategyConfig.RiskControl.MaxPositions
+		}
+	}
 
 	result := map[string]interface{}{
 		"trader_id":             traderConfig.ID,
@@ -95,12 +104,15 @@ func (s *Server) handleGetTraderConfig(c *gin.Context) {
 		"strategy_id":           traderConfig.StrategyID,
 		"initial_balance":       traderConfig.InitialBalance,
 		"scan_interval_minutes": traderConfig.ScanIntervalMinutes,
-		"btc_eth_leverage":      traderConfig.BTCETHLeverage,
-		"altcoin_leverage":      traderConfig.AltcoinLeverage,
+		"max_leverage":          maxLeverage,
+		"max_positions":         maxPositions,
 		"trading_symbols":       traderConfig.TradingSymbols,
 		"custom_prompt":         traderConfig.CustomPrompt,
 		"override_base_prompt":  traderConfig.OverrideBasePrompt,
 		"is_cross_margin":       traderConfig.IsCrossMargin,
+		"show_in_competition":   traderConfig.ShowInCompetition,
+		"invert_signals":        traderConfig.InvertSignals,
+		"execution_mode":        traderConfig.ExecutionMode,
 		"use_ai500":             traderConfig.UseAI500,
 		"use_oi_top":            traderConfig.UseOITop,
 		"is_running":            isRunning,

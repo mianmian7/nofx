@@ -342,9 +342,14 @@ func writeVergexHardConstraints(sb *strings.Builder, accountEquity, availableBal
 		} else {
 			sb.WriteString(fmt.Sprintf("- Max notional per position: %.0f USDT (= %s)\n", maxPositionValue, positionFormula))
 		}
+		sb.WriteString(fmt.Sprintf("- Maximum total margin usage: %.0f%% of account equity, including open positions and pending entry orders\n", riskControl.MaxMarginUsage*100))
 		sb.WriteString(fmt.Sprintf("- Min order size: ≥%.0f USDT\n\n", riskControl.MinPositionSize))
 		sb.WriteString("## AI guided\n")
-		sb.WriteString(fmt.Sprintf("- Maximum leverage: every open position must use at most %dx; lower leverage is allowed\n", riskControl.AltcoinMaxLeverage))
+		sb.WriteString(fmt.Sprintf("- Maximum leverage: every open position must use at most %dx; lower leverage is allowed\n", riskControl.MaxLeverage))
+		sb.WriteString("- Do not default to a habitual leverage such as 5x, 8x, or 10x. Select leverage from this setup's stop distance, requested notional, and remaining margin budget.\n")
+		sb.WriteString("- Prefer the lowest leverage that fits the requested notional inside the remaining margin budget while keeping liquidation safely beyond the stop loss; reduce notional when no safe leverage fits.\n")
+		sb.WriteString("- The leverage limit is a ceiling, not a target. The backend may reduce notional to satisfy the total-margin limit and will never increase leverage automatically.\n")
+		sb.WriteString("- `risk_usd` is a hard maximum loss budget to the stop, including a fee allowance; the backend reduces position_size_usd when needed.\n")
 		sb.WriteString(fmt.Sprintf("- Risk/reward: ≥1:%.1f\n", riskControl.MinRiskRewardRatio))
 		sb.WriteString(fmt.Sprintf("- Min confidence to open: ≥%d\n\n", riskControl.MinConfidence))
 		sb.WriteString("# Position Sizing\n\n")
@@ -371,9 +376,14 @@ func writeVergexHardConstraints(sb *strings.Builder, accountEquity, availableBal
 		} else {
 			sb.WriteString(fmt.Sprintf("- Max notional per position: %.0f USDT (= %s)\n", maxPositionValue, positionFormula))
 		}
+		sb.WriteString(fmt.Sprintf("- Maximum total margin usage: %.0f%% of account equity, including open positions and pending entry orders\n", riskControl.MaxMarginUsage*100))
 		sb.WriteString(fmt.Sprintf("- Min order size: ≥%.0f USDT\n\n", riskControl.MinPositionSize))
 		sb.WriteString("## AI guided\n")
-		sb.WriteString(fmt.Sprintf("- Leverage: every open position must use at most %dx; lower leverage is allowed\n", riskControl.AltcoinMaxLeverage))
+		sb.WriteString(fmt.Sprintf("- Leverage: every open position must use at most %dx; lower leverage is allowed\n", riskControl.MaxLeverage))
+		sb.WriteString("- Do not default to a habitual leverage such as 5x, 8x, or 10x. Select leverage from this setup's stop distance, requested notional, and remaining margin budget.\n")
+		sb.WriteString("- Prefer the lowest leverage that fits the requested notional inside the remaining margin budget while keeping liquidation safely beyond the stop loss; reduce notional when no safe leverage fits.\n")
+		sb.WriteString("- The leverage limit is a ceiling, not a target. The backend may reduce notional to satisfy the total-margin limit and will never increase leverage automatically.\n")
+		sb.WriteString("- `risk_usd` is a hard maximum loss budget to the stop, including a fee allowance; the backend reduces position_size_usd when needed.\n")
 		sb.WriteString(fmt.Sprintf("- Risk/reward: ≥1:%.1f\n", riskControl.MinRiskRewardRatio))
 		sb.WriteString(fmt.Sprintf("- Min confidence to open: ≥%d\n\n", riskControl.MinConfidence))
 		sb.WriteString("# Position Sizing\n\n")
@@ -401,7 +411,7 @@ func writeVergexOutputFormat(sb *strings.Builder, accountEquity, availableBalanc
 		exampleSymbol = primarySymbol
 		secondSymbol = primarySymbol
 	}
-	leverage := riskControl.AltcoinMaxLeverage
+	leverage := riskControl.MaxLeverage
 	if leverage <= 0 {
 		leverage = 1
 	}
@@ -600,6 +610,7 @@ func writeHardConstraints(sb *strings.Builder, accountEquity, availableBalance f
 		sb.WriteString(fmt.Sprintf("- Position Value Limit (Altcoin/Stock): max %.0f USDT (= equity %.0f × %.1fx)\n", accountEquity*altcoinPosValueRatio, accountEquity, altcoinPosValueRatio))
 		sb.WriteString(fmt.Sprintf("- Position Value Limit (BTC/ETH): max %.0f USDT (= equity %.0f × %.1fx)\n", accountEquity*btcEthPosValueRatio, accountEquity, btcEthPosValueRatio))
 	}
+	sb.WriteString(fmt.Sprintf("- Maximum total margin usage: %.0f%% of account equity, including open positions and pending entry orders\n", riskControl.MaxMarginUsage*100))
 	if zh {
 		sb.WriteString(fmt.Sprintf("- Min Position Size: ≥%.0f USDT\n\n", riskControl.MinPositionSize))
 		sb.WriteString("## AI GUIDED (recommended):\n")
@@ -609,20 +620,16 @@ func writeHardConstraints(sb *strings.Builder, accountEquity, availableBalance f
 	}
 
 	if singleSymbol {
-		lev := riskControl.AltcoinMaxLeverage
-		if riskControl.BTCETHMaxLeverage > lev {
-			lev = riskControl.BTCETHMaxLeverage
-		}
 		if zh {
-			sb.WriteString(fmt.Sprintf("- Trading Leverage (%s): max %dx\n", primarySymbol, lev))
+			sb.WriteString(fmt.Sprintf("- Trading Leverage (%s): max %dx\n", primarySymbol, riskControl.MaxLeverage))
 		} else {
-			sb.WriteString(fmt.Sprintf("- Trading Leverage (%s): max %dx\n", primarySymbol, lev))
+			sb.WriteString(fmt.Sprintf("- Trading Leverage (%s): max %dx\n", primarySymbol, riskControl.MaxLeverage))
 		}
 	} else {
 		if zh {
-			sb.WriteString(fmt.Sprintf("- Trading Leverage: Altcoin/Stock max %dx | BTC/ETH max %dx\n", riskControl.AltcoinMaxLeverage, riskControl.BTCETHMaxLeverage))
+			sb.WriteString(fmt.Sprintf("- Trading Leverage: max %dx for every asset\n", riskControl.MaxLeverage))
 		} else {
-			sb.WriteString(fmt.Sprintf("- Trading Leverage: Altcoin/Stock max %dx | BTC/ETH max %dx\n", riskControl.AltcoinMaxLeverage, riskControl.BTCETHMaxLeverage))
+			sb.WriteString(fmt.Sprintf("- Trading Leverage: max %dx for every asset\n", riskControl.MaxLeverage))
 		}
 	}
 	if zh {
@@ -632,6 +639,10 @@ func writeHardConstraints(sb *strings.Builder, accountEquity, availableBalance f
 		sb.WriteString(fmt.Sprintf("- Risk-Reward Ratio: ≥1:%.1f (take_profit / stop_loss)\n", riskControl.MinRiskRewardRatio))
 		sb.WriteString(fmt.Sprintf("- Min Confidence: ≥%d to open position\n\n", riskControl.MinConfidence))
 	}
+	sb.WriteString("- Do not default to a habitual leverage such as 5x, 8x, or 10x. Select leverage from this setup's stop distance, requested notional, and remaining margin budget.\n")
+	sb.WriteString("- Prefer the lowest leverage that fits the requested notional inside the remaining margin budget while keeping liquidation safely beyond the stop loss; reduce notional when no safe leverage fits.\n")
+	sb.WriteString("- The leverage limit is a ceiling, not a target. The backend may reduce notional to satisfy the total-margin limit and will never increase leverage automatically.\n\n")
+	sb.WriteString("- `risk_usd` is a hard maximum loss budget to the stop, including a fee allowance; the backend reduces position_size_usd when needed.\n\n")
 
 	// Position sizing guidance
 	exampleRatio := btcEthPosValueRatio
@@ -714,10 +725,7 @@ func writeOutputFormat(sb *strings.Builder, accountEquity, availableBalance, btc
 	// is single-symbol. Falls back to the legacy BTC/ETH two-line example
 	// only for multi-symbol strategies that genuinely have BTC/ETH on tap.
 	if singleSymbol {
-		lev := riskControl.AltcoinMaxLeverage
-		if riskControl.BTCETHMaxLeverage > lev {
-			lev = riskControl.BTCETHMaxLeverage
-		}
+		lev := riskControl.MaxLeverage
 		size := dynamicNotionalExample(availableBalance, lev)
 		if riskControl.IsMarginBased() {
 			// Dynamic available-margin example above.
@@ -727,12 +735,12 @@ func writeOutputFormat(sb *strings.Builder, accountEquity, availableBalance, btc
 		sb.WriteString(fmt.Sprintf("  {\"symbol\": \"%s\", \"action\": \"open_long\", \"leverage\": %d, \"position_size_usd\": %.0f, \"stop_loss\": 0, \"take_profit\": 0, \"confidence\": 85, \"risk_usd\": 0},\n", primarySymbol, lev, size))
 		sb.WriteString(fmt.Sprintf("  {\"symbol\": \"%s\", \"action\": \"wait\", \"confidence\": %d}\n", primarySymbol, max(1, riskControl.MinConfidence-5)))
 	} else {
-		examplePositionSize := dynamicNotionalExample(availableBalance, riskControl.BTCETHMaxLeverage)
+		examplePositionSize := dynamicNotionalExample(availableBalance, riskControl.MaxLeverage)
 		if !riskControl.IsMarginBased() {
-			examplePositionSize = riskControl.MaxPositionNotional(accountEquity, riskControl.BTCETHMaxLeverage, true)
+			examplePositionSize = riskControl.MaxPositionNotional(accountEquity, riskControl.MaxLeverage, true)
 		}
 		sb.WriteString(fmt.Sprintf("  {\"symbol\": \"BTCUSDT\", \"action\": \"open_short\", \"leverage\": %d, \"position_size_usd\": %.0f, \"stop_loss\": 97000, \"take_profit\": 91000, \"confidence\": 85, \"risk_usd\": 300},\n",
-			riskControl.BTCETHMaxLeverage, examplePositionSize))
+			riskControl.MaxLeverage, examplePositionSize))
 		sb.WriteString("  {\"symbol\": \"ETHUSDT\", \"action\": \"close_long\"}\n")
 	}
 	sb.WriteString("]\n```\n")

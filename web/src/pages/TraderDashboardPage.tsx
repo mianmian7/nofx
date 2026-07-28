@@ -369,9 +369,24 @@ export function TraderDashboardPage({
                                 <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-nofx-success rounded-full border-2 border-nofx-bg-lighter animate-pulse" />
                             </div>
                             <div className="flex flex-col">
-                                <span className="text-3xl tracking-tight text-nofx-text font-semibold">
-                                    {selectedTrader.trader_name}
-                                </span>
+                                <div className="flex items-center gap-2">
+                                    <span className="text-3xl tracking-tight text-nofx-text font-semibold">
+                                        {selectedTrader.trader_name}
+                                    </span>
+                                    {selectedTrader.invert_signals && (
+                                        <span
+                                            className="px-2.5 py-0.5 rounded-full text-xs font-semibold"
+                                            style={{
+                                                background: 'rgba(234, 88, 12, 0.15)',
+                                                color: '#EA580C',
+                                                border: '1px solid rgba(234, 88, 12, 0.35)',
+                                            }}
+                                            title="开启反向交易 (开多/开空自动取反)"
+                                        >
+                                            🔄 反向交易
+                                        </span>
+                                    )}
+                                </div>
                                 <span className="text-xs font-mono text-nofx-text-muted opacity-60 flex items-center gap-2">
                                     <div className="w-1.5 h-1.5 bg-nofx-gold rounded-full" />
                                     ID: {selectedTrader.trader_id.slice(0, 8)}...

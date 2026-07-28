@@ -57,7 +57,7 @@ func TestCreateDefaultStrategiesUsesOneReadyToRunLocalDynamicPreset(t *testing.T
 	if trendCfg.CoinSource.UseAI500 || trendCfg.CoinSource.VergexLimit != 0 || trendCfg.RiskControl.MaxPositions != 3 {
 		t.Fatalf("default strategy should avoid paid ranking sources, got coin=%+v risk=%+v", trendCfg.CoinSource, trendCfg.RiskControl)
 	}
-	if trendCfg.RiskControl.BTCETHMaxLeverage != 3 || trendCfg.RiskControl.AltcoinMaxLeverage != 3 {
+	if trendCfg.RiskControl.MaxLeverage != 3 {
 		t.Fatalf("default strategy should use conservative 3x leverage, got risk=%+v", trendCfg.RiskControl)
 	}
 	if trendCfg.RiskControl.BTCETHMaxPositionValueRatio != 1 ||

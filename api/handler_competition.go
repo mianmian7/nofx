@@ -277,6 +277,7 @@ func (s *Server) handlePublicTraderList(c *gin.Context) {
 			"total_pnl_pct":   trader["total_pnl_pct"],
 			"position_count":  trader["position_count"],
 			"margin_used_pct": trader["margin_used_pct"],
+			"invert_signals":  trader["invert_signals"],
 		})
 	}
 
@@ -509,13 +510,14 @@ func (s *Server) handleGetPublicTraderConfig(c *gin.Context) {
 
 	// Only return public configuration information, not including sensitive data like API keys
 	result := map[string]interface{}{
-		"trader_id":   trader.GetID(),
-		"trader_name": trader.GetName(),
-		"ai_model":    trader.GetAIModel(),
-		"exchange":    trader.GetExchange(),
-		"is_running":  status["is_running"],
-		"ai_provider": status["ai_provider"],
-		"start_time":  status["start_time"],
+		"trader_id":      trader.GetID(),
+		"trader_name":    trader.GetName(),
+		"ai_model":       trader.GetAIModel(),
+		"exchange":       trader.GetExchange(),
+		"is_running":     status["is_running"],
+		"ai_provider":    status["ai_provider"],
+		"start_time":     status["start_time"],
+		"invert_signals": trader.GetInvertSignals(),
 	}
 
 	c.JSON(http.StatusOK, result)

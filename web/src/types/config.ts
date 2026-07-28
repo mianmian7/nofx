@@ -106,9 +106,7 @@ export interface CreateTraderRequest {
   scan_interval_minutes?: number
   is_cross_margin?: boolean
   show_in_competition?: boolean // Whether to show in the competition arena
-  // Fields below are kept for backward compatibility; new version uses strategy config
-  btc_eth_leverage?: number
-  altcoin_leverage?: number
+  invert_signals?: boolean // Whether to invert AI trading decisions
   trading_symbols?: string
   custom_prompt?: string
   override_base_prompt?: boolean

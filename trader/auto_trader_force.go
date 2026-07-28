@@ -79,6 +79,7 @@ func (at *AutoTrader) ensureLongShortCoverage(decisions []kernel.Decision, ctx *
 	}
 
 	bullish, bearish := at.strategyEngine.DirectionalCandidates()
+	longCandidates, shortCandidates := directionalCandidatesForSignalMode(bullish, bearish, at.invertSignals)
 
 	// fill a direction up to its target, drawing from the strongest unused
 	// candidates that clear the signal-strength floor, never exceeding
@@ -116,7 +117,20 @@ func (at *AutoTrader) ensureLongShortCoverage(decisions []kernel.Decision, ctx *
 		}
 	}
 
-	fill("open_long", bullish, longCount, targetLong)
-	fill("open_short", bearish, shortCount, targetShort)
+	fill("open_long", longCandidates, longCount, targetLong)
+	fill("open_short", shortCandidates, shortCount, targetShort)
 	return decisions
+}
+
+func directionalCandidatesForSignalMode(
+	bullish []kernel.DirectionalCandidate,
+	bearish []kernel.DirectionalCandidate,
+	invertSignals bool,
+) ([]kernel.DirectionalCandidate, []kernel.DirectionalCandidate) {
+	if invertSignals {
+		// In inverse mode, bearish board signals feed actual long entries and
+		// bullish board signals feed actual short entries.
+		return bearish, bullish
+	}
+	return bullish, bearish
 }

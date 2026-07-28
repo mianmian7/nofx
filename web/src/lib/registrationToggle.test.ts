@@ -155,8 +155,7 @@ describe('Registration Toggle Logic', () => {
       const apiResponse = {
         beta_mode: false,
         default_coins: ['BTCUSDT'],
-        btc_eth_leverage: 5,
-        altcoin_leverage: 5,
+        max_leverage: 5,
         registration_enabled: true,
       }
 
@@ -167,8 +166,7 @@ describe('Registration Toggle Logic', () => {
       const apiResponse = {
         beta_mode: false,
         default_coins: ['BTCUSDT'],
-        btc_eth_leverage: 5,
-        altcoin_leverage: 5,
+        max_leverage: 5,
       }
 
       const registrationEnabled =

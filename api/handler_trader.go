@@ -14,52 +14,43 @@ import (
 	"gorm.io/gorm"
 )
 
-const (
-	maxManualBTCETHLeverage = 125
-	maxManualAltLeverage    = 125
-)
-
 // AI trader management related structures
 type CreateTraderRequest struct {
-	Name                string  `json:"name" binding:"required"`
-	AIModelID           string  `json:"ai_model_id" binding:"required"`
-	ExchangeID          string  `json:"exchange_id" binding:"required"`
-	StrategyID          string  `json:"strategy_id"` // Strategy ID (new version)
-	ExecutionMode       string  `json:"execution_mode"`
-	InitialBalance      float64 `json:"initial_balance"`
-	ScanIntervalMinutes int     `json:"scan_interval_minutes"`
-	IsCrossMargin       *bool   `json:"is_cross_margin"`     // Pointer type, nil means use default value true
-	ShowInCompetition   *bool   `json:"show_in_competition"` // Pointer type, nil means use default value true
-	// The following fields are kept for backward compatibility, new version uses strategy config
-	BTCETHLeverage       int    `json:"btc_eth_leverage"`
-	AltcoinLeverage      int    `json:"altcoin_leverage"`
-	TradingSymbols       string `json:"trading_symbols"`
-	CustomPrompt         string `json:"custom_prompt"`
-	OverrideBasePrompt   bool   `json:"override_base_prompt"`
-	SystemPromptTemplate string `json:"system_prompt_template"` // System prompt template name
-	UseAI500             bool   `json:"use_ai500"`
-	UseOITop             bool   `json:"use_oi_top"`
+	Name                 string  `json:"name" binding:"required"`
+	AIModelID            string  `json:"ai_model_id" binding:"required"`
+	ExchangeID           string  `json:"exchange_id" binding:"required"`
+	StrategyID           string  `json:"strategy_id"` // Strategy ID (new version)
+	ExecutionMode        string  `json:"execution_mode"`
+	InitialBalance       float64 `json:"initial_balance"`
+	ScanIntervalMinutes  int     `json:"scan_interval_minutes"`
+	IsCrossMargin        *bool   `json:"is_cross_margin"`     // Pointer type, nil means use default value true
+	ShowInCompetition    *bool   `json:"show_in_competition"` // Pointer type, nil means use default value true
+	InvertSignals        bool    `json:"invert_signals"`      // Invert AI trading decisions
+	TradingSymbols       string  `json:"trading_symbols"`
+	CustomPrompt         string  `json:"custom_prompt"`
+	OverrideBasePrompt   bool    `json:"override_base_prompt"`
+	SystemPromptTemplate string  `json:"system_prompt_template"` // System prompt template name
+	UseAI500             bool    `json:"use_ai500"`
+	UseOITop             bool    `json:"use_oi_top"`
 }
 
 // UpdateTraderRequest Update trader request
 type UpdateTraderRequest struct {
-	Name                string  `json:"name" binding:"required"`
-	AIModelID           string  `json:"ai_model_id" binding:"required"`
-	ExchangeID          string  `json:"exchange_id" binding:"required"`
-	StrategyID          string  `json:"strategy_id"` // Strategy ID (new version)
-	ExecutionMode       string  `json:"execution_mode"`
-	InitialBalance      float64 `json:"initial_balance"`
-	ResetPaperAccount   bool    `json:"reset_paper_account"`
-	ScanIntervalMinutes int     `json:"scan_interval_minutes"`
-	IsCrossMargin       *bool   `json:"is_cross_margin"`
-	ShowInCompetition   *bool   `json:"show_in_competition"`
-	// The following fields are kept for backward compatibility, new version uses strategy config
-	BTCETHLeverage       int    `json:"btc_eth_leverage"`
-	AltcoinLeverage      int    `json:"altcoin_leverage"`
-	TradingSymbols       string `json:"trading_symbols"`
-	CustomPrompt         string `json:"custom_prompt"`
-	OverrideBasePrompt   bool   `json:"override_base_prompt"`
-	SystemPromptTemplate string `json:"system_prompt_template"`
+	Name                 string  `json:"name" binding:"required"`
+	AIModelID            string  `json:"ai_model_id" binding:"required"`
+	ExchangeID           string  `json:"exchange_id" binding:"required"`
+	StrategyID           string  `json:"strategy_id"` // Strategy ID (new version)
+	ExecutionMode        string  `json:"execution_mode"`
+	InitialBalance       float64 `json:"initial_balance"`
+	ResetPaperAccount    bool    `json:"reset_paper_account"`
+	ScanIntervalMinutes  int     `json:"scan_interval_minutes"`
+	IsCrossMargin        *bool   `json:"is_cross_margin"`
+	ShowInCompetition    *bool   `json:"show_in_competition"`
+	InvertSignals        *bool   `json:"invert_signals"`
+	TradingSymbols       string  `json:"trading_symbols"`
+	CustomPrompt         string  `json:"custom_prompt"`
+	OverrideBasePrompt   bool    `json:"override_base_prompt"`
+	SystemPromptTemplate string  `json:"system_prompt_template"`
 }
 
 func formatTraderCreationError(reason, nextStep string) string {
@@ -71,16 +62,6 @@ func formatTraderCreationError(reason, nextStep string) string {
 
 func traderCreationRequestError(reason string) string {
 	return formatTraderCreationError(reason, "Please check the information you just entered and submit again")
-}
-
-func validateTraderLeverageRange(btcEthLeverage, altcoinLeverage int) (string, string) {
-	if btcEthLeverage < 0 || btcEthLeverage > maxManualBTCETHLeverage {
-		return traderCreationRequestError("BTC/ETH leverage must be between 1x and 125x"), "trader.create.invalid_btc_eth_leverage"
-	}
-	if altcoinLeverage < 0 || altcoinLeverage > maxManualAltLeverage {
-		return traderCreationRequestError("Altcoin leverage must be between 1x and 125x"), "trader.create.invalid_altcoin_leverage"
-	}
-	return "", ""
 }
 
 func normalizeExecutionMode(mode string) (string, error) {
@@ -377,12 +358,6 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		return
 	}
 
-	// Validate leverage values against the same limits exposed by manual user config.
-	if errMsg, errCode := validateTraderLeverageRange(req.BTCETHLeverage, req.AltcoinLeverage); errMsg != "" {
-		SafeBadRequestWithDetails(c, errMsg, errCode, nil)
-		return
-	}
-
 	model, err := s.store.AIModel().Get(userID, req.AIModelID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -446,16 +421,6 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 	showInCompetition := true // Default to show in competition
 	if req.ShowInCompetition != nil {
 		showInCompetition = *req.ShowInCompetition
-	}
-
-	// Set leverage default values
-	btcEthLeverage := 10 // Default value
-	altcoinLeverage := 5 // Default value
-	if req.BTCETHLeverage > 0 {
-		btcEthLeverage = req.BTCETHLeverage
-	}
-	if req.AltcoinLeverage > 0 {
-		altcoinLeverage = req.AltcoinLeverage
 	}
 
 	// Set system prompt template default value
@@ -554,8 +519,6 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		StrategyID:           req.StrategyID, // Associated strategy ID (new version)
 		ExecutionMode:        executionMode,
 		InitialBalance:       actualBalance, // Use actual queried balance
-		BTCETHLeverage:       btcEthLeverage,
-		AltcoinLeverage:      altcoinLeverage,
 		TradingSymbols:       req.TradingSymbols,
 		UseAI500:             req.UseAI500,
 		UseOITop:             req.UseOITop,
@@ -564,6 +527,7 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		SystemPromptTemplate: systemPromptTemplate,
 		IsCrossMargin:        isCrossMargin,
 		ShowInCompetition:    showInCompetition,
+		InvertSignals:        req.InvertSignals,
 		ScanIntervalMinutes:  scanIntervalMinutes,
 		IsRunning:            false,
 	}
@@ -660,11 +624,6 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 		executionMode = "paper"
 	}
 
-	if errMsg, errCode := validateTraderLeverageRange(req.BTCETHLeverage, req.AltcoinLeverage); errMsg != "" {
-		SafeBadRequestWithDetails(c, errMsg, errCode, nil)
-		return
-	}
-
 	// Set default values
 	isCrossMargin := existingTrader.IsCrossMargin // Keep original value
 	if req.IsCrossMargin != nil {
@@ -676,16 +635,23 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 		showInCompetition = *req.ShowInCompetition
 	}
 
-	// Set leverage default values
-	btcEthLeverage := req.BTCETHLeverage
-	altcoinLeverage := req.AltcoinLeverage
-	if btcEthLeverage <= 0 {
-		btcEthLeverage = existingTrader.BTCETHLeverage // Keep original value
-	}
-	if altcoinLeverage <= 0 {
-		altcoinLeverage = existingTrader.AltcoinLeverage // Keep original value
+	invertSignals := existingTrader.InvertSignals // Keep original value
+	if req.InvertSignals != nil {
+		invertSignals = *req.InvertSignals
 	}
 
+	// Set leverage default values (sync from strategy if available)
+	strategyID := req.StrategyID
+	if strategyID == "" {
+		strategyID = existingTrader.StrategyID
+	}
+	if strategyID != "" {
+		_, err = s.store.Strategy().Get(userID, strategyID)
+		if err != nil {
+			SafeBadRequestWithDetails(c, "The selected strategy was not found", "trader.update.strategy_not_found", nil)
+			return
+		}
+	}
 	// Set scan interval, allow updates
 	scanIntervalMinutes := req.ScanIntervalMinutes
 	logger.Infof("📊 Update trader scan_interval: req=%d, existing=%d", req.ScanIntervalMinutes, existingTrader.ScanIntervalMinutes)
@@ -702,10 +668,9 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 		systemPromptTemplate = existingTrader.SystemPromptTemplate // Keep original value
 	}
 
-	// Handle strategy ID (if not provided, keep original value)
-	strategyID := req.StrategyID
-	if strategyID == "" {
-		strategyID = existingTrader.StrategyID
+	// Strategy ID was initialized above
+	if req.StrategyID != "" {
+		strategyID = req.StrategyID
 	}
 
 	targetExchangeID := req.ExchangeID
@@ -773,14 +738,13 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 		StrategyID:           strategyID, // Associated strategy ID
 		ExecutionMode:        executionMode,
 		InitialBalance:       initialBalance,
-		BTCETHLeverage:       btcEthLeverage,
-		AltcoinLeverage:      altcoinLeverage,
 		TradingSymbols:       req.TradingSymbols,
 		CustomPrompt:         req.CustomPrompt,
 		OverrideBasePrompt:   req.OverrideBasePrompt,
 		SystemPromptTemplate: systemPromptTemplate,
 		IsCrossMargin:        isCrossMargin,
 		ShowInCompetition:    showInCompetition,
+		InvertSignals:        invertSignals,
 		ScanIntervalMinutes:  scanIntervalMinutes,
 		IsRunning:            existingTrader.IsRunning, // Keep original value
 	}

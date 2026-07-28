@@ -350,12 +350,7 @@ func (s *Server) handleUpdateStrategy(c *gin.Context) {
 		ConfigVisible: req.ConfigVisible,
 	}
 
-	if err := s.store.Strategy().Update(strategy); err != nil {
-		SafeInternalError(c, "Failed to update strategy", err)
-		return
-	}
-
-	// Token overflow check — block save if all models exceed context limits
+	// Validate token usage before performing any database writes.
 	if mergedConfig.StrategyType == "" || mergedConfig.StrategyType == "ai_trading" {
 		estimate := mergedConfig.EstimateTokens()
 		allExceed := true
@@ -372,6 +367,11 @@ func (s *Server) handleUpdateStrategy(c *gin.Context) {
 			})
 			return
 		}
+	}
+
+	if err := s.store.Strategy().Update(strategy); err != nil {
+		SafeInternalError(c, "Failed to update strategy", err)
+		return
 	}
 
 	// Validate merged configuration and collect warnings
@@ -537,11 +537,10 @@ func (s *Server) handlePreviewPrompt(c *gin.Context) {
 		"system_prompt":  systemPrompt,
 		"prompt_variant": req.PromptVariant,
 		"config_summary": gin.H{
-			"coin_source":      req.Config.CoinSource.SourceType,
-			"primary_tf":       req.Config.Indicators.Klines.PrimaryTimeframe,
-			"btc_eth_leverage": req.Config.RiskControl.BTCETHMaxLeverage,
-			"altcoin_leverage": req.Config.RiskControl.AltcoinMaxLeverage,
-			"max_positions":    req.Config.RiskControl.MaxPositions,
+			"coin_source":   req.Config.CoinSource.SourceType,
+			"primary_tf":    req.Config.Indicators.Klines.PrimaryTimeframe,
+			"max_leverage":  req.Config.RiskControl.MaxLeverage,
+			"max_positions": req.Config.RiskControl.MaxPositions,
 		},
 	})
 }

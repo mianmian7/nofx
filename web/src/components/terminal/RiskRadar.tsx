@@ -45,7 +45,7 @@ function utilColor(p: number): string {
 interface RiskRadarProps {
   positions?: Position[]
   account?: { total_equity?: number; unrealized_profit?: number; margin_used_pct?: number } | null
-  config?: { btc_eth_leverage?: number; altcoin_leverage?: number; max_positions?: number } | null
+  config?: { max_leverage?: number; max_positions?: number } | null
   /** max_drawdown_pct is a percent (18.5 = -18.5%), not a fraction. */
   fullStats?: { max_drawdown_pct?: number; profit_factor?: number; sharpe_ratio?: number; win_rate?: number } | null
 }
@@ -89,7 +89,7 @@ export function RiskRadar({ positions, account, config, fullStats }: RiskRadarPr
     const shortShare = totalNotional > 0 ? (shortNotional / totalNotional) * 100 : 0
 
     const avgLev = levCount > 0 ? levSum / levCount : 0
-    const configMax = Math.max(config?.btc_eth_leverage ?? 0, config?.altcoin_leverage ?? 0)
+    const configMax = config?.max_leverage ?? 0
     const levUse = configMax > 0 ? Math.min(100, (avgLev / configMax) * 100) : 0
 
     const marginPct =

@@ -263,8 +263,7 @@ func (s *Server) createDefaultStrategies(userID string, lang string) error {
 		c.CoinSource.VergexMarketType = ""
 		c.CoinSource.VergexChain = ""
 		c.RiskControl.MaxPositions = 3
-		c.RiskControl.BTCETHMaxLeverage = 3
-		c.RiskControl.AltcoinMaxLeverage = 3
+		c.RiskControl.MaxLeverage = 3
 		c.RiskControl.BTCETHMaxPositionValueRatio = 1.0
 		c.RiskControl.AltcoinMaxPositionValueRatio = 0.5
 		c.RiskControl.MaxMarginUsage = 0.5

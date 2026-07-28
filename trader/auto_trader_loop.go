@@ -227,9 +227,13 @@ func (at *AutoTrader) runCycle() error {
 	//     }
 	// }
 	logger.Info()
-	logger.Info(strings.Repeat("-", 70))
-	// 8. Sort decisions: ensure close positions first, then open positions (prevent position stacking overflow)
-	logger.Info(strings.Repeat("-", 70))
+	// Apply signal inversion if enabled
+	if at.invertSignals && len(aiDecision.Decisions) > 0 {
+		at.logInfof("🔄 [InvertSignals] Mirroring AI entry decisions while preserving exits for actual positions...")
+		aiDecision.Decisions = invertDecisions(aiDecision.Decisions)
+		decisionJSON, _ := json.MarshalIndent(aiDecision.Decisions, "", "  ")
+		record.DecisionJSON = string(decisionJSON)
+	}
 
 	// 8. Sort decisions: ensure close positions first, then open positions (prevent position stacking overflow)
 	sortedDecisions := sortDecisionsByPriority(aiDecision.Decisions)
@@ -624,17 +628,14 @@ func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 
 	// 5. Get leverage from strategy config
 	strategyConfig := at.strategyEngine.GetConfig()
-	btcEthLeverage := strategyConfig.RiskControl.BTCETHMaxLeverage
-	altcoinLeverage := strategyConfig.RiskControl.AltcoinMaxLeverage
-	logger.Infof("📋 [%s] Strategy leverage config: BTC/ETH=%dx, Altcoin=%dx", at.name, btcEthLeverage, altcoinLeverage)
+	maxLeverage := strategyConfig.RiskControl.MaxLeverage
+	logger.Infof("📋 [%s] Strategy maximum leverage: %dx", at.name, maxLeverage)
 
 	// 6. Build context
 	ctx := &kernel.Context{
-		CurrentTime:     time.Now().UTC().Format("2006-01-02 15:04:05 UTC"),
-		RuntimeMinutes:  int(time.Since(at.startTime).Minutes()),
-		CallCount:       at.callCount,
-		BTCETHLeverage:  btcEthLeverage,
-		AltcoinLeverage: altcoinLeverage,
+		CurrentTime:    time.Now().UTC().Format("2006-01-02 15:04:05 UTC"),
+		RuntimeMinutes: int(time.Since(at.startTime).Minutes()),
+		CallCount:      at.callCount,
 		Account: kernel.AccountInfo{
 			TotalEquity:      totalEquity,
 			AvailableBalance: availableBalance,
@@ -831,4 +832,28 @@ func (at *AutoTrader) checkClaw402Balance() {
 		logger.Infof("💰 [%s] USDC Balance: $%.2f | Daily AI cost: ~$%.2f | Runway: ~%.1f days",
 			at.name, balance, dailyCost, runway)
 	}
+}
+
+// invertDecisions mirrors entry signals while preserving exits for the actual
+// positions visible to the AI. Protective prices exchange roles because a
+// long stop below market becomes a short take-profit, and vice versa.
+func invertDecisions(decisions []kernel.Decision) []kernel.Decision {
+	inverted := make([]kernel.Decision, len(decisions))
+	for decisionIndex, decision := range decisions {
+		invertedDecision := decision
+		switch decision.Action {
+		case "open_long":
+			invertedDecision.Action = "open_short"
+			invertedDecision.Reasoning = "[Inverted Signal: open_long -> open_short] " + decision.Reasoning
+			invertedDecision.StopLoss = decision.TakeProfit
+			invertedDecision.TakeProfit = decision.StopLoss
+		case "open_short":
+			invertedDecision.Action = "open_long"
+			invertedDecision.Reasoning = "[Inverted Signal: open_short -> open_long] " + decision.Reasoning
+			invertedDecision.StopLoss = decision.TakeProfit
+			invertedDecision.TakeProfit = decision.StopLoss
+		}
+		inverted[decisionIndex] = invertedDecision
+	}
+	return inverted
 }

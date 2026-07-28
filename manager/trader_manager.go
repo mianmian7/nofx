@@ -186,6 +186,7 @@ func (tm *TraderManager) GetComparisonData() (map[string]interface{}, error) {
 			"margin_used_pct": account["margin_used_pct"],
 			"call_count":      status["call_count"],
 			"is_running":      status["is_running"],
+			"invert_signals":  t.GetInvertSignals(),
 		})
 	}
 
@@ -311,6 +312,7 @@ func (tm *TraderManager) getConcurrentTraderData(traders []*trader.AutoTrader) [
 					"position_count":         account["position_count"],
 					"margin_used_pct":        account["margin_used_pct"],
 					"is_running":             status["is_running"],
+					"invert_signals":         trader.GetInvertSignals(),
 					"system_prompt_template": trader.GetSystemPromptTemplate(),
 				}
 			case err := <-errorChan:
@@ -327,6 +329,7 @@ func (tm *TraderManager) getConcurrentTraderData(traders []*trader.AutoTrader) [
 					"position_count":         0,
 					"margin_used_pct":        0.0,
 					"is_running":             status["is_running"],
+					"invert_signals":         trader.GetInvertSignals(),
 					"system_prompt_template": trader.GetSystemPromptTemplate(),
 					"error":                  "Failed to get account data",
 				}
@@ -344,6 +347,7 @@ func (tm *TraderManager) getConcurrentTraderData(traders []*trader.AutoTrader) [
 					"position_count":         0,
 					"margin_used_pct":        0.0,
 					"is_running":             status["is_running"],
+					"invert_signals":         trader.GetInvertSignals(),
 					"system_prompt_template": trader.GetSystemPromptTemplate(),
 					"error":                  "Request timeout",
 				}
@@ -697,6 +701,7 @@ func (tm *TraderManager) addTraderFromStore(traderCfg *store.Trader, aiModelCfg 
 		InitialBalance:        traderCfg.InitialBalance,
 		IsCrossMargin:         traderCfg.IsCrossMargin,
 		ShowInCompetition:     traderCfg.ShowInCompetition,
+		InvertSignals:         traderCfg.InvertSignals,
 		StrategyConfig:        strategyConfig,
 		StrategyConfigRaw:     strategyConfigRaw,
 	}

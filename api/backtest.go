@@ -337,7 +337,7 @@ func (s *Server) runStrategyBacktestJob(jobID, userID string, req startBacktestR
 		SlippageBPS:            req.SlippageBPS,
 		WarmupBars:             warmup,
 		DecisionIntervalBars:   interval,
-		MaxLeverage:            config.RiskControl.BTCETHMaxLeverage,
+		MaxLeverage:            config.RiskControl.MaxLeverage,
 		MaxMarginUsage:         config.RiskControl.MaxMarginUsage,
 		MaintenanceMarginRatio: 0.005,
 	}, candles, provider)

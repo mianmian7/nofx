@@ -11,7 +11,7 @@ func baseForceTrader() *AutoTrader {
 	cfg := store.GetDefaultStrategyConfig("en")
 	cfg.CoinSource.SourceType = "vergex_signal"
 	cfg.RiskControl.MaxPositions = 5
-	cfg.RiskControl.AltcoinMaxLeverage = 10
+	cfg.RiskControl.MaxLeverage = 10
 	cfg.RiskControl.AltcoinMaxPositionValueRatio = 10
 	at := &AutoTrader{config: AutoTraderConfig{StrategyConfig: &cfg}}
 	at.strategyEngine = kernel.NewStrategyEngine(&cfg) // empty ranking cache
@@ -53,5 +53,20 @@ func TestEnsureLongShortCoverageNoCandidatesNoForce(t *testing.T) {
 	out := at.ensureLongShortCoverage(nil, &kernel.Context{}, 100)
 	if len(out) != 0 {
 		t.Fatalf("no candidates available -> nothing to force, got %d", len(out))
+	}
+}
+
+func TestDirectionalCandidatesForSignalModeMirrorsForcedCoverage(t *testing.T) {
+	bullish := []kernel.DirectionalCandidate{{Symbol: "BTCUSDT", Score: 1.2}}
+	bearish := []kernel.DirectionalCandidate{{Symbol: "ETHUSDT", Score: -0.9}}
+
+	longCandidates, shortCandidates := directionalCandidatesForSignalMode(bullish, bearish, false)
+	if longCandidates[0].Symbol != "BTCUSDT" || shortCandidates[0].Symbol != "ETHUSDT" {
+		t.Fatalf("normal candidates were unexpectedly swapped: long=%v short=%v", longCandidates, shortCandidates)
+	}
+
+	longCandidates, shortCandidates = directionalCandidatesForSignalMode(bullish, bearish, true)
+	if longCandidates[0].Symbol != "ETHUSDT" || shortCandidates[0].Symbol != "BTCUSDT" {
+		t.Fatalf("inverse candidates were not swapped: long=%v short=%v", longCandidates, shortCandidates)
 	}
 }

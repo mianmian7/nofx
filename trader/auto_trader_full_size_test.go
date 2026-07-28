@@ -11,8 +11,7 @@ func TestApplyAutopilotFullSizeOpenForClaw402(t *testing.T) {
 	cfg.CoinSource.SourceType = "vergex_signal"
 	// Existing saved strategies retain legacy notional sizing until explicitly migrated.
 	cfg.RiskControl.PositionSizingMode = "notional_based"
-	cfg.RiskControl.BTCETHMaxLeverage = 10
-	cfg.RiskControl.AltcoinMaxLeverage = 10
+	cfg.RiskControl.MaxLeverage = 10
 	cfg.RiskControl.BTCETHMaxPositionValueRatio = 10
 	cfg.RiskControl.AltcoinMaxPositionValueRatio = 10
 
@@ -37,8 +36,7 @@ func TestApplyAutopilotFullSizeOpenForClaw402(t *testing.T) {
 func TestApplyAutopilotFullSizeOpenSkipsNonClaw402Strategies(t *testing.T) {
 	cfg := store.GetDefaultStrategyConfig("en")
 	cfg.CoinSource.SourceType = "static"
-	cfg.RiskControl.BTCETHMaxLeverage = 10
-	cfg.RiskControl.AltcoinMaxLeverage = 10
+	cfg.RiskControl.MaxLeverage = 10
 
 	at := &AutoTrader{config: AutoTraderConfig{StrategyConfig: &cfg}}
 	decision := &kernel.Decision{
@@ -59,8 +57,7 @@ func TestApplyAutopilotFullSizeOpenSkipsFixedCapForMarginBasedSizing(t *testing.
 	cfg := store.GetDefaultStrategyConfig("en")
 	cfg.CoinSource.SourceType = "vergex_signal"
 	cfg.RiskControl.PositionSizingMode = "margin_based"
-	cfg.RiskControl.BTCETHMaxLeverage = 50
-	cfg.RiskControl.AltcoinMaxLeverage = 50
+	cfg.RiskControl.MaxLeverage = 50
 	cfg.RiskControl.BTCETHMaxMarginRatio = 0.25
 	cfg.RiskControl.AltcoinMaxMarginRatio = 0.25
 

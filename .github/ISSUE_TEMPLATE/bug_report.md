@@ -115,8 +115,7 @@ Paste backend logs here (last 50-100 lines around the error)
 **Leverage Settings:**
 ```json
 {
-  "btc_eth_leverage": 5,
-  "altcoin_leverage": 5
+  "max_leverage": 5
 }
 ```
 

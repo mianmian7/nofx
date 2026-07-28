@@ -225,10 +225,23 @@ function TraderRow({
         </div>
         <div className="min-w-0">
           <div
-            className="font-bold text-base md:text-lg truncate"
+            className="font-bold text-base md:text-lg truncate flex items-center gap-2"
             style={{ color: '#1A1813' }}
           >
-            {trader.trader_name}
+            <span>{trader.trader_name}</span>
+            {trader.invert_signals && (
+              <span
+                className="px-2 py-0.5 rounded text-xs font-semibold shrink-0"
+                style={{
+                  background: 'rgba(234, 88, 12, 0.12)',
+                  color: '#EA580C',
+                  border: '1px solid rgba(234, 88, 12, 0.3)',
+                }}
+                title={language === 'zh' ? '开启反向交易 (开多/开空自动取反)' : 'Signal Inversion Active'}
+              >
+                🔄 {language === 'zh' ? '反向交易' : 'Inverted'}
+              </span>
+            )}
           </div>
           <div
             className="text-xs md:text-sm truncate"

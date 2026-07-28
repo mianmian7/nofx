@@ -243,15 +243,12 @@ func (at *AutoTrader) applyAutopilotFullSizeOpen(decision *kernel.Decision, equi
 	if riskControl.IsMarginBased() {
 		return
 	}
-	leverage := riskControl.AltcoinMaxLeverage
-	if isMajorAsset(decision.Symbol) {
-		leverage = riskControl.BTCETHMaxLeverage
-	}
+	leverage := riskControl.MaxLeverage
 	if leverage < store.MinLeverage {
 		leverage = store.MinLeverage
 	}
-	if leverage > store.MaxAltLeverage {
-		leverage = store.MaxAltLeverage
+	if leverage > store.MaxLeverage {
+		leverage = store.MaxLeverage
 	}
 
 	fullPositionSize := riskControl.MaxPositionNotional(equity, leverage, isMajorAsset(decision.Symbol))

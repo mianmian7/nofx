@@ -44,8 +44,7 @@ export interface DemoDataset {
     scan_interval_minutes: number
     ai_model: string
     strategy_name: string
-    btc_eth_leverage: number
-    altcoin_leverage: number
+    max_leverage: number
   }
   flow: FlowMarketsResponse
   signalRank: SignalRankingResponse
@@ -467,8 +466,7 @@ function build(S: SimState): DemoDataset {
       scan_interval_minutes: 5,
       ai_model: 'deepseek',
       strategy_name: 'NOFX Local Dynamic Strategy',
-      btc_eth_leverage: 3,
-      altcoin_leverage: 3,
+      max_leverage: 3,
     },
     flow,
     signalRank,

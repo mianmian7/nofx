@@ -265,10 +265,23 @@ export function CompetitionPage() {
                         />
                         <div>
                           <div
-                            className="font-bold text-sm"
+                            className="font-bold text-sm flex items-center gap-1.5"
                             style={{ color: '#1A1813' }}
                           >
-                            {trader.trader_name}
+                            <span>{trader.trader_name}</span>
+                            {trader.invert_signals && (
+                              <span
+                                className="px-1.5 py-0.5 rounded text-[10px] font-semibold shrink-0"
+                                style={{
+                                  background: 'rgba(234, 88, 12, 0.12)',
+                                  color: '#EA580C',
+                                  border: '1px solid rgba(234, 88, 12, 0.3)',
+                                }}
+                                title={language === 'zh' ? '开启反向交易 (开多/开空自动取反)' : 'Signal Inversion Active'}
+                              >
+                                🔄 {language === 'zh' ? '反向' : 'Inverted'}
+                              </span>
+                            )}
                           </div>
                           <div
                             className="text-xs mono font-semibold"
@@ -420,12 +433,25 @@ export function CompetitionPage() {
                         />
                       </div>
                       <div
-                        className="text-sm md:text-base font-bold mb-2"
+                        className="text-sm md:text-base font-bold mb-2 flex items-center justify-center gap-1.5 flex-wrap"
                         style={{
                           color: getTraderColor(sortedTraders, trader.trader_id),
                         }}
                       >
-                        {trader.trader_name}
+                        <span>{trader.trader_name}</span>
+                        {trader.invert_signals && (
+                          <span
+                            className="px-1.5 py-0.5 rounded text-[10px] font-semibold shrink-0"
+                            style={{
+                              background: 'rgba(234, 88, 12, 0.12)',
+                              color: '#EA580C',
+                              border: '1px solid rgba(234, 88, 12, 0.3)',
+                            }}
+                            title={language === 'zh' ? '开启反向交易 (开多/开空自动取反)' : 'Signal Inversion Active'}
+                          >
+                            🔄 {language === 'zh' ? '反向' : 'Inverted'}
+                          </span>
+                        )}
                       </div>
                       <div
                         className="text-lg md:text-2xl font-bold mono mb-1"

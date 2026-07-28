@@ -12,8 +12,8 @@ import (
 // Decision Validation
 // ============================================================================
 
-func validateDecisions(decisions []Decision, accountEquity float64, btcEthLeverage, altcoinLeverage int, btcEthPosRatio, altcoinPosRatio float64) error {
-	risk := store.RiskControlConfig{PositionSizingMode: "notional_based", BTCETHMaxLeverage: btcEthLeverage, AltcoinMaxLeverage: altcoinLeverage, BTCETHMaxPositionValueRatio: btcEthPosRatio, AltcoinMaxPositionValueRatio: altcoinPosRatio, MinPositionSize: 12, MinRiskRewardRatio: 3}
+func validateDecisions(decisions []Decision, accountEquity float64, maxLeverage int, btcEthPosRatio, altcoinPosRatio float64) error {
+	risk := store.RiskControlConfig{PositionSizingMode: "notional_based", MaxLeverage: maxLeverage, BTCETHMaxPositionValueRatio: btcEthPosRatio, AltcoinMaxPositionValueRatio: altcoinPosRatio, MinPositionSize: 12, MinRiskRewardRatio: 3}
 	return validateDecisionsWithRisk(decisions, accountEquity, risk)
 }
 
@@ -26,8 +26,8 @@ func validateDecisionsWithRisk(decisions []Decision, accountEquity float64, risk
 	return nil
 }
 
-func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoinLeverage int, btcEthPosRatio, altcoinPosRatio float64) error {
-	risk := store.RiskControlConfig{PositionSizingMode: "notional_based", BTCETHMaxLeverage: btcEthLeverage, AltcoinMaxLeverage: altcoinLeverage, BTCETHMaxPositionValueRatio: btcEthPosRatio, AltcoinMaxPositionValueRatio: altcoinPosRatio, MinPositionSize: 12, MinRiskRewardRatio: 3}
+func validateDecision(d *Decision, accountEquity float64, maxLeverage int, btcEthPosRatio, altcoinPosRatio float64) error {
+	risk := store.RiskControlConfig{PositionSizingMode: "notional_based", MaxLeverage: maxLeverage, BTCETHMaxPositionValueRatio: btcEthPosRatio, AltcoinMaxPositionValueRatio: altcoinPosRatio, MinPositionSize: 12, MinRiskRewardRatio: 3}
 	return validateDecisionWithRisk(d, accountEquity, risk)
 }
 
@@ -53,11 +53,10 @@ func validateDecisionWithRisk(d *Decision, accountEquity float64, risk store.Ris
 		//     and the user's quick-trade flow shows them at the higher cap,
 		//     so the validator must match.
 		//   - Everything else is altcoin (1x equity by default).
-		maxLeverage := risk.AltcoinMaxLeverage
+		maxLeverage := risk.MaxLeverage
 		posRatio := risk.AltcoinMaxPositionValueRatio
 		isMajor := d.Symbol == "BTCUSDT" || d.Symbol == "ETHUSDT" || market.IsXyzDexAsset(d.Symbol)
 		if isMajor {
-			maxLeverage = risk.BTCETHMaxLeverage
 			posRatio = risk.BTCETHMaxPositionValueRatio
 		}
 

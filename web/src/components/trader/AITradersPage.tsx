@@ -25,6 +25,7 @@ import { AutopilotLaunchPanel } from './AutopilotLaunchPanel'
 import { Bot, Plus, MessageCircle } from 'lucide-react'
 import { confirmToast } from '../../lib/notify'
 import { toast } from 'sonner'
+import { buildUpdateTraderRequest } from './traderRequest'
 
 interface AITradersPageProps {
   onTraderSelect?: (traderId: string) => void
@@ -257,18 +258,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
         return
       }
 
-      const request = {
-        name: data.name,
-        ai_model_id: data.ai_model_id,
-        exchange_id: data.exchange_id,
-        strategy_id: data.strategy_id,
-        scan_interval_minutes: data.scan_interval_minutes,
-        is_cross_margin: data.is_cross_margin,
-        show_in_competition: data.show_in_competition,
-        execution_mode: data.execution_mode,
-        initial_balance: data.initial_balance,
-        reset_paper_account: data.reset_paper_account,
-      }
+      const request = buildUpdateTraderRequest(data)
 
       await api.updateTrader(editingTrader.trader_id, request)
       toast.success(t('aiTradersToast.saved', language))

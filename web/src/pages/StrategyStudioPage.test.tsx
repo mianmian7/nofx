@@ -226,8 +226,7 @@ describe('StrategyStudioPage initial data policy', () => {
             },
             risk_control: {
               max_positions: 3,
-              btc_eth_max_leverage: 3,
-              altcoin_max_leverage: 3,
+              max_leverage: 3,
               max_margin_usage: 0.5,
               min_confidence: 75,
             },

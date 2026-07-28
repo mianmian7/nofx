@@ -20,8 +20,7 @@ const (
 	MinKlineCount           = 10
 	MaxKlineCount           = 50
 	MinLeverage             = 1
-	MaxBTCETHLeverage       = 125
-	MaxAltLeverage          = 125
+	MaxLeverage             = 125
 	MinPositionRatio        = 0.5
 	MaxPositionRatio        = 10.0
 	MinPositionMarginRatio  = 0.01
@@ -89,18 +88,12 @@ func (c *StrategyConfig) ClampLimits() {
 		c.RiskControl.MaxPositions = MaxPositions
 	}
 
-	// Clamp leverage limits to the same bounds as the manual config UI.
-	if c.RiskControl.BTCETHMaxLeverage < MinLeverage {
-		c.RiskControl.BTCETHMaxLeverage = MinLeverage
+	// Clamp the unified leverage limit to the same bounds as the manual UI.
+	if c.RiskControl.MaxLeverage < MinLeverage {
+		c.RiskControl.MaxLeverage = MinLeverage
 	}
-	if c.RiskControl.BTCETHMaxLeverage > MaxBTCETHLeverage {
-		c.RiskControl.BTCETHMaxLeverage = MaxBTCETHLeverage
-	}
-	if c.RiskControl.AltcoinMaxLeverage < MinLeverage {
-		c.RiskControl.AltcoinMaxLeverage = MinLeverage
-	}
-	if c.RiskControl.AltcoinMaxLeverage > MaxAltLeverage {
-		c.RiskControl.AltcoinMaxLeverage = MaxAltLeverage
+	if c.RiskControl.MaxLeverage > MaxLeverage {
+		c.RiskControl.MaxLeverage = MaxLeverage
 	}
 
 	// Clamp position value ratio limits.
@@ -668,8 +661,7 @@ func StrategyClampWarnings(before, after StrategyConfig, lang string) []string {
 	}
 
 	appendInt("Max Positions", "max_positions", before.RiskControl.MaxPositions, after.RiskControl.MaxPositions)
-	appendInt("BTC/ETH Max Leverage", "btc_eth_max_leverage", before.RiskControl.BTCETHMaxLeverage, after.RiskControl.BTCETHMaxLeverage)
-	appendInt("Altcoin Max Leverage", "altcoin_max_leverage", before.RiskControl.AltcoinMaxLeverage, after.RiskControl.AltcoinMaxLeverage)
+	appendInt("Max Leverage", "max_leverage", before.RiskControl.MaxLeverage, after.RiskControl.MaxLeverage)
 	appendFloat("BTC/ETH Max Position Value Ratio", "btc_eth_max_position_value_ratio", before.RiskControl.BTCETHMaxPositionValueRatio, after.RiskControl.BTCETHMaxPositionValueRatio)
 	appendFloat("Altcoin Max Position Value Ratio", "altcoin_max_position_value_ratio", before.RiskControl.AltcoinMaxPositionValueRatio, after.RiskControl.AltcoinMaxPositionValueRatio)
 	appendFloat("Min Risk/Reward Ratio", "min_risk_reward_ratio", before.RiskControl.MinRiskRewardRatio, after.RiskControl.MinRiskRewardRatio)
@@ -1161,10 +1153,8 @@ type RiskControlConfig struct {
 	// Versioned: legacy strategies remain notional_based.
 	PositionSizingMode string `json:"position_sizing_mode,omitempty"`
 
-	// BTC/ETH exchange leverage for opening positions (AI guided)
-	BTCETHMaxLeverage int `json:"btc_eth_max_leverage"`
-	// Altcoin exchange leverage for opening positions (AI guided)
-	AltcoinMaxLeverage int `json:"altcoin_max_leverage"`
+	// Unified exchange leverage limit for every opening position (AI guided).
+	MaxLeverage int `json:"max_leverage"`
 
 	// BTC/ETH single position max value = equity × this ratio (CODE ENFORCED, default: 5)
 	BTCETHMaxPositionValueRatio float64 `json:"btc_eth_max_position_value_ratio"`
@@ -1186,6 +1176,44 @@ type RiskControlConfig struct {
 	MinConfidence int `json:"min_confidence"`
 	// Strategy-scoped AI trade frequency and noise-exit policy.
 	TradeThrottle *TradeThrottleConfig `json:"trade_throttle,omitempty"`
+}
+
+// UnmarshalJSON accepts the unified max_leverage field and migrates legacy
+// tiered leverage fields. When the old values differ, the lower positive value
+// is selected so upgrading cannot silently increase risk for any asset class.
+func (r *RiskControlConfig) UnmarshalJSON(data []byte) error {
+	type riskControlAlias RiskControlConfig
+	var raw struct {
+		riskControlAlias
+		BTCETHMaxLeverage  *int `json:"btc_eth_max_leverage"`
+		AltcoinMaxLeverage *int `json:"altcoin_max_leverage"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	*r = RiskControlConfig(raw.riskControlAlias)
+	if r.MaxLeverage > 0 {
+		return nil
+	}
+	r.MaxLeverage = minimumPositiveLeverage(raw.BTCETHMaxLeverage, raw.AltcoinMaxLeverage)
+	if r.MaxLeverage <= 0 {
+		r.MaxLeverage = 3
+	}
+	return nil
+}
+
+func minimumPositiveLeverage(values ...*int) int {
+	minimum := 0
+	for _, value := range values {
+		if value == nil || *value <= 0 {
+			continue
+		}
+		if minimum == 0 || *value < minimum {
+			minimum = *value
+		}
+	}
+	return minimum
 }
 
 func (r RiskControlConfig) IsMarginBased() bool { return r.PositionSizingMode == "margin_based" }
@@ -1223,7 +1251,38 @@ func NewStrategyStore(db *gorm.DB) *StrategyStore {
 
 func (s *StrategyStore) initTables() error {
 	// AutoMigrate will add missing columns without dropping existing data
-	return s.db.AutoMigrate(&Strategy{})
+	if err := s.db.AutoMigrate(&Strategy{}); err != nil {
+		return err
+	}
+	return s.migrateUnifiedLeverageConfig()
+}
+
+func (s *StrategyStore) migrateUnifiedLeverageConfig() error {
+	var strategies []Strategy
+	if err := s.db.Find(&strategies).Error; err != nil {
+		return err
+	}
+	for strategyIndex := range strategies {
+		strategy := &strategies[strategyIndex]
+		if !strings.Contains(strategy.Config, "btc_eth_max_leverage") &&
+			!strings.Contains(strategy.Config, "altcoin_max_leverage") {
+			continue
+		}
+		config, err := strategy.ParseConfig()
+		if err != nil {
+			return fmt.Errorf("failed to migrate leverage config for strategy %s: %w", strategy.ID, err)
+		}
+		configJSON, err := json.Marshal(config)
+		if err != nil {
+			return fmt.Errorf("failed to serialize migrated strategy %s: %w", strategy.ID, err)
+		}
+		if err := s.db.Model(&Strategy{}).
+			Where("id = ?", strategy.ID).
+			Update("config", string(configJSON)).Error; err != nil {
+			return fmt.Errorf("failed to persist migrated strategy %s: %w", strategy.ID, err)
+		}
+	}
+	return nil
 }
 
 func (s *StrategyStore) initDefaultData() error {
@@ -1296,8 +1355,7 @@ func GetDefaultStrategyConfig(lang string) StrategyConfig {
 		RiskControl: RiskControlConfig{
 			MaxPositions:                 3,
 			PositionSizingMode:           "margin_based",
-			BTCETHMaxLeverage:            3,
-			AltcoinMaxLeverage:           3,
+			MaxLeverage:                  3,
 			BTCETHMaxPositionValueRatio:  1.0,
 			AltcoinMaxPositionValueRatio: 0.5,
 			BTCETHMaxMarginRatio:         0.15,

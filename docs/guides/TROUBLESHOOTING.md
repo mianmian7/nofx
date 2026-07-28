@@ -56,12 +56,11 @@ Before reporting a bug, please check:
 **Symptom:** Orders fail with leverage error when trying to use >5x leverage.
 
 **Solution:**
-1. Open Web UI → Trader Settings
-2. Set leverage to 5x or lower:
+1. Open Web UI → Strategy Studio → Advanced Settings
+2. Set the strategy maximum leverage to 5x or lower:
    ```json
    {
-     "btc_eth_leverage": 5,
-     "altcoin_leverage": 5
+     "max_leverage": 5
    }
    ```
 3. Or use the main account (the strategy maximum can be configured up to 125x, while the exchange's per-symbol bracket still applies)

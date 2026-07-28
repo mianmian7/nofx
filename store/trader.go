@@ -31,12 +31,11 @@ type Trader struct {
 	IsRunning           bool      `gorm:"column:is_running;default:false" json:"is_running"`
 	IsCrossMargin       bool      `gorm:"column:is_cross_margin;default:true" json:"is_cross_margin"`
 	ShowInCompetition   bool      `gorm:"column:show_in_competition;default:true" json:"show_in_competition"`
+	InvertSignals       bool      `gorm:"column:invert_signals;default:false" json:"invert_signals"`
 	CreatedAt           time.Time `gorm:"column:created_at;autoCreateTime" json:"created_at"`
 	UpdatedAt           time.Time `gorm:"column:updated_at;autoUpdateTime" json:"updated_at"`
 
-	// Following fields are deprecated, kept for backward compatibility, new traders should use StrategyID
-	BTCETHLeverage       int    `gorm:"column:btc_eth_leverage;default:5" json:"btc_eth_leverage,omitempty"`
-	AltcoinLeverage      int    `gorm:"column:altcoin_leverage;default:5" json:"altcoin_leverage,omitempty"`
+	// Remaining legacy fields are retained until their separate migrations.
 	TradingSymbols       string `gorm:"column:trading_symbols;default:''" json:"trading_symbols,omitempty"`
 	UseAI500             bool   `gorm:"column:use_coin_pool;default:false" json:"use_ai500,omitempty"`
 	UseOITop             bool   `gorm:"column:use_oi_top;default:false" json:"use_oi_top,omitempty"`
@@ -64,12 +63,35 @@ func (s *TraderStore) initTables() error {
 		var tableExists int64
 		s.db.Raw(`SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'traders'`).Scan(&tableExists)
 		if tableExists > 0 {
-			return nil
+			if err := s.ensureInvertSignalsColumn(); err != nil {
+				return fmt.Errorf("failed to migrate traders invert_signals column: %w", err)
+			}
+			return s.dropLegacyLeverageColumns()
 		}
 	}
 	// Use GORM AutoMigrate
 	if err := s.db.AutoMigrate(&Trader{}); err != nil {
 		return fmt.Errorf("failed to migrate traders table: %w", err)
+	}
+	return s.dropLegacyLeverageColumns()
+}
+
+func (s *TraderStore) ensureInvertSignalsColumn() error {
+	if s.db.Migrator().HasColumn(&Trader{}, "InvertSignals") {
+		return nil
+	}
+	return s.db.Migrator().AddColumn(&Trader{}, "InvertSignals")
+}
+
+func (s *TraderStore) dropLegacyLeverageColumns() error {
+	for _, columnName := range []string{"btc_eth_leverage", "altcoin_leverage"} {
+		if !s.db.Migrator().HasColumn("traders", columnName) {
+			continue
+		}
+		statement := fmt.Sprintf("ALTER TABLE traders DROP COLUMN %s", columnName)
+		if err := s.db.Exec(statement).Error; err != nil {
+			return fmt.Errorf("failed to drop legacy trader column %s: %w", columnName, err)
+		}
 	}
 	return nil
 }
@@ -118,8 +140,7 @@ func (s *TraderStore) Update(trader *Trader) error {
 		"execution_mode":         trader.ExecutionMode,
 		"is_cross_margin":        trader.IsCrossMargin,
 		"show_in_competition":    trader.ShowInCompetition,
-		"btc_eth_leverage":       trader.BTCETHLeverage,
-		"altcoin_leverage":       trader.AltcoinLeverage,
+		"invert_signals":         trader.InvertSignals,
 		"trading_symbols":        trader.TradingSymbols,
 		"use_coin_pool":          trader.UseAI500,
 		"use_oi_top":             trader.UseOITop,
