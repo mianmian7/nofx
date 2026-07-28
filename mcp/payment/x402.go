@@ -664,6 +664,13 @@ func SignX402Payment(privateKey *ecdsa.PrivateKey, senderAddr string, opt X402Ac
 	if maxTimeout == 0 {
 		maxTimeout = 300
 	}
+	// Echo the scheme offered by the server ("exact" or "upto") instead of
+	// hardcoding — under "upto" the signed amount is a cap and the gateway
+	// settles on actual usage.
+	scheme := opt.Scheme
+	if scheme == "" {
+		scheme = "exact"
+	}
 
 	resourceURL := ""
 	resourceDesc := ""
@@ -734,7 +741,7 @@ func SignX402Payment(privateKey *ecdsa.PrivateKey, senderAddr string, opt X402Ac
 			"mimeType":    resourceMime,
 		},
 		"accepted": map[string]interface{}{
-			"scheme":            "exact",
+			"scheme":            scheme,
 			"network":           network,
 			"amount":            amount,
 			"asset":             asset,
