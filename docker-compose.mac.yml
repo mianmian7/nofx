@@ -1,0 +1,46 @@
+services:
+  nofx:
+    image: nofx-nofx:latest
+    container_name: nofx-trading
+    restart: unless-stopped
+    stop_grace_period: 30s
+    ports:
+      - "${NOFX_BACKEND_PORT:-8080}:8080"
+    volumes:
+      - ./.env.mac:/app/.env:ro
+      - ./data:/app/data
+    env_file:
+      - .env.mac
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      AI_MAX_TOKENS: "8000"
+    networks:
+      - nofx-network
+
+  nofx-frontend:
+    image: nofx-nofx-frontend:latest
+    container_name: nofx-frontend
+    restart: unless-stopped
+    ports:
+      - "${NOFX_FRONTEND_PORT:-3100}:80"
+    depends_on:
+      - nofx
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - --no-verbose
+        - --tries=1
+        - --spider
+        - http://127.0.0.1/health
+      interval: 30s
+      timeout: 10s
+      start_period: 5s
+      retries: 3
+    networks:
+      - nofx-network
+
+
+networks:
+  nofx-network:
+    driver: bridge
