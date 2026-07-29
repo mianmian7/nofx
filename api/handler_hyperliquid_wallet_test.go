@@ -65,3 +65,31 @@ func TestValidateUsdClassTransferActionRequiresMainnetChain(t *testing.T) {
 		t.Fatalf("expected Testnet chain to be rejected, got %v", err)
 	}
 }
+
+func TestValidateSignatureChainIDAcceptsAnyWellFormedChain(t *testing.T) {
+	// Hyperliquid accepts any signing chain (docs example: "0xa4b1" for
+	// Arbitrum One); strict wallets like Rabby sign with the wallet's active
+	// chain, so the relay must not pin a single value (issue #1531).
+	for _, chain := range []string{"0x66eee", "0xa4b1", "0x1", "0x2105"} {
+		err := validateUsdClassTransferAction(usdClassTransferAction(map[string]any{"signatureChainId": chain}))
+		if err != nil {
+			t.Fatalf("expected signatureChainId %q to be accepted, got %v", chain, err)
+		}
+	}
+}
+
+func TestValidateSignatureChainIDRejectsMalformedValues(t *testing.T) {
+	for name, chain := range map[string]any{
+		"decimal":   "421614",
+		"no prefix": "66eee",
+		"empty":     "",
+		"missing":   nil,
+		"garbage":   "0xzzzz",
+		"too long":  "0x11111111111111111",
+	} {
+		err := validateUsdClassTransferAction(usdClassTransferAction(map[string]any{"signatureChainId": chain}))
+		if err == nil || !strings.Contains(err.Error(), "signatureChainId") {
+			t.Fatalf("%s: expected signatureChainId %v to be rejected, got %v", name, chain, err)
+		}
+	}
+}

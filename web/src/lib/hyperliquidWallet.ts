@@ -92,16 +92,36 @@ export function splitSignature(signature: string) {
   }
 }
 
+/**
+ * Chain id of the wallet's currently active chain, in hex (e.g. "0xa4b1").
+ * Hyperliquid accepts any signing chain — the network is selected by
+ * `hyperliquidChain`, not by this value — as long as the action's
+ * `signatureChainId` matches the EIP-712 domain the wallet signed. Strict
+ * EIP-712 wallets (e.g. Rabby) additionally refuse to sign for a domain that
+ * differs from the active chain, so the domain must follow the wallet.
+ */
+export async function getWalletChainIdHex(
+  provider: WalletProvider
+): Promise<string> {
+  const raw = await provider.request({ method: 'eth_chainId' })
+  const hex = typeof raw === 'string' ? raw.toLowerCase() : ''
+  if (!/^0x[0-9a-f]{1,16}$/.test(hex)) {
+    throw new Error('Wallet returned an invalid chain id')
+  }
+  return hex
+}
+
 export function buildTypedData(
   primaryType: string,
   fields: { name: string; type: string }[],
-  message: Record<string, unknown>
+  message: Record<string, unknown>,
+  chainIdHex: string
 ) {
   return {
     domain: {
       name: 'HyperliquidSignTransaction',
       version: '1',
-      chainId: 421614,
+      chainId: parseInt(chainIdHex, 16),
       verifyingContract: '0x0000000000000000000000000000000000000000',
     },
     types: {
@@ -119,10 +139,13 @@ export function buildTypedData(
 }
 
 /**
- * Sign a Hyperliquid user-signed action with the connected wallet and return
- * the split signature. `signerAddress` must be the wallet that owns the
- * Hyperliquid account — user-signed actions derive the acting account from
- * the signature itself.
+ * Sign a Hyperliquid user-signed action with the connected wallet.
+ * `signerAddress` must be the wallet that owns the Hyperliquid account —
+ * user-signed actions derive the acting account from the signature itself.
+ *
+ * The wallet's active chain is injected as `signatureChainId` and used as the
+ * EIP-712 domain chain, keeping the two consistent as Hyperliquid requires.
+ * Returns the final action (submit exactly this object) plus the signature.
  */
 export async function signHyperliquidUserAction(
   provider: WalletProvider,
@@ -131,7 +154,12 @@ export async function signHyperliquidUserAction(
   primaryType: string,
   fields: { name: string; type: string }[]
 ) {
-  const typedData = buildTypedData(primaryType, fields, action)
+  const chainIdHex = await getWalletChainIdHex(provider)
+  const signedAction: Record<string, unknown> = {
+    ...action,
+    signatureChainId: chainIdHex,
+  }
+  const typedData = buildTypedData(primaryType, fields, signedAction, chainIdHex)
   const raw = await provider.request({
     method: 'eth_signTypedData_v4',
     params: [signerAddress, JSON.stringify(typedData)],
@@ -139,5 +167,5 @@ export async function signHyperliquidUserAction(
   if (typeof raw !== 'string') {
     throw new Error('Wallet returned an invalid signature')
   }
-  return splitSignature(raw)
+  return { action: signedAction, signature: splitSignature(raw) }
 }

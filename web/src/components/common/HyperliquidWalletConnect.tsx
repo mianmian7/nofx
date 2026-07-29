@@ -19,12 +19,11 @@ import type {
 } from '../../lib/api/wallet'
 import type { Language } from '../../i18n/translations'
 import {
-  buildTypedData,
   formatUSDC,
   getPreferredWalletProvider,
   normalizeAddress,
   shortAddress,
-  splitSignature,
+  signHyperliquidUserAction,
 } from '../../lib/hyperliquidWallet'
 
 interface HyperliquidWalletConnectProps {
@@ -530,16 +529,19 @@ export function HyperliquidWalletConnect({
     const provider = getPreferredWalletProvider()
     if (!provider || !expectedWallet) throw new Error('Wallet is not connected')
     assertCurrentWallet(expectedWallet)
-    const typedData = buildTypedData(primaryType, fields, action)
-    const raw = await provider.request({
-      method: 'eth_signTypedData_v4',
-      params: [expectedWallet, JSON.stringify(typedData)],
-    })
+    const { action: signedAction, signature } = await signHyperliquidUserAction(
+      provider,
+      expectedWallet,
+      action,
+      primaryType,
+      fields
+    )
     assertCurrentWallet(expectedWallet)
-    if (typeof raw !== 'string')
-      throw new Error('Wallet returned an invalid signature')
-    const signature = splitSignature(raw)
-    await api.submitHyperliquidApproval(action, Number(action.nonce), signature)
+    await api.submitHyperliquidApproval(
+      signedAction,
+      Number(signedAction.nonce),
+      signature
+    )
     assertCurrentWallet(expectedWallet)
   }
 
@@ -573,7 +575,6 @@ export function HyperliquidWalletConnect({
       const nonce = Date.now()
       const action = {
         type: 'approveAgent',
-        signatureChainId: '0x66eee',
         hyperliquidChain: 'Mainnet',
         agentAddress: state.agentAddress,
         agentName: buildAgentName(nonce),
@@ -622,7 +623,6 @@ export function HyperliquidWalletConnect({
       const nonce = Date.now()
       const action = {
         type: 'approveAgent',
-        signatureChainId: '0x66eee',
         hyperliquidChain: 'Mainnet',
         agentAddress: newAgentAddress,
         agentName: buildAgentName(nonce),
@@ -715,7 +715,6 @@ export function HyperliquidWalletConnect({
       const nonce = Date.now()
       const action = {
         type: 'approveBuilderFee',
-        signatureChainId: '0x66eee',
         hyperliquidChain: 'Mainnet',
         maxFeeRate: HYPERLIQUID_BUILDER_MAX_FEE,
         builder: normalizeAddress(HYPERLIQUID_BUILDER_ADDRESS),

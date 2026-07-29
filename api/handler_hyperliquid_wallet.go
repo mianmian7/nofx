@@ -101,6 +101,9 @@ type hyperliquidClearinghouseState struct {
 // it from the stored name, but we strip defensively before matching the slot.
 var agentValidUntilSuffix = regexp.MustCompile(` valid_until \d+$`)
 
+// hexChainIDPattern matches an EVM chain id in hex form (e.g. "0xa4b1").
+var hexChainIDPattern = regexp.MustCompile(`^0x[0-9a-fA-F]{1,16}$`)
+
 func baseAgentName(name string) string {
 	return strings.TrimSpace(agentValidUntilSuffix.ReplaceAllString(name, ""))
 }
@@ -406,7 +409,13 @@ func validateUsdClassTransferAction(action map[string]any) error {
 }
 
 func validateCommonHyperliquidSignedAction(action map[string]any) error {
-	if strings.TrimSpace(fmt.Sprint(action["signatureChainId"])) != "0x66eee" {
+	// signatureChainId is the chain the user's wallet was on when signing —
+	// Hyperliquid accepts any value as long as it matches the EIP-712 domain
+	// of the signature (docs example: "0xa4b1"); the network is selected by
+	// hyperliquidChain, not by this field. Strict EIP-712 wallets (Rabby)
+	// require the signing domain to equal the wallet's active chain, so this
+	// value cannot be pinned server-side — validate the format only.
+	if !hexChainIDPattern.MatchString(strings.TrimSpace(fmt.Sprint(action["signatureChainId"]))) {
 		return fmt.Errorf("invalid signatureChainId")
 	}
 	if strings.TrimSpace(fmt.Sprint(action["hyperliquidChain"])) != "Mainnet" {

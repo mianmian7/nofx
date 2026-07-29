@@ -236,25 +236,25 @@ export function HyperliquidFundsPanel({
       const nonce = Date.now()
       const action = {
         type: 'usdClassTransfer',
-        signatureChainId: '0x66eee',
         hyperliquidChain: 'Mainnet',
         amount: String(parsed),
         toPerp,
         nonce,
       }
-      const signature = await signHyperliquidUserAction(
-        provider,
-        signer,
-        action,
-        'HyperliquidTransaction:UsdClassTransfer',
-        [
-          { name: 'hyperliquidChain', type: 'string' },
-          { name: 'amount', type: 'string' },
-          { name: 'toPerp', type: 'bool' },
-          { name: 'nonce', type: 'uint64' },
-        ]
-      )
-      await api.submitHyperliquidApproval(action, nonce, signature)
+      const { action: signedAction, signature } =
+        await signHyperliquidUserAction(
+          provider,
+          signer,
+          action,
+          'HyperliquidTransaction:UsdClassTransfer',
+          [
+            { name: 'hyperliquidChain', type: 'string' },
+            { name: 'amount', type: 'string' },
+            { name: 'toPerp', type: 'bool' },
+            { name: 'nonce', type: 'uint64' },
+          ]
+        )
+      await api.submitHyperliquidApproval(signedAction, nonce, signature)
       toast.success(t.success)
       setAmount('')
       await onTransferred?.()
