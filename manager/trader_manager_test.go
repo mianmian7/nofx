@@ -245,6 +245,41 @@ func TestTraderLogTag(t *testing.T) {
 	}
 }
 
+func TestBuildTraderAIModelCandidatesUsesEnvironmentCredential(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "environment-key")
+	traderConfiguration := &store.Trader{UserID: "user-1"}
+	primaryModel := &store.AIModel{
+		ID:       "openai-primary",
+		Provider: "openai",
+		Enabled:  true,
+	}
+
+	candidates, err := buildTraderAIModelCandidates(traderConfiguration, primaryModel, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("candidate count = %d, want 1", len(candidates))
+	}
+	if candidates[0].APIKey != "environment-key" {
+		t.Fatalf("candidate API key = %q, want environment-key", candidates[0].APIKey)
+	}
+}
+
+func TestBuildTraderAIModelCandidatesRejectsMissingPrimaryCredential(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	traderConfiguration := &store.Trader{UserID: "user-1"}
+	primaryModel := &store.AIModel{
+		ID:       "openai-primary",
+		Provider: "openai",
+		Enabled:  true,
+	}
+
+	if _, err := buildTraderAIModelCandidates(traderConfiguration, primaryModel, nil); err == nil {
+		t.Fatal("missing primary credential must be rejected")
+	}
+}
+
 func TestEnsureHyperliquidNativeStrategy(t *testing.T) {
 	t.Run("nil config does not panic", func(t *testing.T) {
 		ensureHyperliquidNativeStrategy("bot", "hyperliquid", nil)

@@ -26,6 +26,7 @@ func SanitizeModelConfigForLog(models map[string]ModelConfigUpdate) map[string]i
 			"api_key":           MaskSensitiveString(cfg.APIKey),
 			"custom_api_url":    cfg.CustomAPIURL,
 			"custom_model_name": cfg.CustomModelName,
+			"model_names":       cfg.ModelNames,
 		}
 	}
 	return safe

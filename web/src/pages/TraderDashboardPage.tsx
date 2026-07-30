@@ -12,6 +12,7 @@ import { LogOut, Loader2, Eye, EyeOff, Copy, Check } from 'lucide-react'
 import { DeepVoidBackground } from '../components/common/DeepVoidBackground'
 import { NofxSelect } from '../components/ui/select'
 import { GridRiskPanel } from '../components/strategy/GridRiskPanel'
+import { AIModelRuntimeStatus } from '../components/trader/AIModelRuntimeStatus'
 import type {
     SystemStatus,
     AccountInfo,
@@ -499,6 +500,10 @@ export function TraderDashboardPage({
                         )}
                     </div>
                 </div>
+
+                {status && (
+                    <AIModelRuntimeStatus status={status} language={language} />
+                )}
 
                 {/* Debug Info */}
                 <div className="mb-4 px-3 py-1.5 rounded bg-nofx-bg-deeper border border-[rgba(26,24,19,0.14)] text-[10px] font-mono text-nofx-text-muted flex justify-between items-center opacity-60 hover:opacity-100 transition-opacity">

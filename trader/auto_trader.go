@@ -21,6 +21,7 @@ import (
 	"nofx/trader/lighter"
 	"nofx/trader/okx"
 	"nofx/wallet"
+	"strings"
 	"sync"
 	"time"
 )
@@ -118,13 +119,15 @@ type AutoTraderConfig struct {
 	QwenKey     string
 
 	// Custom AI API configuration
-	CustomAPIURL     string
-	CustomAPIKey     string
-	CustomModelName  string
-	Claw402WalletKey string
+	CustomAPIURL      string
+	CustomAPIKey      string
+	CustomModelName   string
+	Claw402WalletKey  string
+	AIModelCandidates []AIModelCandidate
 
 	// Scan configuration
 	ScanInterval                time.Duration // Scan interval (recommended 15 minutes)
+	StartupDelay                time.Duration // Delay before the first cycle after startup
 	PaperRiskMonitorInterval    time.Duration // Paper-only mark/SL/TP/liquidation refresh interval
 	PaperFundingMonitorInterval time.Duration // Paper-only funding snapshot/settlement cadence
 
@@ -150,6 +153,22 @@ type AutoTraderConfig struct {
 	StrategyConfigRaw string                // Raw strategy config JSON from DB, used to detect live edits
 }
 
+// AIModelCandidate describes one model in the trader's ordered failover chain.
+// Candidates with the same provider and endpoint may represent model variants
+// such as Sol, Terra, and Luna; independent provider candidates are appended
+// after those variants.
+type AIModelCandidate struct {
+	ID           string
+	Provider     string
+	APIKey       string
+	CustomAPIURL string
+	ModelName    string
+}
+
+type binanceMarketAvailabilityClient interface {
+	ValidateMarketAvailability(symbol string) (*market.MarketAvailability, error)
+}
+
 // AutoTrader automatic trader
 type AutoTrader struct {
 	id                    string // Trader unique identifier
@@ -158,9 +177,10 @@ type AutoTrader struct {
 	exchange              string // Trading platform type (binance/bybit/etc)
 	executionMode         ExecutionMode
 	paperBroker           *PaperBroker
-	exchangeID            string // Exchange account UUID
-	showInCompetition     bool   // Whether to show in competition page
-	invertSignals         bool   // Whether to invert AI trading decisions
+	binanceMarketClient   binanceMarketAvailabilityClient // Shared-cache public client used for Binance open preflight
+	exchangeID            string                          // Exchange account UUID
+	showInCompetition     bool                            // Whether to show in competition page
+	invertSignals         bool                            // Whether to invert AI trading decisions
 	config                AutoTraderConfig
 	trader                Trader // Use Trader interface (supports multiple platforms)
 	mcpClient             mcp.AIClient
@@ -187,7 +207,11 @@ type AutoTrader struct {
 	userID                string             // User ID
 	gridState             *GridState         // Grid trading state (only used when StrategyType == "grid_trading")
 	claw402WalletAddr     string             // Claw402 wallet address (derived from private key at start)
+	runStopCh             chan struct{}      // Stops only the AI decision loop when the trader is paused
 	consecutiveAIFailures int                // Consecutive AI call failures
+	monitorLifecycleMu    sync.Mutex         // Guards background monitor startup and shutdown
+	monitorsStarted       bool               // Background position/risk monitors are running
+	monitorsStopped       bool               // This trader instance has been permanently shut down
 	runtimeHealthMu       sync.RWMutex       // Guards safe mode + AI wallet health (loop writes, API reads)
 	safeMode              bool               // Safe mode: no new positions, protect existing ones
 	safeModeReason        string             // Why safe mode was activated
@@ -220,51 +244,82 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 		}
 	}
 
-	// Initialize AI client based on provider
+	// Initialize the primary client and optional model failover chain.
 	var mcpClient mcp.AIClient
 	aiModel := config.AIModel
-	if config.UseQwen && aiModel == "" {
-		aiModel = "qwen"
-	}
-
-	// Resolve API key (provider-specific overrides)
-	apiKey := config.CustomAPIKey
-	customURL := config.CustomAPIURL
-	switch aiModel {
-	case "qwen":
-		if config.QwenKey != "" {
-			apiKey = config.QwenKey
+	if len(config.AIModelCandidates) > 0 {
+		failoverCandidates := make([]failoverCandidate, 0, len(config.AIModelCandidates))
+		for _, candidateConfiguration := range config.AIModelCandidates {
+			candidateClient, clientErr := newAIClientForCandidate(candidateConfiguration)
+			if clientErr != nil {
+				return nil, clientErr
+			}
+			failoverCandidates = append(failoverCandidates, failoverCandidate{
+				configuration: candidateConfiguration,
+				client:        candidateClient,
+			})
 		}
-	case "deepseek", "":
-		if config.DeepSeekKey != "" {
-			apiKey = config.DeepSeekKey
+		failoverClient, failoverErr := newAIModelFailoverClient(failoverCandidates)
+		if failoverErr != nil {
+			return nil, failoverErr
 		}
-	}
-
-	// Create client via registry (covers all registered providers)
-	if aiModel == "custom" {
-		mcpClient = mcp.New()
-	} else if aiModel == "" {
-		aiModel = "deepseek"
-		mcpClient = mcp.NewAIClientByProvider(aiModel)
+		mcpClient = failoverClient
+		aiModel = config.AIModelCandidates[0].Provider
+		logger.Infof("🤖 [%s] Using model failover chain starting with %s/%s (%d candidates)",
+			config.Name,
+			config.AIModelCandidates[0].Provider,
+			modelDisplayName(config.AIModelCandidates[0]),
+			len(config.AIModelCandidates))
 	} else {
-		mcpClient = mcp.NewAIClientByProvider(aiModel)
-	}
-	if mcpClient == nil {
-		return nil, fmt.Errorf("unsupported AI provider %q; configure a registered provider or custom endpoint", aiModel)
-	}
+		if config.UseQwen && aiModel == "" {
+			aiModel = "qwen"
+		}
 
-	// Payment providers (claw402) ignore customURL
-	switch aiModel {
-	case "claw402":
-		mcpClient.SetAPIKey(apiKey, "", config.CustomModelName)
-	default:
-		mcpClient.SetAPIKey(apiKey, customURL, config.CustomModelName)
-	}
-	logger.Infof("🤖 [%s] Using %s AI", config.Name, aiModel)
+		// Resolve API key (provider-specific overrides).
+		apiKey := config.CustomAPIKey
+		customURL := config.CustomAPIURL
+		switch aiModel {
+		case "qwen":
+			if config.QwenKey != "" {
+				apiKey = config.QwenKey
+			}
+		case "deepseek", "":
+			if config.DeepSeekKey != "" {
+				apiKey = config.DeepSeekKey
+			}
+		}
 
-	if config.CustomAPIURL != "" || config.CustomModelName != "" {
-		logger.Infof("🔧 [%s] Custom config - URL: %s, Model: %s", config.Name, config.CustomAPIURL, config.CustomModelName)
+		if aiModel == "custom" {
+			mcpClient = mcp.New()
+		} else if aiModel == "" {
+			aiModel = "deepseek"
+			mcpClient = mcp.NewAIClientByProvider(aiModel)
+		} else {
+			mcpClient = mcp.NewAIClientByProvider(aiModel)
+		}
+		if mcpClient == nil {
+			return nil, fmt.Errorf("unsupported AI provider %q; configure a registered provider or custom endpoint", aiModel)
+		}
+
+		// Payment providers (claw402) ignore customURL.
+		switch aiModel {
+		case "claw402":
+			mcpClient.SetAPIKey(apiKey, "", config.CustomModelName)
+		default:
+			mcpClient.SetAPIKey(apiKey, customURL, config.CustomModelName)
+			if customURL != "" {
+				if configurator, ok := mcpClient.(mcp.CustomURLConfigurator); ok {
+					if err := configurator.ConfigureCustomURL(customURL); err != nil {
+						return nil, fmt.Errorf("invalid custom model URL: %w", err)
+					}
+				}
+			}
+		}
+		logger.Infof("🤖 [%s] Using %s AI", config.Name, aiModel)
+
+		if config.CustomAPIURL != "" || config.CustomModelName != "" {
+			logger.Infof("🔧 [%s] Custom config - URL: %s, Model: %s", config.Name, config.CustomAPIURL, config.CustomModelName)
+		}
 	}
 
 	// Set default trading platform
@@ -282,6 +337,10 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 	var trader Trader
 	var paperBroker *PaperBroker
 	var err error
+	var binanceMarketClient *market.APIClient
+	if config.ExecutionMode == ExecutionModePaper || strings.EqualFold(config.Exchange, "binance") {
+		binanceMarketClient = market.NewAPIClient()
+	}
 
 	// Record position mode (general)
 	marginModeStr := "Cross Margin"
@@ -294,7 +353,7 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 		if config.InitialBalance <= 0 {
 			config.InitialBalance = 10_000
 		}
-		priceSource := &binancePaperPriceSource{client: market.NewAPIClient()}
+		priceSource := &binancePaperPriceSource{client: binanceMarketClient}
 		paperConfig := PaperBrokerConfig{
 			InitialBalance: config.InitialBalance,
 			MakerFirst:     true, MakerFeeBPS: 2, TakerFeeBPS: 5, SlippageBPS: 2,
@@ -428,6 +487,7 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 		exchange:              config.Exchange,
 		executionMode:         config.ExecutionMode,
 		paperBroker:           paperBroker,
+		binanceMarketClient:   binanceMarketClient,
 		exchangeID:            config.ExchangeID,
 		showInCompetition:     config.ShowInCompetition,
 		invertSignals:         config.InvertSignals,
@@ -444,6 +504,7 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 		isRunning:             false,
 		positionFirstSeenTime: make(map[string]int64),
 		stopMonitorCh:         make(chan struct{}),
+		runStopCh:             make(chan struct{}),
 		monitorWg:             sync.WaitGroup{},
 		peakPnLCache:          make(map[string]float64),
 		peakPnLCacheMutex:     sync.RWMutex{},
@@ -490,6 +551,21 @@ func (at *AutoTrader) reloadStrategyConfigIfChanged() error {
 	return nil
 }
 
+// GetStartupDelay returns the configured delay before the first trading cycle.
+func (at *AutoTrader) GetStartupDelay() time.Duration {
+	return at.config.StartupDelay
+}
+
+// RunWithStartupDelay starts the runtime with a manager-supplied delay. The
+// manager uses this for deterministic 0/5/10 minute startup staggering when a
+// trader has no explicit delay configured.
+func (at *AutoTrader) RunWithStartupDelay(startupDelay time.Duration) error {
+	if startupDelay > 0 {
+		at.config.StartupDelay = startupDelay
+	}
+	return at.Run()
+}
+
 // Run runs the automatic trading main loop
 func (at *AutoTrader) Run() error {
 	at.isRunningMutex.Lock()
@@ -499,96 +575,36 @@ func (at *AutoTrader) Run() error {
 		return nil
 	}
 	at.isRunning = true
-	at.stopMonitorCh = make(chan struct{})
-	at.isRunningMutex.Unlock()
-
+	at.runStopCh = make(chan struct{})
+	runStopCh := at.runStopCh
 	at.startTime = time.Now()
+	at.isRunningMutex.Unlock()
 
 	logger.Info("🚀 AI-driven automatic trading system started")
 	at.logInfof("💰 Initial balance: %.2f USDT", at.initialBalance)
 	at.logInfof("⚙️  Scan interval: %v", at.config.ScanInterval)
 	logger.Info("🤖 AI will make full decisions on leverage, position size, stop loss/take profit, etc.")
 
+	if at.config.StartupDelay > 0 {
+		at.logInfof("⏳ Startup stagger enabled; first trading cycle will begin after %v", at.config.StartupDelay)
+		startupTimer := time.NewTimer(at.config.StartupDelay)
+		select {
+		case <-startupTimer.C:
+		case <-runStopCh:
+			if !startupTimer.Stop() {
+				select {
+				case <-startupTimer.C:
+				default:
+				}
+			}
+			return nil
+		}
+	}
+
 	// Pre-launch checks for claw402 users
 	at.runPreLaunchChecks()
 
-	// Start drawdown monitoring
-	at.startDrawdownMonitor()
-	at.runPaperFundingStartupCatchup()
-	at.startPaperFundingMonitor()
-	at.startPaperRiskMonitor()
-
-	// Start Lighter order sync if using Lighter exchange
-	if at.exchange == "lighter" {
-		if lighterTrader, ok := at.trader.(*lighter.LighterTraderV2); ok && at.store != nil {
-			lighterTrader.StartOrderSync(at.id, at.exchangeID, at.exchange, at.store, 30*time.Second, at.stopMonitorCh)
-			at.logInfof("🔄 Lighter order+position sync enabled (every 30s)")
-		}
-	}
-
-	// Start Hyperliquid order sync if using Hyperliquid exchange
-	if at.exchange == "hyperliquid" {
-		if hyperliquidTrader, ok := at.trader.(*hyperliquid.HyperliquidTrader); ok && at.store != nil {
-			hyperliquidTrader.StartOrderSync(at.id, at.exchangeID, at.exchange, at.store, 30*time.Second, at.stopMonitorCh)
-			at.logInfof("🔄 Hyperliquid order+position sync enabled (every 30s)")
-		}
-	}
-
-	// Start Bybit order sync if using Bybit exchange
-	if at.exchange == "bybit" {
-		if bybitTrader, ok := at.trader.(*bybit.BybitTrader); ok && at.store != nil {
-			bybitTrader.StartOrderSync(at.id, at.exchangeID, at.exchange, at.store, 30*time.Second, at.stopMonitorCh)
-			at.logInfof("🔄 Bybit order+position sync enabled (every 30s)")
-		}
-	}
-
-	// Start OKX order sync if using OKX exchange
-	if at.exchange == "okx" {
-		if okxTrader, ok := at.trader.(*okx.OKXTrader); ok && at.store != nil {
-			okxTrader.StartOrderSync(at.id, at.exchangeID, at.exchange, at.store, 30*time.Second, at.stopMonitorCh)
-			at.logInfof("🔄 OKX order+position sync enabled (every 30s)")
-		}
-	}
-
-	// Start Bitget order sync if using Bitget exchange
-	if at.exchange == "bitget" {
-		if bitgetTrader, ok := at.trader.(*bitget.BitgetTrader); ok && at.store != nil {
-			bitgetTrader.StartOrderSync(at.id, at.exchangeID, at.exchange, at.store, 30*time.Second, at.stopMonitorCh)
-			at.logInfof("🔄 Bitget order+position sync enabled (every 30s)")
-		}
-	}
-
-	// Start Aster order sync if using Aster exchange
-	if at.exchange == "aster" {
-		if asterTrader, ok := at.trader.(*aster.AsterTrader); ok && at.store != nil {
-			asterTrader.StartOrderSync(at.id, at.exchangeID, at.exchange, at.store, 30*time.Second, at.stopMonitorCh)
-			at.logInfof("🔄 Aster order+position sync enabled (every 30s)")
-		}
-	}
-
-	// Start Binance order sync if using Binance exchange
-	if at.exchange == "binance" {
-		if binanceTrader, ok := at.trader.(*binance.FuturesTrader); ok && at.store != nil {
-			binanceTrader.StartOrderSync(at.id, at.exchangeID, at.exchange, at.store, 30*time.Second, at.stopMonitorCh)
-			at.logInfof("🔄 Binance order+position sync enabled (every 30s)")
-		}
-	}
-
-	// Start Gate order sync if using Gate exchange
-	if at.exchange == "gate" {
-		if gateTrader, ok := at.trader.(*gate.GateTrader); ok && at.store != nil {
-			gateTrader.StartOrderSync(at.id, at.exchangeID, at.exchange, at.store, 30*time.Second, at.stopMonitorCh)
-			at.logInfof("🔄 Gate order+position sync enabled (every 30s)")
-		}
-	}
-
-	// Start KuCoin order sync if using KuCoin exchange
-	if at.exchange == "kucoin" {
-		if kucoinTrader, ok := at.trader.(*kucoin.KuCoinTrader); ok && at.store != nil {
-			kucoinTrader.StartOrderSync(at.id, at.exchangeID, at.exchange, at.store, 30*time.Second, at.stopMonitorCh)
-			at.logInfof("🔄 KuCoin order+position sync enabled (every 30s)")
-		}
-	}
+	at.StartBackgroundMonitoring()
 
 	// Check if this is a grid trading strategy
 	isGridStrategy := at.IsGridStrategy()
@@ -635,8 +651,8 @@ func (at *AutoTrader) Run() error {
 					at.logErrorf("❌ Execution failed: %v", err)
 				}
 			}
-		case <-at.stopMonitorCh:
-			at.logInfof("⏹ Stop signal received, exiting automatic trading main loop")
+		case <-runStopCh:
+			at.logInfof("⏸ Pause signal received, exiting automatic trading decision loop")
 			return nil
 		}
 	}
@@ -651,7 +667,7 @@ func (at *AutoTrader) runAutomaticCycle() error {
 	return at.runCycle()
 }
 
-// Stop stops the automatic trading
+// Stop pauses automatic AI decisions while leaving position/risk monitoring active.
 func (at *AutoTrader) Stop() {
 	at.isRunningMutex.Lock()
 	if !at.isRunning {
@@ -659,11 +675,13 @@ func (at *AutoTrader) Stop() {
 		return
 	}
 	at.isRunning = false
+	runStopCh := at.runStopCh
 	at.isRunningMutex.Unlock()
 
-	close(at.stopMonitorCh) // Notify monitoring goroutine to stop
-	at.monitorWg.Wait()     // Wait for monitoring goroutine to finish
-	logger.Info("⏹ Automatic trading system stopped")
+	if runStopCh != nil {
+		close(runStopCh)
+	}
+	logger.Info("⏸ Automatic AI trading paused; position monitoring remains active")
 }
 
 // GetID gets trader ID

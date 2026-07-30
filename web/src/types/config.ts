@@ -7,6 +7,7 @@ export interface AIModel {
   apiKey?: string
   customApiUrl?: string
   customModelName?: string
+  modelNames?: string[]
   walletAddress?: string
   balanceUsdc?: string
 }
@@ -104,6 +105,9 @@ export interface CreateTraderRequest {
   reset_paper_account?: boolean
   strategy_id?: string // Strategy ID (new version, uses saved strategy config)
   scan_interval_minutes?: number
+  startup_delay_minutes?: number
+  fallback_model_names?: string[]
+  fallback_ai_model_ids?: string[]
   is_cross_margin?: boolean
   show_in_competition?: boolean // Whether to show in the competition arena
   invert_signals?: boolean // Whether to invert AI trading decisions
@@ -122,6 +126,7 @@ export interface UpdateModelConfigRequest {
       api_key: string
       custom_api_url?: string
       custom_model_name?: string
+      model_names?: string[]
     }
   }
 }

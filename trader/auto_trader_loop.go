@@ -11,16 +11,20 @@ import (
 	"nofx/provider/hyperliquid"
 	"nofx/store"
 	"nofx/wallet"
+	"strconv"
 	"strings"
 	"time"
 )
 
 // runCycle runs one trading cycle (using AI full decision-making)
 func (at *AutoTrader) runCycle() error {
+	at.isRunningMutex.Lock()
 	at.callCount++
+	callCount := at.callCount
+	at.isRunningMutex.Unlock()
 
 	logger.Info("\n" + strings.Repeat("=", 70) + "\n")
-	logger.Infof("⏰ %s - AI decision cycle #%d", time.Now().Format("2006-01-02 15:04:05"), at.callCount)
+	logger.Infof("⏰ %s - AI decision cycle #%d", time.Now().Format("2006-01-02 15:04:05"), callCount)
 	logger.Info(strings.Repeat("=", 70))
 
 	// 0. Check if trader is stopped (early exit to prevent trades after Stop() is called)
@@ -28,7 +32,7 @@ func (at *AutoTrader) runCycle() error {
 	running := at.isRunning
 	at.isRunningMutex.RUnlock()
 	if !running {
-		at.logInfof("⏹ Trader is stopped, aborting cycle #%d", at.callCount)
+		at.logInfof("⏹ Trader is stopped, aborting cycle #%d", callCount)
 		return nil
 	}
 
@@ -37,7 +41,7 @@ func (at *AutoTrader) runCycle() error {
 	}
 
 	// Check USDC balance periodically for claw402 users (every 10 cycles)
-	if at.callCount%10 == 0 && store.IsClaw402Config(at.config.AIModel) {
+	if callCount%10 == 0 && store.IsClaw402Config(at.config.AIModel) {
 		at.checkClaw402Balance()
 	}
 
@@ -253,7 +257,7 @@ func (at *AutoTrader) runCycle() error {
 	running = at.isRunning
 	at.isRunningMutex.RUnlock()
 	if !running {
-		at.logInfof("⏹ Trader stopped before decision execution, aborting cycle #%d", at.callCount)
+		at.logInfof("⏹ Trader stopped before decision execution, aborting cycle #%d", callCount)
 		return nil
 	}
 
@@ -588,6 +592,8 @@ func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 			PeakPnLPct:       peakPnlPct,
 			LiquidationPrice: liquidationPrice,
 			MarginUsed:       marginUsed,
+			StopLoss:         floatFromPosition(pos, "stop_loss", "stopLoss"),
+			TakeProfit:       floatFromPosition(pos, "take_profit", "takeProfit"),
 			UpdateTime:       updateTime,
 		})
 	}
@@ -630,12 +636,15 @@ func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 	strategyConfig := at.strategyEngine.GetConfig()
 	maxLeverage := strategyConfig.RiskControl.MaxLeverage
 	logger.Infof("📋 [%s] Strategy maximum leverage: %dx", at.name, maxLeverage)
+	at.isRunningMutex.RLock()
+	callCount := at.callCount
+	at.isRunningMutex.RUnlock()
 
 	// 6. Build context
 	ctx := &kernel.Context{
 		CurrentTime:    time.Now().UTC().Format("2006-01-02 15:04:05 UTC"),
 		RuntimeMinutes: int(time.Since(at.startTime).Minutes()),
-		CallCount:      at.callCount,
+		CallCount:      callCount,
 		Account: kernel.AccountInfo{
 			TotalEquity:      totalEquity,
 			AvailableBalance: availableBalance,
@@ -774,10 +783,12 @@ func sortDecisionsByPriority(decisions []kernel.Decision) []kernel.Decision {
 		switch action {
 		case "close_long", "close_short":
 			return 1 // Highest priority: close positions first
+		case "update_position":
+			return 2 // Protect existing profits before considering new entries
 		case "open_long", "open_short":
-			return 2 // Second priority: open positions later
+			return 3 // Open positions later
 		case "hold", "wait":
-			return 3 // Lowest priority: wait
+			return 4 // Lowest priority: wait
 		default:
 			return 999 // Unknown actions at the end
 		}
@@ -797,6 +808,30 @@ func sortDecisionsByPriority(decisions []kernel.Decision) []kernel.Decision {
 	}
 
 	return sorted
+}
+
+func floatFromPosition(position map[string]interface{}, keys ...string) float64 {
+	for _, key := range keys {
+		switch value := position[key].(type) {
+		case float64:
+			return value
+		case float32:
+			return float64(value)
+		case int:
+			return float64(value)
+		case int64:
+			return float64(value)
+		case json.Number:
+			if parsed, err := value.Float64(); err == nil {
+				return parsed
+			}
+		case string:
+			if parsed, err := strconv.ParseFloat(value, 64); err == nil {
+				return parsed
+			}
+		}
+	}
+	return 0
 }
 
 // checkClaw402Balance checks USDC balance and logs warnings if low

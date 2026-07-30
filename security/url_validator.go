@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
@@ -41,8 +42,8 @@ func init() {
 
 // SSRFError represents a Server-Side Request Forgery attempt
 type SSRFError struct {
-	URL     string
-	Reason  string
+	URL    string
+	Reason string
 }
 
 func (e *SSRFError) Error() string {
@@ -153,9 +154,80 @@ func ValidateURL(rawURL string) error {
 	return nil
 }
 
+type modelOrigin struct {
+	scheme string
+	host   string
+	port   string
+}
+
+func modelURLOrigin(u *url.URL) (modelOrigin, bool) {
+	scheme := strings.ToLower(u.Scheme)
+	if u.User != nil || u.Hostname() == "" || (scheme != "http" && scheme != "https") {
+		return modelOrigin{}, false
+	}
+	port := u.Port()
+	if port == "" {
+		port = "80"
+		if scheme == "https" {
+			port = "443"
+		}
+	}
+	return modelOrigin{scheme: scheme, host: strings.ToLower(u.Hostname()), port: port}, true
+}
+
+// trustedModelOrigin only trusts origins explicitly configured by the operator.
+// The default is empty; model configuration supplied by a user cannot grant trust.
+func trustedModelOrigin(target *url.URL) *modelOrigin {
+	wanted, ok := modelURLOrigin(target)
+	if !ok {
+		return nil
+	}
+	for _, entry := range strings.Split(os.Getenv("NOFX_TRUSTED_MODEL_ORIGINS"), ",") {
+		configured, err := url.Parse(strings.TrimSpace(entry))
+		if err != nil || (configured.Path != "" && configured.Path != "/") || configured.RawQuery != "" || configured.ForceQuery || configured.Fragment != "" {
+			continue
+		}
+		origin, valid := modelURLOrigin(configured)
+		if valid && origin == wanted {
+			return &origin
+		}
+	}
+	return nil
+}
+
+// ValidateModelURL validates model endpoints. Private origins require an explicit
+// NOFX_TRUSTED_MODEL_ORIGINS entry; all other destinations use normal SSRF rules.
+func ValidateModelURL(rawURL string) error {
+	cleanURL := strings.TrimSuffix(strings.TrimSpace(rawURL), "#")
+	parsedURL, err := url.Parse(cleanURL)
+	if err != nil {
+		return &SSRFError{URL: rawURL, Reason: "invalid URL format"}
+	}
+
+	if trustedModelOrigin(parsedURL) != nil {
+		return nil
+	}
+
+	return ValidateURL(cleanURL)
+}
+
 // SafeHTTPClient returns an HTTP client with SSRF protection
 // It validates URLs and blocks requests to private networks
 func SafeHTTPClient(timeout time.Duration) *http.Client {
+	return safeHTTPClient(timeout, nil)
+}
+
+// SafeHTTPClientForModelURL returns an SSRF-protected client for a validated
+// model endpoint. Any operator-configured exception is limited to this origin.
+func SafeHTTPClientForModelURL(rawURL string, timeout time.Duration) (*http.Client, error) {
+	if err := ValidateModelURL(rawURL); err != nil {
+		return nil, err
+	}
+	parsedURL, _ := url.Parse(strings.TrimSuffix(strings.TrimSpace(rawURL), "#"))
+	return safeHTTPClient(timeout, trustedModelOrigin(parsedURL)), nil
+}
+
+func safeHTTPClient(timeout time.Duration, allowedOrigin *modelOrigin) *http.Client {
 	dialer := &net.Dialer{
 		Timeout:   timeout,
 		KeepAlive: 30 * time.Second,
@@ -169,14 +241,20 @@ func SafeHTTPClient(timeout time.Duration) *http.Client {
 				host = addr
 			}
 
-			// Resolve and check the IP
+			port := ""
+			if _, parsedPort, splitErr := net.SplitHostPort(addr); splitErr == nil {
+				port = parsedPort
+			}
+
+			// Resolve and check the IP. Only the configured model origin may
+			// resolve to a private address.
 			ips, err := net.LookupIP(host)
 			if err != nil {
 				return nil, fmt.Errorf("SSRF protection: failed to resolve host %s: %w", host, err)
 			}
 
 			for _, ip := range ips {
-				if isPrivateIP(ip) {
+				if isPrivateIP(ip) && !(allowedOrigin != nil && strings.EqualFold(host, allowedOrigin.host) && port == allowedOrigin.port) {
 					return nil, fmt.Errorf("SSRF protection: blocked connection to private IP %s", ip)
 				}
 			}
@@ -194,6 +272,9 @@ func SafeHTTPClient(timeout time.Duration) *http.Client {
 			}
 
 			// Validate the redirect URL
+			if origin, ok := modelURLOrigin(req.URL); ok && allowedOrigin != nil && origin == *allowedOrigin {
+				return nil
+			}
 			if err := ValidateURL(req.URL.String()); err != nil {
 				return fmt.Errorf("SSRF protection: redirect blocked - %w", err)
 			}

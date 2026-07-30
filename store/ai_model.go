@@ -27,6 +27,7 @@ type AIModel struct {
 	APIKey          crypto.EncryptedString `gorm:"column:api_key;default:''" json:"apiKey"`
 	CustomAPIURL    string                 `gorm:"column:custom_api_url;default:''" json:"customApiUrl"`
 	CustomModelName string                 `gorm:"column:custom_model_name;default:''" json:"customModelName"`
+	ModelNames      string                 `gorm:"column:model_names;default:''" json:"-"`
 	CreatedAt       time.Time              `json:"created_at"`
 	UpdatedAt       time.Time              `json:"updated_at"`
 }
@@ -44,7 +45,7 @@ func (s *AIModelStore) initTables() error {
 		var tableExists int64
 		s.db.Raw(`SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'ai_models'`).Scan(&tableExists)
 		if tableExists > 0 {
-			return nil
+			return s.db.Exec(`ALTER TABLE ai_models ADD COLUMN IF NOT EXISTS model_names TEXT DEFAULT ''`).Error
 		}
 	}
 	return s.db.AutoMigrate(&AIModel{})
@@ -147,7 +148,7 @@ func (s *AIModelStore) GetDefault(userID string) (*AIModel, error) {
 
 func (s *AIModelStore) firstEnabledUsable(userID string) (*AIModel, error) {
 	var models []AIModel
-	err := s.db.Where("user_id = ? AND enabled = ? AND api_key != ''", userID, true).
+	err := s.db.Where("user_id = ? AND enabled = ?", userID, true).
 		Order("updated_at DESC, id ASC").
 		Find(&models).Error
 	if err != nil {
@@ -180,9 +181,19 @@ func (s *AIModelStore) GetAnyEnabled() (*AIModel, error) {
 }
 
 func hasUsableAPIKey(model AIModel) bool {
-	if strings.TrimSpace(string(model.APIKey)) != "" {
-		return true
+	return ResolveAIModelAPIKey(&model) != ""
+}
+
+// ResolveAIModelAPIKey returns the model-specific stored credential first,
+// then falls back to the standard environment variable for that provider.
+func ResolveAIModelAPIKey(model *AIModel) string {
+	if model == nil {
+		return ""
 	}
+	if storedAPIKey := strings.TrimSpace(string(model.APIKey)); storedAPIKey != "" {
+		return storedAPIKey
+	}
+
 	envKeyByProvider := map[string]string{
 		"deepseek": "DEEPSEEK_API_KEY",
 		"openai":   "OPENAI_API_KEY",
@@ -194,7 +205,10 @@ func hasUsableAPIKey(model AIModel) bool {
 		"qwen":     "DASHSCOPE_API_KEY",
 	}
 	envKey := envKeyByProvider[strings.ToLower(strings.TrimSpace(model.Provider))]
-	return envKey != "" && strings.TrimSpace(os.Getenv(envKey)) != ""
+	if envKey == "" {
+		return ""
+	}
+	return strings.TrimSpace(os.Getenv(envKey))
 }
 
 // Update updates AI model, creates if not exists
@@ -204,6 +218,11 @@ func (s *AIModelStore) Update(userID, id string, enabled bool, apiKey, customAPI
 }
 
 func (s *AIModelStore) UpdateWithName(userID, id, name string, enabled bool, apiKey, customAPIURL, customModelName string) error {
+	return s.UpdateWithModelNames(userID, id, name, enabled, apiKey, customAPIURL, customModelName, nil)
+}
+
+func (s *AIModelStore) UpdateWithModelNames(userID, id, name string, enabled bool, apiKey, customAPIURL, customModelName string, modelNames []string) error {
+	normalizedModelNames := NormalizeStringList(modelNames)
 	// Try exact ID match first
 	var existingModel AIModel
 	err := s.db.Where("user_id = ? AND id = ?", userID, id).First(&existingModel).Error
@@ -217,6 +236,9 @@ func (s *AIModelStore) UpdateWithName(userID, id, name string, enabled bool, api
 		}
 		if strings.TrimSpace(name) != "" {
 			updates["name"] = strings.TrimSpace(name)
+		}
+		if modelNames != nil {
+			updates["model_names"] = EncodeStringList(normalizedModelNames)
 		}
 		// If apiKey is not empty, update it (encryption handled by crypto.EncryptedString)
 		if apiKey != "" {
@@ -238,6 +260,9 @@ func (s *AIModelStore) UpdateWithName(userID, id, name string, enabled bool, api
 		}
 		if strings.TrimSpace(name) != "" {
 			updates["name"] = strings.TrimSpace(name)
+		}
+		if modelNames != nil {
+			updates["model_names"] = EncodeStringList(normalizedModelNames)
 		}
 		if apiKey != "" {
 			updates["api_key"] = crypto.EncryptedString(apiKey)
@@ -291,6 +316,7 @@ func (s *AIModelStore) UpdateWithName(userID, id, name string, enabled bool, api
 		APIKey:          crypto.EncryptedString(apiKey),
 		CustomAPIURL:    customAPIURL,
 		CustomModelName: customModelName,
+		ModelNames:      EncodeStringList(normalizedModelNames),
 	}
 	return s.db.Create(newModel).Error
 }

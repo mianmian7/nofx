@@ -6,6 +6,7 @@ import (
 	"nofx/kernel"
 	"nofx/logger"
 	"nofx/market"
+	"nofx/mcp"
 	"nofx/store"
 	"nofx/telemetry"
 	"time"
@@ -58,30 +59,55 @@ func (at *AutoTrader) saveDecision(record *store.DecisionRecord) error {
 
 // GetStatus gets system status (for API)
 func (at *AutoTrader) GetStatus() map[string]interface{} {
-	aiProvider := "DeepSeek"
-	if at.config.UseQwen {
-		aiProvider = "Qwen"
+	aiProvider := at.aiModel
+	aiModelName := at.aiModel
+	activeModelID := ""
+	fallbackReason := mcp.ErrorKindUnknown
+	var fallbackSince time.Time
+	if failoverClient, ok := at.mcpClient.(*AIModelFailoverClient); ok {
+		activeProvider, activeModel, currentModelID, currentFallbackReason, currentFallbackSince := failoverClient.RuntimeState()
+		if activeProvider != "" {
+			aiProvider = activeProvider
+		}
+		if activeModel != "" {
+			aiModelName = activeModel
+		}
+		activeModelID = currentModelID
+		fallbackReason = currentFallbackReason
+		fallbackSince = currentFallbackSince
+	} else if embedder, ok := at.mcpClient.(mcp.ClientEmbedder); ok && embedder.BaseClient() != nil {
+		baseClient := embedder.BaseClient()
+		aiProvider = baseClient.Provider
+		aiModelName = baseClient.Model
 	}
 
 	at.isRunningMutex.RLock()
 	isRunning := at.isRunning
+	callCount := at.callCount
+	startTime := at.startTime
 	at.isRunningMutex.RUnlock()
 
 	result := map[string]interface{}{
 		"trader_id":       at.id,
 		"trader_name":     at.name,
-		"ai_model":        at.aiModel,
+		"ai_model":        aiModelName,
 		"exchange":        at.exchange,
 		"is_running":      isRunning,
-		"start_time":      at.startTime.Format(time.RFC3339),
-		"runtime_minutes": int(time.Since(at.startTime).Minutes()),
-		"call_count":      at.callCount,
+		"start_time":      startTime.Format(time.RFC3339),
+		"runtime_minutes": int(time.Since(startTime).Minutes()),
+		"call_count":      callCount,
 		"initial_balance": at.initialBalance,
 		"scan_interval":   at.config.ScanInterval.String(),
 		"stop_until":      at.stopUntil.Format(time.RFC3339),
 		"last_reset_time": at.lastResetTime.Format(time.RFC3339),
 		"ai_provider":     aiProvider,
+		"active_model_id": activeModelID,
+		"is_fallback":     !fallbackSince.IsZero(),
+		"fallback_reason": fallbackReason,
 		"execution_mode":  string(at.executionMode),
+	}
+	if !fallbackSince.IsZero() {
+		result["fallback_since"] = fallbackSince.Format(time.RFC3339)
 	}
 	if at.executionMode == ExecutionModePaper && at.paperBroker != nil {
 		result["paper"] = at.paperBroker.Snapshot()

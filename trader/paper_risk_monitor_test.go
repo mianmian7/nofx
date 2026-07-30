@@ -102,6 +102,7 @@ func TestPaperRiskMonitorClosesTakeProfitBetweenAIScanIntervals(t *testing.T) {
 		positionFirstSeenTime: make(map[string]int64),
 		peakPnLCache:          make(map[string]float64),
 	}
+	defer at.Shutdown()
 	runDone := make(chan error, 1)
 	go func() { runDone <- at.Run() }()
 	waitForPaperCondition(t, time.Second, func() bool {
@@ -126,6 +127,45 @@ func TestPaperRiskMonitorClosesTakeProfitBetweenAIScanIntervals(t *testing.T) {
 	}
 }
 
+func TestPaperRiskMonitorContinuesAfterAutomaticTradingIsPaused(t *testing.T) {
+	prices := &mutablePaperPriceSource{price: 100}
+	broker, err := NewPaperBroker(PaperBrokerConfig{InitialBalance: 1_000}, prices)
+	if err != nil {
+		t.Fatalf("NewPaperBroker: %v", err)
+	}
+	if _, err := broker.ExecuteDecision(&kernel.Decision{
+		Symbol: "MUUSDT", Action: "open_long", PositionSizeUSD: 300,
+		Leverage: 3, StopLoss: 80, TakeProfit: 120,
+	}); err != nil {
+		t.Fatalf("open_long: %v", err)
+	}
+
+	at := newMonitorTestAutoTrader(ExecutionModePaper, broker, 2*time.Millisecond)
+	defer at.Shutdown()
+	runDone := make(chan error, 1)
+	go func() { runDone <- at.Run() }()
+	waitForPaperCondition(t, time.Second, func() bool { return prices.Calls() >= 3 })
+
+	at.Stop()
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run did not pause promptly")
+	}
+
+	priceCallsAtPause := prices.Calls()
+	prices.Set(101)
+	waitForPaperCondition(t, time.Second, func() bool {
+		return prices.Calls() > priceCallsAtPause
+	})
+	if running := at.GetStatus()["is_running"].(bool); running {
+		t.Fatal("AI decision loop should remain paused while marks continue refreshing")
+	}
+}
+
 func TestLiveModeDoesNotStartPaperRiskMonitor(t *testing.T) {
 	prices := &mutablePaperPriceSource{price: 100}
 	broker, err := NewPaperBroker(PaperBrokerConfig{InitialBalance: 1_000}, prices)
@@ -141,6 +181,7 @@ func TestLiveModeDoesNotStartPaperRiskMonitor(t *testing.T) {
 	prices.ResetCalls()
 
 	at := newMonitorTestAutoTrader(ExecutionModeLive, broker, 2*time.Millisecond)
+	defer at.Shutdown()
 	runDone := make(chan error, 1)
 	go func() { runDone <- at.Run() }()
 	waitForPaperCondition(t, time.Second, func() bool {
@@ -171,6 +212,7 @@ func TestRepeatedRunDoesNotStartAnotherPaperMonitor(t *testing.T) {
 		t.Fatalf("open_long: %v", err)
 	}
 	at := newMonitorTestAutoTrader(ExecutionModePaper, broker, 5*time.Millisecond)
+	defer at.Shutdown()
 	firstDone := make(chan error, 1)
 	go func() { firstDone <- at.Run() }()
 	waitForPaperCondition(t, time.Second, func() bool {
@@ -198,7 +240,7 @@ func TestRepeatedRunDoesNotStartAnotherPaperMonitor(t *testing.T) {
 	}
 }
 
-func TestStopEndsPaperMonitorWhileTradingCycleIsBlocked(t *testing.T) {
+func TestShutdownEndsPaperMonitorWhileTradingCycleIsBlocked(t *testing.T) {
 	prices := &mutablePaperPriceSource{price: 100}
 	broker, err := NewPaperBroker(PaperBrokerConfig{InitialBalance: 1_000}, prices)
 	if err != nil {
@@ -223,7 +265,7 @@ func TestStopEndsPaperMonitorWhileTradingCycleIsBlocked(t *testing.T) {
 
 	stopDone := make(chan struct{})
 	go func() {
-		at.Stop()
+		at.Shutdown()
 		close(stopDone)
 	}()
 	stoppedPromptly := false
@@ -237,19 +279,19 @@ func TestStopEndsPaperMonitorWhileTradingCycleIsBlocked(t *testing.T) {
 		select {
 		case <-stopDone:
 		case <-time.After(time.Second):
-			t.Fatal("Stop remained blocked after trading cycle was released")
+			t.Fatal("Shutdown remained blocked after trading cycle was released")
 		}
-		t.Fatal("Stop waited for a blocked trading/AI cycle instead of ending the Paper monitor promptly")
+		t.Fatal("Shutdown waited for a blocked trading/AI cycle instead of ending the Paper monitor promptly")
 	}
 	select {
 	case <-runDone:
 	case <-time.After(time.Second):
 		t.Fatal("Run did not exit after blocked cycle was released")
 	}
-	callsAfterStop := prices.Calls()
+	callsAfterShutdown := prices.Calls()
 	time.Sleep(10 * time.Millisecond)
-	if calls := prices.Calls(); calls != callsAfterStop {
-		t.Fatalf("Paper monitor continued after Stop: calls %d -> %d", callsAfterStop, calls)
+	if calls := prices.Calls(); calls != callsAfterShutdown {
+		t.Fatalf("Paper monitor continued after Shutdown: calls %d -> %d", callsAfterShutdown, calls)
 	}
 }
 

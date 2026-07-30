@@ -7,6 +7,7 @@ import (
 
 	"nofx/logger"
 	"nofx/market"
+	"nofx/store"
 
 	"github.com/gin-gonic/gin"
 )
@@ -42,17 +43,20 @@ func (s *Server) handleTraderList(c *gin.Context) {
 		// Return complete AIModelID (e.g. "admin_deepseek"), don't truncate
 		// Frontend needs complete ID to verify model exists (consistent with handleGetTraderConfig)
 		result = append(result, map[string]interface{}{
-			"trader_id":           trader.ID,
-			"trader_name":         trader.Name,
-			"ai_model":            trader.AIModelID, // Use complete ID
-			"exchange_id":         trader.ExchangeID,
-			"is_running":          isRunning,
-			"show_in_competition": trader.ShowInCompetition,
-			"initial_balance":     trader.InitialBalance,
-			"strategy_id":         trader.StrategyID,
-			"strategy_name":       strategyName,
-			"execution_mode":      trader.ExecutionMode,
-			"invert_signals":      trader.InvertSignals,
+			"trader_id":             trader.ID,
+			"trader_name":           trader.Name,
+			"ai_model":              trader.AIModelID, // Use complete ID
+			"exchange_id":           trader.ExchangeID,
+			"is_running":            isRunning,
+			"show_in_competition":   trader.ShowInCompetition,
+			"initial_balance":       trader.InitialBalance,
+			"strategy_id":           trader.StrategyID,
+			"strategy_name":         strategyName,
+			"execution_mode":        trader.ExecutionMode,
+			"invert_signals":        trader.InvertSignals,
+			"startup_delay_minutes": trader.StartupDelayMinutes,
+			"fallback_model_names":  store.DecodeStringList(trader.FallbackModelNames),
+			"fallback_ai_model_ids": store.DecodeStringList(trader.FallbackAIModelIDs),
 		})
 	}
 
@@ -104,6 +108,9 @@ func (s *Server) handleGetTraderConfig(c *gin.Context) {
 		"strategy_id":           traderConfig.StrategyID,
 		"initial_balance":       traderConfig.InitialBalance,
 		"scan_interval_minutes": traderConfig.ScanIntervalMinutes,
+		"startup_delay_minutes": traderConfig.StartupDelayMinutes,
+		"fallback_model_names":  store.DecodeStringList(traderConfig.FallbackModelNames),
+		"fallback_ai_model_ids": store.DecodeStringList(traderConfig.FallbackAIModelIDs),
 		"max_leverage":          maxLeverage,
 		"max_positions":         maxPositions,
 		"trading_symbols":       traderConfig.TradingSymbols,

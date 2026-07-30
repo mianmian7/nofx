@@ -16,41 +16,47 @@ import (
 
 // AI trader management related structures
 type CreateTraderRequest struct {
-	Name                 string  `json:"name" binding:"required"`
-	AIModelID            string  `json:"ai_model_id" binding:"required"`
-	ExchangeID           string  `json:"exchange_id" binding:"required"`
-	StrategyID           string  `json:"strategy_id"` // Strategy ID (new version)
-	ExecutionMode        string  `json:"execution_mode"`
-	InitialBalance       float64 `json:"initial_balance"`
-	ScanIntervalMinutes  int     `json:"scan_interval_minutes"`
-	IsCrossMargin        *bool   `json:"is_cross_margin"`     // Pointer type, nil means use default value true
-	ShowInCompetition    *bool   `json:"show_in_competition"` // Pointer type, nil means use default value true
-	InvertSignals        bool    `json:"invert_signals"`      // Invert AI trading decisions
-	TradingSymbols       string  `json:"trading_symbols"`
-	CustomPrompt         string  `json:"custom_prompt"`
-	OverrideBasePrompt   bool    `json:"override_base_prompt"`
-	SystemPromptTemplate string  `json:"system_prompt_template"` // System prompt template name
-	UseAI500             bool    `json:"use_ai500"`
-	UseOITop             bool    `json:"use_oi_top"`
+	Name                 string   `json:"name" binding:"required"`
+	AIModelID            string   `json:"ai_model_id" binding:"required"`
+	ExchangeID           string   `json:"exchange_id" binding:"required"`
+	StrategyID           string   `json:"strategy_id"` // Strategy ID (new version)
+	ExecutionMode        string   `json:"execution_mode"`
+	InitialBalance       float64  `json:"initial_balance"`
+	ScanIntervalMinutes  int      `json:"scan_interval_minutes"`
+	StartupDelayMinutes  int      `json:"startup_delay_minutes"`
+	FallbackModelNames   []string `json:"fallback_model_names"`
+	FallbackAIModelIDs   []string `json:"fallback_ai_model_ids"`
+	IsCrossMargin        *bool    `json:"is_cross_margin"`     // Pointer type, nil means use default value true
+	ShowInCompetition    *bool    `json:"show_in_competition"` // Pointer type, nil means use default value true
+	InvertSignals        bool     `json:"invert_signals"`      // Invert AI trading decisions
+	TradingSymbols       string   `json:"trading_symbols"`
+	CustomPrompt         string   `json:"custom_prompt"`
+	OverrideBasePrompt   bool     `json:"override_base_prompt"`
+	SystemPromptTemplate string   `json:"system_prompt_template"` // System prompt template name
+	UseAI500             bool     `json:"use_ai500"`
+	UseOITop             bool     `json:"use_oi_top"`
 }
 
 // UpdateTraderRequest Update trader request
 type UpdateTraderRequest struct {
-	Name                 string  `json:"name" binding:"required"`
-	AIModelID            string  `json:"ai_model_id" binding:"required"`
-	ExchangeID           string  `json:"exchange_id" binding:"required"`
-	StrategyID           string  `json:"strategy_id"` // Strategy ID (new version)
-	ExecutionMode        string  `json:"execution_mode"`
-	InitialBalance       float64 `json:"initial_balance"`
-	ResetPaperAccount    bool    `json:"reset_paper_account"`
-	ScanIntervalMinutes  int     `json:"scan_interval_minutes"`
-	IsCrossMargin        *bool   `json:"is_cross_margin"`
-	ShowInCompetition    *bool   `json:"show_in_competition"`
-	InvertSignals        *bool   `json:"invert_signals"`
-	TradingSymbols       string  `json:"trading_symbols"`
-	CustomPrompt         string  `json:"custom_prompt"`
-	OverrideBasePrompt   bool    `json:"override_base_prompt"`
-	SystemPromptTemplate string  `json:"system_prompt_template"`
+	Name                 string   `json:"name" binding:"required"`
+	AIModelID            string   `json:"ai_model_id" binding:"required"`
+	ExchangeID           string   `json:"exchange_id" binding:"required"`
+	StrategyID           string   `json:"strategy_id"` // Strategy ID (new version)
+	ExecutionMode        string   `json:"execution_mode"`
+	InitialBalance       float64  `json:"initial_balance"`
+	ResetPaperAccount    bool     `json:"reset_paper_account"`
+	ScanIntervalMinutes  int      `json:"scan_interval_minutes"`
+	StartupDelayMinutes  *int     `json:"startup_delay_minutes"`
+	FallbackModelNames   []string `json:"fallback_model_names"`
+	FallbackAIModelIDs   []string `json:"fallback_ai_model_ids"`
+	IsCrossMargin        *bool    `json:"is_cross_margin"`
+	ShowInCompetition    *bool    `json:"show_in_competition"`
+	InvertSignals        *bool    `json:"invert_signals"`
+	TradingSymbols       string   `json:"trading_symbols"`
+	CustomPrompt         string   `json:"custom_prompt"`
+	OverrideBasePrompt   bool     `json:"override_base_prompt"`
+	SystemPromptTemplate string   `json:"system_prompt_template"`
 }
 
 func formatTraderCreationError(reason, nextStep string) string {
@@ -73,6 +79,48 @@ func normalizeExecutionMode(mode string) (string, error) {
 	default:
 		return "", fmt.Errorf("execution_mode must be paper or live")
 	}
+}
+
+func normalizeStartupDelay(scanIntervalMinutes, startupDelayMinutes int) (int, error) {
+	if startupDelayMinutes < 0 {
+		return 0, fmt.Errorf("startup_delay_minutes must be zero or greater")
+	}
+	if scanIntervalMinutes <= 0 {
+		scanIntervalMinutes = 15
+	}
+	if startupDelayMinutes >= scanIntervalMinutes {
+		return 0, fmt.Errorf("startup_delay_minutes must be less than scan_interval_minutes")
+	}
+	return startupDelayMinutes, nil
+}
+
+func validateFallbackAIModelSelection(primaryModelID string, fallbackAIModelIDs []string, availableModels []*store.AIModel) ([]string, error) {
+	normalizedAIModelIDs := store.NormalizeStringList(fallbackAIModelIDs)
+	modelsByID := make(map[string]*store.AIModel, len(availableModels))
+	for _, model := range availableModels {
+		if model != nil {
+			modelsByID[model.ID] = model
+		}
+	}
+
+	validatedIDs := make([]string, 0, len(normalizedAIModelIDs))
+	for _, modelID := range normalizedAIModelIDs {
+		if modelID == primaryModelID {
+			continue
+		}
+		model, exists := modelsByID[modelID]
+		if !exists {
+			return nil, fmt.Errorf("fallback AI model %q is not one of your configured models", modelID)
+		}
+		if !model.Enabled {
+			return nil, fmt.Errorf("fallback AI model %q is disabled", modelID)
+		}
+		if store.ResolveAIModelAPIKey(model) == "" {
+			return nil, fmt.Errorf("fallback AI model %q is missing credentials", modelID)
+		}
+		validatedIDs = append(validatedIDs, modelID)
+	}
+	return validatedIDs, nil
 }
 
 func validateStartConfirmation(mode, liveConfirm string) error {
@@ -377,7 +425,7 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		), "trader.create.model_disabled", mapStringPairs("model_name", model.Name))
 		return
 	}
-	if model.APIKey == "" {
+	if store.ResolveAIModelAPIKey(model) == "" {
 		SafeBadRequestWithDetails(c, formatTraderCreationError(
 			fmt.Sprintf("AI model \"%s\" is missing an API Key or payment credentials", model.Name),
 			"Please go to \"Settings > Model Config\" to complete the model credentials, then create the bot again",
@@ -436,6 +484,28 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 	} else if scanIntervalMinutes < 3 {
 		scanIntervalMinutes = 3 // Explicit values below 3 minutes are clamped to the minimum.
 	}
+	startupDelayMinutes, delayErr := normalizeStartupDelay(scanIntervalMinutes, req.StartupDelayMinutes)
+	if delayErr != nil {
+		SafeBadRequestWithDetails(c, delayErr.Error(), "trader.create.invalid_startup_delay", nil)
+		return
+	}
+	availableModels, modelsErr := s.store.AIModel().List(userID)
+	if modelsErr != nil {
+		SafeError(c, http.StatusInternalServerError, "Unable to validate fallback AI models", modelsErr)
+		return
+	}
+	fallbackAIModelIDs, fallbackErr := validateFallbackAIModelSelection(req.AIModelID, req.FallbackAIModelIDs, availableModels)
+	if fallbackErr != nil {
+		SafeBadRequestWithDetails(c, fallbackErr.Error(), "trader.create.invalid_fallback_model", nil)
+		return
+	}
+	fallbackAIModelIDsJSON := store.EncodeStringList(fallbackAIModelIDs)
+	fallbackModelNames, fallbackNamesErr := validateSameAPIFallbackModels(c.Request.Context(), model, req.FallbackModelNames)
+	if fallbackNamesErr != nil {
+		SafeBadRequestWithDetails(c, fallbackNamesErr.Error(), "trader.create.invalid_same_api_fallback_model", nil)
+		return
+	}
+	fallbackModelNamesJSON := store.EncodeStringList(fallbackModelNames)
 
 	// Query exchange actual balance, override user input
 	actualBalance := req.InitialBalance // Default to use user input
@@ -529,6 +599,9 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		ShowInCompetition:    showInCompetition,
 		InvertSignals:        req.InvertSignals,
 		ScanIntervalMinutes:  scanIntervalMinutes,
+		StartupDelayMinutes:  startupDelayMinutes,
+		FallbackModelNames:   fallbackModelNamesJSON,
+		FallbackAIModelIDs:   fallbackAIModelIDsJSON,
 		IsRunning:            false,
 	}
 
@@ -612,6 +685,19 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Trader does not exist"})
 		return
 	}
+	primaryModel, modelErr := s.store.AIModel().Get(userID, req.AIModelID)
+	if modelErr != nil {
+		SafeBadRequestWithDetails(c, "The selected AI model was not found", "trader.update.model_not_found", nil)
+		return
+	}
+	if !primaryModel.Enabled {
+		SafeBadRequestWithDetails(c, "The selected AI model is disabled", "trader.update.model_disabled", nil)
+		return
+	}
+	if store.ResolveAIModelAPIKey(primaryModel) == "" {
+		SafeBadRequestWithDetails(c, "The selected AI model is missing credentials", "trader.update.model_missing_credentials", nil)
+		return
+	}
 	executionMode := existingTrader.ExecutionMode
 	if req.ExecutionMode != "" {
 		executionMode, err = normalizeExecutionMode(req.ExecutionMode)
@@ -661,6 +747,42 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 		scanIntervalMinutes = 3
 	}
 	logger.Infof("📊 Final scan_interval_minutes: %d", scanIntervalMinutes)
+
+	startupDelayMinutes := existingTrader.StartupDelayMinutes
+	if req.StartupDelayMinutes != nil {
+		startupDelayMinutes = *req.StartupDelayMinutes
+	}
+	startupDelayMinutes, delayErr := normalizeStartupDelay(scanIntervalMinutes, startupDelayMinutes)
+	if delayErr != nil {
+		SafeBadRequestWithDetails(c, delayErr.Error(), "trader.update.invalid_startup_delay", nil)
+		return
+	}
+
+	fallbackAIModelIDs := store.DecodeStringList(existingTrader.FallbackAIModelIDs)
+	if req.FallbackAIModelIDs != nil {
+		fallbackAIModelIDs = req.FallbackAIModelIDs
+	}
+	availableModels, modelsErr := s.store.AIModel().List(userID)
+	if modelsErr != nil {
+		SafeError(c, http.StatusInternalServerError, "Unable to validate fallback AI models", modelsErr)
+		return
+	}
+	fallbackAIModelIDs, fallbackErr := validateFallbackAIModelSelection(req.AIModelID, fallbackAIModelIDs, availableModels)
+	if fallbackErr != nil {
+		SafeBadRequestWithDetails(c, fallbackErr.Error(), "trader.update.invalid_fallback_model", nil)
+		return
+	}
+	fallbackAIModelIDsJSON := store.EncodeStringList(fallbackAIModelIDs)
+	fallbackModelNames := store.DecodeStringList(existingTrader.FallbackModelNames)
+	if req.FallbackModelNames != nil {
+		fallbackModelNames = req.FallbackModelNames
+	}
+	fallbackModelNames, fallbackNamesErr := validateSameAPIFallbackModels(c.Request.Context(), primaryModel, fallbackModelNames)
+	if fallbackNamesErr != nil {
+		SafeBadRequestWithDetails(c, fallbackNamesErr.Error(), "trader.update.invalid_same_api_fallback_model", nil)
+		return
+	}
+	fallbackModelNamesJSON := store.EncodeStringList(fallbackModelNames)
 
 	// Set system prompt template
 	systemPromptTemplate := req.SystemPromptTemplate
@@ -746,6 +868,9 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 		ShowInCompetition:    showInCompetition,
 		InvertSignals:        invertSignals,
 		ScanIntervalMinutes:  scanIntervalMinutes,
+		StartupDelayMinutes:  startupDelayMinutes,
+		FallbackModelNames:   fallbackModelNamesJSON,
+		FallbackAIModelIDs:   fallbackAIModelIDsJSON,
 		IsRunning:            existingTrader.IsRunning, // Keep original value
 	}
 

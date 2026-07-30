@@ -74,6 +74,7 @@ func TestFiveSecondRiskTicksDoNotRepeatFundingBeforeNextFundingTime(t *testing.T
 		t.Fatalf("open_long: %v", err)
 	}
 	at := newMonitorTestAutoTrader(ExecutionModePaper, broker, 2*time.Millisecond)
+	defer at.Shutdown()
 	runDone := make(chan error, 1)
 	go func() { runDone <- at.Run() }()
 	waitForPaperCondition(t, time.Second, func() bool { return prices.Calls() >= 5 })

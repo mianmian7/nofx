@@ -19,11 +19,20 @@ import {
 import { httpClient } from '../../lib/httpClient'
 import { NofxSelect } from '../ui/select'
 import { ExecutionModeSelector } from './ExecutionModeSelector'
+import { FallbackModelSelector } from './FallbackModelSelector'
+import { SameAPIModelSelector } from './SameAPIModelSelector'
 
 // Extract the name part after the underscore
 function getShortName(fullName: string): string {
   const parts = fullName.split('_')
   return parts.length > 1 ? parts[parts.length - 1] : fullName
+}
+
+export function getAIModelOptionLabel(model: AIModel): string {
+  const configName = getShortName(model.name || model.id).toUpperCase()
+  return model.customModelName
+    ? `${configName} · ${model.customModelName}`
+    : configName
 }
 
 function getStrategyAIConfig(strategy: Strategy) {
@@ -73,6 +82,9 @@ interface FormState {
   show_in_competition: boolean
   invert_signals: boolean
   scan_interval_minutes: number
+  startup_delay_minutes: number
+  fallback_model_names: string[]
+  fallback_ai_model_ids: string[]
   execution_mode: 'paper' | 'live'
   initial_balance: number
 }
@@ -106,6 +118,9 @@ export function TraderConfigModal({
     show_in_competition: true,
     invert_signals: false,
     scan_interval_minutes: 15,
+    startup_delay_minutes: 0,
+    fallback_model_names: [],
+    fallback_ai_model_ids: [],
     execution_mode: 'paper',
     initial_balance: 10000,
   })
@@ -155,6 +170,9 @@ export function TraderConfigModal({
         execution_mode: traderData.execution_mode || 'paper',
         initial_balance: traderData.initial_balance || 10000,
         invert_signals: traderData.invert_signals ?? false,
+        startup_delay_minutes: traderData.startup_delay_minutes ?? 0,
+        fallback_model_names: traderData.fallback_model_names || [],
+        fallback_ai_model_ids: traderData.fallback_ai_model_ids || [],
       })
     } else if (!isEditMode) {
       setFormData({
@@ -166,6 +184,9 @@ export function TraderConfigModal({
         show_in_competition: true,
         invert_signals: false,
         scan_interval_minutes: 15,
+        startup_delay_minutes: 0,
+        fallback_model_names: [],
+        fallback_ai_model_ids: [],
         execution_mode: 'paper',
         initial_balance: 10000,
       })
@@ -207,6 +228,12 @@ export function TraderConfigModal({
         show_in_competition: formData.show_in_competition,
         invert_signals: formData.invert_signals,
         scan_interval_minutes: formData.scan_interval_minutes,
+        startup_delay_minutes: Math.min(
+          Math.max(0, formData.startup_delay_minutes),
+          Math.max(0, formData.scan_interval_minutes - 1)
+        ),
+        fallback_model_names: formData.fallback_model_names,
+        fallback_ai_model_ids: formData.fallback_ai_model_ids,
         execution_mode: formData.execution_mode,
         initial_balance:
           formData.execution_mode === 'paper'
@@ -224,6 +251,9 @@ export function TraderConfigModal({
   }
 
   const selectedStrategy = strategies.find((s) => s.id === formData.strategy_id)
+  const selectedAIModel = availableModels.find(
+    (model) => model.id === formData.ai_model
+  )
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm p-4 overflow-y-auto">
@@ -325,17 +355,42 @@ export function TraderConfigModal({
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="text-sm text-nofx-text block mb-2">
-                    {t('aiModelRequired', language)}
+                    {language === 'zh'
+                      ? 'AI API 配置 *'
+                      : 'AI API configuration *'}
                   </label>
                   <NofxSelect
                     value={formData.ai_model}
-                    onChange={(val) => handleInputChange('ai_model', val)}
+                    onChange={(val) =>
+                      setFormData((previous) => ({
+                        ...previous,
+                        ai_model: val,
+                        fallback_model_names: [],
+                        fallback_ai_model_ids:
+                          previous.fallback_ai_model_ids.filter(
+                            (modelId) => modelId !== val
+                          ),
+                      }))
+                    }
                     className="w-full px-3 py-2 bg-nofx-bg-lighter border border-nofx-gold/20 rounded text-nofx-text"
                     options={availableModels.map((model) => ({
                       value: model.id,
-                      label: getShortName(model.name || model.id).toUpperCase(),
+                      label: getAIModelOptionLabel(model),
                     }))}
                   />
+                  {selectedAIModel?.customModelName && (
+                    <p className="mt-1 text-xs text-nofx-text-muted">
+                      {language === 'zh' ? '当前主模型' : 'Current primary'}:{' '}
+                      <span className="font-medium text-nofx-text">
+                        {selectedAIModel.customModelName}
+                      </span>
+                      {selectedAIModel.modelNames?.length
+                        ? language === 'zh'
+                          ? ` · 已保存 ${selectedAIModel.modelNames.length} 个 API 模型`
+                          : ` · ${selectedAIModel.modelNames.length} saved API models`
+                        : ''}
+                    </p>
+                  )}
                 </div>
                 <div>
                   <label className="text-sm text-nofx-text block mb-2">
@@ -386,6 +441,48 @@ export function TraderConfigModal({
                       )
                     })()}
                 </div>
+              </div>
+              <div>
+                <label className="text-sm text-nofx-text block mb-2">
+                  {language === 'zh'
+                    ? '同一 API 备用模型（按选择顺序）'
+                    : 'Same API fallback models (selection order)'}
+                </label>
+                <SameAPIModelSelector
+                  models={selectedAIModel?.modelNames || []}
+                  primaryModelName={selectedAIModel?.customModelName}
+                  selectedModelNames={formData.fallback_model_names}
+                  onChange={(modelNames) =>
+                    handleInputChange('fallback_model_names', modelNames)
+                  }
+                  language={language}
+                />
+                <p className="text-xs text-nofx-text-muted mt-1">
+                  {language === 'zh'
+                    ? '来自模型配置中已读取并保存的模型列表，共用同一 API Key 和 Base URL。'
+                    : 'Uses the verified model list saved on this API configuration; all entries share its key and base URL.'}
+                </p>
+              </div>
+              <div>
+                <label className="text-sm text-nofx-text block mb-2">
+                  {language === 'zh'
+                    ? '独立配置最终备用模型'
+                    : 'Independent configured fallback models'}
+                </label>
+                <FallbackModelSelector
+                  models={availableModels}
+                  primaryModelId={formData.ai_model}
+                  selectedModelIds={formData.fallback_ai_model_ids}
+                  onChange={(modelIds) =>
+                    handleInputChange('fallback_ai_model_ids', modelIds)
+                  }
+                  language={language}
+                />
+                <p className="text-xs text-nofx-text-muted mt-1">
+                  {language === 'zh'
+                    ? '仅可选择已配置并启用的模型；运行时将按这里的顺序依次切换。'
+                    : 'Only configured and enabled models can be selected. Runtime failover follows this order.'}
+                </p>
               </div>
             </div>
           </div>
@@ -627,7 +724,9 @@ export function TraderConfigModal({
               {/* Signal Inversion */}
               <div>
                 <label className="text-sm text-nofx-text block mb-2">
-                  {language === 'zh' ? '反向交易 / 信号取反' : 'Invert AI Signals'}
+                  {language === 'zh'
+                    ? '反向交易 / 信号取反'
+                    : 'Invert AI Signals'}
                 </label>
                 <div className="flex gap-2">
                   <button

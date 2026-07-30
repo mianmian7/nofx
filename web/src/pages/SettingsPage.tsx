@@ -140,7 +140,8 @@ export function SettingsPage() {
     modelId: string,
     apiKey: string,
     customApiUrl?: string,
-    customModelName?: string
+    customModelName?: string,
+    modelNames: string[] = []
   ) => {
     try {
       const existingModel = configuredModels.find((m) => m.id === modelId)
@@ -160,6 +161,7 @@ export function SettingsPage() {
                 apiKey,
                 customApiUrl: customApiUrl || '',
                 customModelName: customModelName || '',
+                modelNames,
                 enabled: true,
               }
             : m
@@ -172,23 +174,23 @@ export function SettingsPage() {
             apiKey,
             customApiUrl: customApiUrl || '',
             customModelName: customModelName || '',
+            modelNames,
             enabled: true,
           },
         ]
       }
 
+      const savedModel = updatedModels.find((m) => m.id === modelId)!
       const request = {
-        models: Object.fromEntries(
-          updatedModels.map((m) => [
-            m.provider,
-            {
-              enabled: m.enabled,
-              api_key: m.apiKey || '',
-              custom_api_url: m.customApiUrl || '',
-              custom_model_name: m.customModelName || '',
-            },
-          ])
-        ),
+        models: {
+          [savedModel.id]: {
+            enabled: savedModel.enabled,
+            api_key: savedModel.apiKey || '',
+            custom_api_url: savedModel.customApiUrl || '',
+            custom_model_name: savedModel.customModelName || '',
+            model_names: savedModel.modelNames || [],
+          },
+        },
       }
       await api.updateModelConfigs(request)
       toast.success('Model config saved')
@@ -209,22 +211,22 @@ export function SettingsPage() {
               apiKey: '',
               customApiUrl: '',
               customModelName: '',
+              modelNames: [],
               enabled: false,
             }
           : m
       )
+      const deletedModel = updatedModels.find((m) => m.id === modelId)!
       const request = {
-        models: Object.fromEntries(
-          updatedModels.map((m) => [
-            m.provider,
-            {
-              enabled: m.enabled,
-              api_key: m.apiKey || '',
-              custom_api_url: m.customApiUrl || '',
-              custom_model_name: m.customModelName || '',
-            },
-          ])
-        ),
+        models: {
+          [deletedModel.id]: {
+            enabled: false,
+            api_key: '',
+            custom_api_url: '',
+            custom_model_name: '',
+            model_names: [],
+          },
+        },
       }
       await api.updateModelConfigs(request)
       await refreshModelConfigs()
@@ -368,7 +370,9 @@ export function SettingsPage() {
             <div className="space-y-6">
               <div>
                 <p className="text-xs text-nofx-text-muted mb-1">Email</p>
-                <p className="text-sm text-nofx-text font-medium">{user?.email}</p>
+                <p className="text-sm text-nofx-text font-medium">
+                  {user?.email}
+                </p>
               </div>
 
               <div className="border-t border-[rgba(26,24,19,0.14)] pt-6">

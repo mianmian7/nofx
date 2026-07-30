@@ -5,6 +5,7 @@ import type { AIModel } from '../../types'
 import type { Language } from '../../i18n/translations'
 import { t } from '../../i18n/translations'
 import { getModelIcon } from '../common/ModelIcons'
+import { api } from '../../lib/api'
 import { ModelStepIndicator } from './ModelStepIndicator'
 import { ModelCard } from './ModelCard'
 import {
@@ -23,7 +24,8 @@ interface ModelConfigModalProps {
     modelId: string,
     apiKey: string,
     baseUrl?: string,
-    modelName?: string
+    modelName?: string,
+    modelNames?: string[]
   ) => void
   onDelete: (modelId: string) => void
   onClose: () => void
@@ -49,18 +51,30 @@ export function ModelConfigModal({
   const [apiKey, setApiKey] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
   const [modelName, setModelName] = useState('')
+  const [modelNames, setModelNames] = useState<string[]>([])
+  const [availableModelNames, setAvailableModelNames] = useState<string[]>([])
+  const [isDiscoveringModels, setIsDiscoveringModels] = useState(false)
+  const [modelDiscoveryError, setModelDiscoveryError] = useState('')
 
-  // Always prefer allModels (supportedModels) for provider/id lookup;
-  // fall back to configuredModels for edit mode details (apiKey etc.)
-  const selectedModel =
-    allModels?.find((m) => m.id === selectedModelId) ||
-    configuredModels?.find((m) => m.id === selectedModelId)
+  const configuredModel = configuredModels?.find(
+    (model) => model.id === selectedModelId
+  )
+  const supportedModel = allModels?.find(
+    (model) => model.id === selectedModelId
+  )
+  // Editing must use the persisted object because the supported-model template
+  // does not contain the saved key status, URL, primary model, or catalog.
+  const selectedModel = editingModelId
+    ? configuredModel || supportedModel
+    : supportedModel || configuredModel
 
   useEffect(() => {
     if (editingModelId && selectedModel) {
       setApiKey(selectedModel.apiKey || '')
       setBaseUrl(selectedModel.customApiUrl || '')
       setModelName(selectedModel.customModelName || '')
+      setModelNames(selectedModel.modelNames || [])
+      setAvailableModelNames(selectedModel.modelNames || [])
     }
   }, [editingModelId, selectedModel])
 
@@ -80,13 +94,48 @@ export function ModelConfigModal({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!selectedModelId || !apiKey.trim()) return
+    const hasSavedKey = Boolean(editingModelId && selectedModel?.has_api_key)
+    if (!selectedModelId || (!apiKey.trim() && !hasSavedKey)) return
     onSave(
       selectedModelId,
       apiKey.trim(),
       baseUrl.trim() || undefined,
-      modelName.trim() || undefined
+      modelName.trim() || undefined,
+      modelNames
     )
+  }
+
+  const handleDiscoverModels = async () => {
+    if (!selectedModel) return
+    setIsDiscoveringModels(true)
+    setModelDiscoveryError('')
+    try {
+      const discovered = await api.discoverAIModels({
+        model_id: selectedModelId,
+        provider: selectedModel.provider,
+        api_key: apiKey.trim(),
+        custom_api_url: baseUrl.trim(),
+      })
+      setAvailableModelNames(discovered)
+      const retained = modelNames.filter((name) => discovered.includes(name))
+      const initialPrimary = discovered.includes(modelName)
+        ? modelName
+        : discovered[0]
+      const nextSelected =
+        retained.length > 0 ? retained : initialPrimary ? [initialPrimary] : []
+      setModelNames(nextSelected)
+      if (!nextSelected.includes(modelName)) {
+        setModelName(nextSelected[0] || '')
+      }
+    } catch {
+      setModelDiscoveryError(
+        language === 'zh'
+          ? '读取模型列表失败，请检查 API Key 和 Base URL。'
+          : 'Failed to read models. Check the API key and base URL.'
+      )
+    } finally {
+      setIsDiscoveringModels(false)
+    }
   }
 
   const availableModels = allModels || []
@@ -209,10 +258,16 @@ export function ModelConfigModal({
                 apiKey={apiKey}
                 baseUrl={baseUrl}
                 modelName={modelName}
+                modelNames={modelNames}
+                availableModelNames={availableModelNames}
+                isDiscoveringModels={isDiscoveringModels}
+                modelDiscoveryError={modelDiscoveryError}
                 editingModelId={editingModelId}
                 onApiKeyChange={setApiKey}
                 onBaseUrlChange={setBaseUrl}
                 onModelNameChange={setModelName}
+                onModelNamesChange={setModelNames}
+                onDiscoverModels={handleDiscoverModels}
                 onBack={handleBack}
                 onSubmit={handleSubmit}
                 language={language}
@@ -1153,10 +1208,16 @@ function StandardProviderConfigForm({
   apiKey,
   baseUrl,
   modelName,
+  modelNames,
+  availableModelNames,
+  isDiscoveringModels,
+  modelDiscoveryError,
   editingModelId,
   onApiKeyChange,
   onBaseUrlChange,
   onModelNameChange,
+  onModelNamesChange,
+  onDiscoverModels,
   onBack,
   onSubmit,
   language,
@@ -1165,10 +1226,16 @@ function StandardProviderConfigForm({
   apiKey: string
   baseUrl: string
   modelName: string
+  modelNames: string[]
+  availableModelNames: string[]
+  isDiscoveringModels: boolean
+  modelDiscoveryError: string
   editingModelId: string | null
   onApiKeyChange: (value: string) => void
   onBaseUrlChange: (value: string) => void
   onModelNameChange: (value: string) => void
+  onModelNamesChange: (value: string[]) => void
+  onDiscoverModels: () => void
   onBack: () => void
   onSubmit: (e: React.FormEvent) => void
   language: Language
@@ -1253,7 +1320,9 @@ function StandardProviderConfigForm({
           }}
         >
           Current model key status:{' '}
-          {selectedModel.has_api_key ? 'API Key configured' : 'API Key not configured'}
+          {selectedModel.has_api_key
+            ? 'API Key configured'
+            : 'API Key not configured'}
         </div>
       )}
 
@@ -1299,7 +1368,7 @@ function StandardProviderConfigForm({
             border: '1px solid rgba(26,24,19,0.14)',
             color: '#1A1813',
           }}
-          required
+          required={!editingModelId || !selectedModel.has_api_key}
         />
       </div>
 
@@ -1344,43 +1413,159 @@ function StandardProviderConfigForm({
         </div>
       )}
 
-      {/* Custom Model Name (hidden for BlockRun) */}
+      {/* Verified model catalog (hidden for BlockRun) */}
       {!selectedModel.provider?.startsWith('blockrun') && (
         <div className="space-y-2">
-          <label
-            className="flex items-center gap-2 text-sm font-semibold"
-            style={{ color: '#1A1813' }}
-          >
-            <svg
-              className="w-4 h-4"
-              style={{ color: '#E0483B' }}
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
+          <div className="flex items-center justify-between gap-3">
+            <label
+              className="text-sm font-semibold"
+              style={{ color: '#1A1813' }}
             >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"
-              />
-            </svg>
-            {t('customModelName', language)}
-          </label>
-          <input
-            type="text"
-            value={modelName}
-            onChange={(e) => onModelNameChange(e.target.value)}
-            placeholder={t('customModelNamePlaceholder', language)}
-            className="w-full px-4 py-3 rounded-xl"
+              {language === 'zh' ? 'API 模型列表' : 'API model catalog'}
+            </label>
+            <button
+              type="button"
+              onClick={onDiscoverModels}
+              disabled={
+                isDiscoveringModels ||
+                (!apiKey.trim() &&
+                  !(editingModelId && selectedModel.has_api_key))
+              }
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold disabled:opacity-50"
+              style={{ background: '#E8E2D5', color: '#1A1813' }}
+            >
+              {isDiscoveringModels
+                ? language === 'zh'
+                  ? '读取中…'
+                  : 'Loading…'
+                : language === 'zh'
+                  ? '读取模型列表'
+                  : 'Load models'}
+            </button>
+          </div>
+          {modelDiscoveryError && (
+            <p className="text-xs text-red-600">{modelDiscoveryError}</p>
+          )}
+          {availableModelNames.length > 0 ? (
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-nofx-bg px-3 py-2">
+                <span className="text-xs text-nofx-text-muted">
+                  {language === 'zh'
+                    ? `已选择 ${modelNames.length}/${availableModelNames.length}`
+                    : `${modelNames.length}/${availableModelNames.length} selected`}
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onModelNamesChange(availableModelNames)
+                      if (!availableModelNames.includes(modelName)) {
+                        onModelNameChange(availableModelNames[0] || '')
+                      }
+                    }}
+                    className="rounded px-2 py-1 text-xs font-semibold text-nofx-gold hover:bg-nofx-gold/10"
+                  >
+                    {language === 'zh' ? '全选' : 'Select all'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = availableModelNames.filter(
+                        (name) => !modelNames.includes(name)
+                      )
+                      onModelNamesChange(next)
+                      if (!next.includes(modelName)) {
+                        onModelNameChange(next[0] || '')
+                      }
+                    }}
+                    className="rounded px-2 py-1 text-xs font-semibold text-nofx-gold hover:bg-nofx-gold/10"
+                  >
+                    {language === 'zh' ? '反选' : 'Invert selection'}
+                  </button>
+                </div>
+              </div>
+              <div className="max-h-64 space-y-2 overflow-y-auto rounded-xl border border-nofx-gold/20 p-2">
+                {availableModelNames.map((name) => {
+                  const selected = modelNames.includes(name)
+                  const isPrimary = modelName === name
+                  return (
+                    <div
+                      key={name}
+                      className="flex items-center justify-between gap-3 rounded-lg bg-nofx-bg px-3 py-2"
+                    >
+                      <label className="flex min-w-0 items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          onChange={() => {
+                            const next = selected
+                              ? modelNames.filter((item) => item !== name)
+                              : [...modelNames, name]
+                            onModelNamesChange(next)
+                            if (name === modelName && !next.includes(name)) {
+                              onModelNameChange(next[0] || '')
+                            } else if (!modelName && next.length > 0) {
+                              onModelNameChange(next[0])
+                            }
+                          }}
+                        />
+                        <span className="truncate text-sm">{name}</span>
+                        {selected && (
+                          <span
+                            className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                              isPrimary
+                                ? 'bg-nofx-gold/15 text-nofx-gold'
+                                : 'bg-blue-500/10 text-blue-600'
+                            }`}
+                          >
+                            {isPrimary
+                              ? language === 'zh'
+                                ? '主'
+                                : 'Primary'
+                              : language === 'zh'
+                                ? '备用'
+                                : 'Fallback'}
+                          </span>
+                        )}
+                      </label>
+                      <label className="flex items-center gap-1 text-xs text-nofx-text-muted">
+                        <input
+                          type="radio"
+                          name="primary-model"
+                          checked={isPrimary}
+                          disabled={!selected}
+                          onChange={() => onModelNameChange(name)}
+                        />
+                        {language === 'zh' ? '设为主模型' : 'Set primary'}
+                      </label>
+                    </div>
+                  )
+                })}
+              </div>
+              <p className="text-xs text-amber-700">
+                {language === 'zh'
+                  ? '当前选择尚未保存。点击下方“保存配置”后，备用模型才会出现在 Trader 配置中。'
+                  : 'These selections are not saved yet. Click “Save Configuration” below before they appear in Trader settings.'}
+              </p>
+            </div>
+          ) : (
+            <div className="text-xs" style={{ color: '#8A8478' }}>
+              {language === 'zh'
+                ? '填写凭证后读取模型列表，再选择一个或多个模型并指定主模型。'
+                : 'Enter credentials, load the catalog, then select models and choose a primary.'}
+            </div>
+          )}
+          <input type="hidden" value={modelName} required readOnly />
+          <div
+            className="rounded-lg px-3 py-2 text-xs"
             style={{
               background: '#F1ECE2',
               border: '1px solid rgba(26,24,19,0.14)',
               color: '#1A1813',
             }}
-          />
-          <div className="text-xs" style={{ color: '#8A8478' }}>
-            {t('leaveBlankForDefaultModel', language)}
+          >
+            {language === 'zh' ? '当前主模型' : 'Current primary'}:{' '}
+            <strong>{modelName || '—'}</strong>
           </div>
         </div>
       )}
@@ -1465,7 +1650,7 @@ function StandardProviderConfigForm({
       </div>
 
       {/* Buttons */}
-      <div className="flex gap-3 pt-4">
+      <div className="sticky bottom-0 z-10 -mx-1 flex gap-3 border-t border-nofx-gold/15 bg-nofx-bg-lighter px-1 pt-4 pb-1">
         <button
           type="button"
           onClick={onBack}
@@ -1478,7 +1663,13 @@ function StandardProviderConfigForm({
         </button>
         <button
           type="submit"
-          disabled={!selectedModel || !apiKey.trim()}
+          disabled={
+            !selectedModel ||
+            (!apiKey.trim() &&
+              !(editingModelId && selectedModel.has_api_key)) ||
+            (!selectedModel.provider?.startsWith('blockrun') &&
+              (!modelName || modelNames.length === 0))
+          }
           className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm font-bold transition-all hover:scale-[1.02] disabled:opacity-50 disabled:cursor-not-allowed"
           style={{ background: '#E0483B', color: '#fff' }}
         >

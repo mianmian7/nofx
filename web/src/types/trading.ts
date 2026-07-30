@@ -11,8 +11,15 @@ export interface SystemStatus {
   stop_until: string
   last_reset_time: string
   ai_provider: string
+  active_model_id?: string
+  is_fallback?: boolean
+  fallback_reason?: string
+  fallback_since?: string
   execution_mode?: 'paper' | 'live'
   invert_signals?: boolean
+  startup_delay_minutes?: number
+  fallback_model_names?: string[]
+  fallback_ai_model_ids?: string[]
   paper?: {
     balance: number
     equity: number
@@ -253,6 +260,9 @@ export interface TraderInfo {
   use_oi_top?: boolean
   system_prompt_template?: string
   invert_signals?: boolean
+  startup_delay_minutes?: number
+  fallback_model_names?: string[]
+  fallback_ai_model_ids?: string[]
 }
 
 // Competition related types
@@ -287,6 +297,9 @@ export interface TraderConfigData {
   show_in_competition: boolean // Whether to show in the competition arena
   invert_signals?: boolean // Whether to invert AI trading decisions
   scan_interval_minutes: number
+  startup_delay_minutes?: number
+  fallback_model_names?: string[]
+  fallback_ai_model_ids?: string[]
   initial_balance: number
   is_running: boolean
   execution_mode?: 'paper' | 'live'

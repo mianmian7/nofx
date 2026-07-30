@@ -1,7 +1,9 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -28,6 +30,9 @@ type Trader struct {
 	ExecutionMode       string    `gorm:"column:execution_mode;not null;default:paper" json:"execution_mode"`
 	InitialBalance      float64   `gorm:"column:initial_balance;not null" json:"initial_balance"`
 	ScanIntervalMinutes int       `gorm:"column:scan_interval_minutes;default:15" json:"scan_interval_minutes"`
+	StartupDelayMinutes int       `gorm:"column:startup_delay_minutes;default:0" json:"startup_delay_minutes"`
+	FallbackModelNames  string    `gorm:"column:fallback_model_names;default:''" json:"fallback_model_names,omitempty"`
+	FallbackAIModelIDs  string    `gorm:"column:fallback_ai_model_ids;default:''" json:"fallback_ai_model_ids,omitempty"`
 	IsRunning           bool      `gorm:"column:is_running;default:false" json:"is_running"`
 	IsCrossMargin       bool      `gorm:"column:is_cross_margin;default:true" json:"is_cross_margin"`
 	ShowInCompetition   bool      `gorm:"column:show_in_competition;default:true" json:"show_in_competition"`
@@ -42,6 +47,54 @@ type Trader struct {
 	CustomPrompt         string `gorm:"column:custom_prompt;default:''" json:"custom_prompt,omitempty"`
 	OverrideBasePrompt   bool   `gorm:"column:override_base_prompt;default:false" json:"override_base_prompt,omitempty"`
 	SystemPromptTemplate string `gorm:"column:system_prompt_template;default:default" json:"system_prompt_template,omitempty"`
+}
+
+// EncodeStringList stores a user-configured ordered list as compact JSON.
+// Empty values are stored as an empty string so older rows remain readable.
+func EncodeStringList(values []string) string {
+	normalizedValues := NormalizeStringList(values)
+	if len(normalizedValues) == 0 {
+		return ""
+	}
+
+	encodedValues, err := json.Marshal(normalizedValues)
+	if err != nil {
+		return ""
+	}
+	return string(encodedValues)
+}
+
+// DecodeStringList reads both the current JSON format and a legacy comma list.
+func DecodeStringList(encodedValues string) []string {
+	encodedValues = strings.TrimSpace(encodedValues)
+	if encodedValues == "" {
+		return nil
+	}
+
+	var values []string
+	if json.Unmarshal([]byte(encodedValues), &values) == nil {
+		return NormalizeStringList(values)
+	}
+
+	return NormalizeStringList(strings.Split(encodedValues, ","))
+}
+
+// NormalizeStringList trims, removes empty values, and preserves order.
+func NormalizeStringList(values []string) []string {
+	seenValues := make(map[string]struct{}, len(values))
+	normalizedValues := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmedValue := strings.TrimSpace(value)
+		if trimmedValue == "" {
+			continue
+		}
+		if _, alreadySeen := seenValues[trimmedValue]; alreadySeen {
+			continue
+		}
+		seenValues[trimmedValue] = struct{}{}
+		normalizedValues = append(normalizedValues, trimmedValue)
+	}
+	return normalizedValues
 }
 
 // TableName returns the table name for Trader
@@ -63,8 +116,8 @@ func (s *TraderStore) initTables() error {
 		var tableExists int64
 		s.db.Raw(`SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'traders'`).Scan(&tableExists)
 		if tableExists > 0 {
-			if err := s.ensureInvertSignalsColumn(); err != nil {
-				return fmt.Errorf("failed to migrate traders invert_signals column: %w", err)
+			if err := s.ensureTraderConfigurationColumns(); err != nil {
+				return fmt.Errorf("failed to migrate trader configuration columns: %w", err)
 			}
 			return s.dropLegacyLeverageColumns()
 		}
@@ -76,11 +129,26 @@ func (s *TraderStore) initTables() error {
 	return s.dropLegacyLeverageColumns()
 }
 
-func (s *TraderStore) ensureInvertSignalsColumn() error {
-	if s.db.Migrator().HasColumn(&Trader{}, "InvertSignals") {
-		return nil
+func (s *TraderStore) ensureTraderConfigurationColumns() error {
+	for _, columnName := range []string{
+		"InvertSignals",
+		"StartupDelayMinutes",
+		"FallbackModelNames",
+		"FallbackAIModelIDs",
+	} {
+		if s.db.Migrator().HasColumn(&Trader{}, columnName) {
+			continue
+		}
+		if err := s.db.Migrator().AddColumn(&Trader{}, columnName); err != nil {
+			return fmt.Errorf("failed to add %s: %w", columnName, err)
+		}
 	}
-	return s.db.Migrator().AddColumn(&Trader{}, "InvertSignals")
+	return nil
+}
+
+// ensureInvertSignalsColumn remains for migration tests and older callers.
+func (s *TraderStore) ensureInvertSignalsColumn() error {
+	return s.ensureTraderConfigurationColumns()
 }
 
 func (s *TraderStore) dropLegacyLeverageColumns() error {
@@ -147,6 +215,9 @@ func (s *TraderStore) Update(trader *Trader) error {
 		"custom_prompt":          trader.CustomPrompt,
 		"override_base_prompt":   trader.OverrideBasePrompt,
 		"system_prompt_template": trader.SystemPromptTemplate,
+		"startup_delay_minutes":  trader.StartupDelayMinutes,
+		"fallback_model_names":   trader.FallbackModelNames,
+		"fallback_ai_model_ids":  trader.FallbackAIModelIDs,
 	}
 
 	// Only update these if > 0

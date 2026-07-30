@@ -5,9 +5,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
+	"nofx/security"
 	"strings"
 	"time"
 )
@@ -166,6 +169,18 @@ func (client *Client) SetTimeout(timeout time.Duration) {
 	client.HTTPClient.Timeout = timeout
 }
 
+// ConfigureCustomURL installs a model-specific SSRF-protected HTTP client.
+// This is intentionally separate from SetAPIKey because provider-specific
+// clients override SetAPIKey while embedding the base Client.
+func (client *Client) ConfigureCustomURL(rawURL string) error {
+	httpClient, err := security.SafeHTTPClientForModelURL(rawURL, client.HTTPClient.Timeout)
+	if err != nil {
+		return err
+	}
+	client.HTTPClient = httpClient
+	return nil
+}
+
 // CallWithMessages template method - fixed retry flow (cannot be overridden)
 func (client *Client) CallWithMessages(systemPrompt, userPrompt string) (string, error) {
 	if client.APIKey == "" {
@@ -198,7 +213,7 @@ func (client *Client) CallWithMessages(systemPrompt, userPrompt string) (string,
 
 		// Wait before retry
 		if attempt < maxRetries {
-			waitTime := client.Cfg.RetryWaitBase * time.Duration(attempt)
+			waitTime := retryWaitDuration(client.Cfg.RetryWaitBase, attempt, err)
 			client.Log.Infof("⏳ Waiting %v before retry...", waitTime)
 			if err := sleepWithContext(context.Background(), waitTime); err != nil {
 				return "", err
@@ -414,7 +429,7 @@ func (client *Client) Call(systemPrompt, userPrompt string) (string, error) {
 
 	// Step 7: Check HTTP status code (fixed logic)
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("API returned error (status %d): %s", resp.StatusCode, string(body))
+		return "", NewAPIError(resp.StatusCode, string(body))
 	}
 
 	// Step 8: Parse response (via hooks for dynamic dispatch)
@@ -436,6 +451,20 @@ func (c *Client) BaseClient() *Client { return c }
 
 // IsRetryableError determines if error is retryable (network errors, timeouts, etc.)
 func (client *Client) IsRetryableError(err error) bool {
+	var apiError *APIError
+	if errors.As(err, &apiError) {
+		switch apiError.Kind {
+		case ErrorKindAuthUnavailable,
+			ErrorKindRateLimited,
+			ErrorKindProviderUnavailable:
+			return true
+		case ErrorKindInvalidCredentials,
+			ErrorKindModelNotFound,
+			ErrorKindContextLimit:
+			return false
+		}
+	}
+
 	errStr := err.Error()
 	// Network errors, timeouts, EOF, etc. can be retried
 	for _, retryable := range client.Cfg.RetryableErrors {
@@ -444,6 +473,23 @@ func (client *Client) IsRetryableError(err error) bool {
 		}
 	}
 	return false
+}
+
+// retryWaitDuration applies slow, jittered backoff only to authentication pool
+// failures. Ordinary transient errors retain the configured deterministic
+// delay so existing callers and tests remain predictable.
+func retryWaitDuration(base time.Duration, attempt int, err error) time.Duration {
+	if ErrorKindOf(err) != ErrorKindAuthUnavailable {
+		return base * time.Duration(attempt)
+	}
+
+	const authenticationBackoffBase = 30 * time.Second
+	waitTime := authenticationBackoffBase * time.Duration(attempt)
+	jitterLimit := waitTime / 4
+	if jitterLimit <= 0 {
+		return waitTime
+	}
+	return waitTime + time.Duration(rand.Int63n(int64(jitterLimit)+1))
 }
 
 // ============================================================
@@ -487,7 +533,7 @@ func (client *Client) CallWithRequest(req *Request) (string, error) {
 
 		// Wait before retry
 		if attempt < maxRetries {
-			waitTime := client.Cfg.RetryWaitBase * time.Duration(attempt)
+			waitTime := retryWaitDuration(client.Cfg.RetryWaitBase, attempt, err)
 			client.Log.Infof("⏳ Waiting %v before retry...", waitTime)
 			if err := sleepWithContext(contextFromRequest(req), waitTime); err != nil {
 				return "", err
@@ -522,7 +568,7 @@ func (client *Client) CallWithRequestFull(req *Request) (*LLMResponse, error) {
 			return nil, err
 		}
 		if attempt < maxRetries {
-			waitTime := client.Cfg.RetryWaitBase * time.Duration(attempt)
+			waitTime := retryWaitDuration(client.Cfg.RetryWaitBase, attempt, err)
 			if err := sleepWithContext(contextFromRequest(req), waitTime); err != nil {
 				return nil, err
 			}
@@ -558,7 +604,7 @@ func (client *Client) callWithRequestFull(req *Request) (*LLMResponse, error) {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned error (status %d): %s", resp.StatusCode, string(body))
+		return nil, NewAPIError(resp.StatusCode, string(body))
 	}
 
 	return client.Hooks.ParseMCPResponseFull(body)
@@ -597,7 +643,7 @@ func (client *Client) callWithRequest(req *Request) (string, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("API returned error (status %d): %s", resp.StatusCode, string(body))
+		return "", NewAPIError(resp.StatusCode, string(body))
 	}
 
 	result, err := client.Hooks.ParseMCPResponse(body)
@@ -770,7 +816,7 @@ func (client *Client) CallWithRequestStream(req *Request, onChunk func(string)) 
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+		return "", NewAPIError(resp.StatusCode, string(body))
 	}
 
 	text, usage, err := ParseSSEStream(resp.Body, onChunk, func() {

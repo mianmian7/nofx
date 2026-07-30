@@ -287,6 +287,12 @@ CRITICAL: The "id" field (e.g. "abc123_deepseek") is what you must use for ai_mo
 model_id values: "openai","deepseek","qwen","kimi","grok","gemini","claude"
 Defaults when custom fields empty: openai→api.openai.com/v1, deepseek→api.deepseek.com, qwen→dashscope.aliyuncs.com/compatible-mode/v1, kimi→api.moonshot.ai/v1, grok→api.x.ai/v1, gemini→generativelanguage.googleapis.com/v1beta/openai, claude→api.anthropic.com/v1`,
 				s.handleUpdateModelConfigs)
+			s.routeWithSchema(protected, "GET", "/models/:id/available-models", "List models exposed by a configured API",
+				`:id = exact model config id from GET /api/models. Returns the verified models saved on that API configuration.`,
+				s.handleGetAvailableAIModels)
+			s.routeWithSchema(protected, "POST", "/models/discover", "Read the model catalog from API credentials",
+				`Body (transport-encrypted when enabled): {"model_id":"openai","provider":"openai","api_key":"...","custom_api_url":"https://example/v1"}. An empty api_key reuses the saved credential when editing.`,
+				s.handleDiscoverAIModels)
 
 			// Exchange configuration
 			s.routeWithSchema(protected, "GET", "/exchanges", "List exchange accounts",

@@ -5,7 +5,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"nofx/hook"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -56,6 +59,232 @@ func TestGetCurrentPriceRetriesTransientReadFailure(t *testing.T) {
 	}
 	if price != 147.51 || calls != 2 {
 		t.Fatalf("price/calls = %v/%d, want 147.51/2", price, calls)
+	}
+}
+
+func TestSameBinanceRequestIsMergedAcrossClients(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	requestStarted := make(chan struct{})
+	releaseRequest := make(chan struct{})
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if upstreamCalls.Add(1) == 1 {
+			close(requestStarted)
+		}
+		<-releaseRequest
+		return binanceJSONResponse(`{"symbol":"MUUSDT","price":"123.45"}`), nil
+	})
+	coordinator := newBinancePublicCoordinator()
+	firstClient := &APIClient{
+		baseURL: "https://binance.test", client: &http.Client{Transport: transport}, coordinator: coordinator,
+	}
+	secondClient := &APIClient{
+		baseURL: "https://binance.test", client: &http.Client{Transport: transport}, coordinator: coordinator,
+	}
+
+	const callerCount = 20
+	start := make(chan struct{})
+	results := make(chan error, callerCount)
+	var callers sync.WaitGroup
+	for callerIndex := 0; callerIndex < callerCount; callerIndex++ {
+		callers.Add(1)
+		go func(index int) {
+			defer callers.Done()
+			<-start
+			client := firstClient
+			if index%2 == 1 {
+				client = secondClient
+			}
+			price, err := client.GetCurrentPrice("MUUSDT")
+			if err == nil && price != 123.45 {
+				err = errors.New("unexpected shared price")
+			}
+			results <- err
+		}(callerIndex)
+	}
+	close(start)
+	<-requestStarted
+	close(releaseRequest)
+	callers.Wait()
+	close(results)
+	for err := range results {
+		if err != nil {
+			t.Fatalf("GetCurrentPrice returned error: %v", err)
+		}
+	}
+	if calls := upstreamCalls.Load(); calls != 1 {
+		t.Fatalf("upstream calls = %d, want 1", calls)
+	}
+}
+
+func TestFreshPriceCacheIsSharedAcrossClients(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		upstreamCalls.Add(1)
+		return binanceJSONResponse(`{"symbol":"BTCUSDT","price":"65000"}`), nil
+	})
+	coordinator := newBinancePublicCoordinator()
+	firstClient := &APIClient{
+		baseURL: "https://binance.test", client: &http.Client{Transport: transport}, coordinator: coordinator,
+	}
+	secondClient := &APIClient{
+		baseURL: "https://binance.test", client: &http.Client{Transport: transport}, coordinator: coordinator,
+	}
+
+	if _, err := firstClient.GetCurrentPrice("BTCUSDT"); err != nil {
+		t.Fatalf("first GetCurrentPrice: %v", err)
+	}
+	if _, err := secondClient.GetCurrentPrice("BTCUSDT"); err != nil {
+		t.Fatalf("second GetCurrentPrice: %v", err)
+	}
+	if calls := upstreamCalls.Load(); calls != 1 {
+		t.Fatalf("upstream calls = %d, want 1", calls)
+	}
+}
+
+func TestBinance429UsesRetryAfterAndOpensCircuit(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	client := &APIClient{
+		baseURL: "https://binance.test",
+		client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			upstreamCalls.Add(1)
+			return &http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Body:       io.NopCloser(strings.NewReader(`{"code":-1003,"msg":"Too many requests"}`)),
+				Header:     http.Header{"Retry-After": []string{"3"}},
+			}, nil
+		})},
+		coordinator: newBinancePublicCoordinator(),
+	}
+
+	_, err := client.GetCurrentPrice("BTCUSDT")
+	var requestError *BinancePublicError
+	if !errors.As(err, &requestError) {
+		t.Fatalf("error = %v, want BinancePublicError", err)
+	}
+	if requestError.StatusCode != http.StatusTooManyRequests || requestError.RetryAfter != 3*time.Second {
+		t.Fatalf("request error = %#v", requestError)
+	}
+	if time.Until(requestError.CircuitUntil) < 2*time.Second {
+		t.Fatalf("circuit until = %s, want Retry-After based cooldown", requestError.CircuitUntil)
+	}
+	if _, err := client.GetDepth("BTCUSDT", 20); err == nil {
+		t.Fatal("second request unexpectedly bypassed open circuit")
+	}
+	if calls := upstreamCalls.Load(); calls != 1 {
+		t.Fatalf("upstream calls = %d, want 1", calls)
+	}
+}
+
+func TestBinance451MarksProxyUnavailableAndStopsOtherEndpoints(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	client := &APIClient{
+		baseURL: "https://binance.test",
+		client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			upstreamCalls.Add(1)
+			return &http.Response{
+				StatusCode: http.StatusUnavailableForLegalReasons,
+				Body: io.NopCloser(strings.NewReader(
+					`{"code":0,"msg":"Service unavailable from a restricted location"}`,
+				)),
+				Header: make(http.Header),
+			}, nil
+		})},
+		coordinator: newBinancePublicCoordinator(),
+	}
+
+	_, err := client.GetCurrentPrice("BTCUSDT")
+	var requestError *BinancePublicError
+	if !errors.As(err, &requestError) || !requestError.ProxyLikelyDown {
+		t.Fatalf("error = %v, want proxy-unavailable BinancePublicError", err)
+	}
+	if !strings.Contains(err.Error(), "proxy path may be unavailable") {
+		t.Fatalf("error = %q, want proxy diagnostic", err)
+	}
+	if _, err := client.GetOpenInterest("ETHUSDT"); err == nil {
+		t.Fatal("request to another endpoint unexpectedly bypassed open circuit")
+	}
+	if calls := upstreamCalls.Load(); calls != 1 {
+		t.Fatalf("upstream calls = %d, want 1", calls)
+	}
+}
+
+func TestRepeatedNetworkFailureOpensShortCircuit(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	client := &APIClient{
+		baseURL: "https://binance.test",
+		client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			upstreamCalls.Add(1)
+			return nil, errors.New("proxy connection reset")
+		})},
+		coordinator: newBinancePublicCoordinator(),
+	}
+
+	_, err := client.GetCurrentPrice("BTCUSDT")
+	var requestError *BinancePublicError
+	if !errors.As(err, &requestError) || requestError.StatusCode != 0 {
+		t.Fatalf("error = %v, want network BinancePublicError", err)
+	}
+	if _, err := client.GetDepth("ETHUSDT", 20); err == nil {
+		t.Fatal("second endpoint unexpectedly bypassed network-error circuit")
+	}
+	if calls := upstreamCalls.Load(); calls != binanceMaxAttempts {
+		t.Fatalf("upstream calls = %d, want %d", calls, binanceMaxAttempts)
+	}
+}
+
+func TestValidateMarketAvailabilityRequiresFreshTradingPrice(t *testing.T) {
+	resetBinanceCandidateCaches(t)
+	var tickerCalls atomic.Int32
+	client := &APIClient{
+		baseURL: "https://binance.test",
+		client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			switch req.URL.Path {
+			case "/fapi/v1/exchangeInfo":
+				return binanceJSONResponse(`{"symbols":[{"symbol":"MUUSDT","status":"TRADING","quoteAsset":"USDT","contractType":"TRADIFI_PERPETUAL"}]}`), nil
+			case "/fapi/v1/ticker/price":
+				price := "100"
+				if tickerCalls.Add(1) > 1 {
+					price = "101"
+				}
+				return binanceJSONResponse(`{"symbol":"MUUSDT","price":"` + price + `"}`), nil
+			default:
+				t.Fatalf("unexpected Binance path %s", req.URL.Path)
+				return nil, nil
+			}
+		})},
+		coordinator: newBinancePublicCoordinator(),
+	}
+
+	if price, err := client.GetCurrentPrice("MUUSDT"); err != nil || price != 100 {
+		t.Fatalf("initial cached price = %v, error = %v", price, err)
+	}
+	availability, err := client.ValidateMarketAvailability("MUUSDT")
+	if err != nil {
+		t.Fatalf("ValidateMarketAvailability: %v", err)
+	}
+	if availability.Price != 101 || tickerCalls.Load() != 2 {
+		t.Fatalf("availability/calls = %#v/%d, want fresh price 101 from 2 calls", availability, tickerCalls.Load())
+	}
+}
+
+func TestProxyHookFailureDoesNotFallBackToDirectTransport(t *testing.T) {
+	originalHook, hookExists := hook.Hooks[hook.SET_HTTP_CLIENT]
+	hook.RegisterHook(hook.SET_HTTP_CLIENT, func(args ...any) any {
+		return &hook.SetHttpClientResult{Err: errors.New("proxy credentials expired")}
+	})
+	t.Cleanup(func() {
+		if hookExists {
+			hook.Hooks[hook.SET_HTTP_CLIENT] = originalHook
+		} else {
+			delete(hook.Hooks, hook.SET_HTTP_CLIENT)
+		}
+	})
+
+	client := NewAPIClient()
+	client.coordinator = newBinancePublicCoordinator()
+	_, err := client.GetCurrentPrice("BTCUSDT")
+	if err == nil || !strings.Contains(err.Error(), "proxy client unavailable") {
+		t.Fatalf("error = %v, want fail-closed proxy error", err)
 	}
 }
 

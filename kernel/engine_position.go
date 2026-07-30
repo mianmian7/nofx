@@ -33,16 +33,20 @@ func validateDecision(d *Decision, accountEquity float64, maxLeverage int, btcEt
 
 func validateDecisionWithRisk(d *Decision, accountEquity float64, risk store.RiskControlConfig) error {
 	validActions := map[string]bool{
-		"open_long":   true,
-		"open_short":  true,
-		"close_long":  true,
-		"close_short": true,
-		"hold":        true,
-		"wait":        true,
+		"open_long":       true,
+		"open_short":      true,
+		"close_long":      true,
+		"close_short":     true,
+		"update_position": true,
+		"hold":            true,
+		"wait":            true,
 	}
 
 	if !validActions[d.Action] {
 		return fmt.Errorf("invalid action: %s", d.Action)
+	}
+	if d.Action == "update_position" && d.NewStopLoss <= 0 && d.NewTakeProfit <= 0 {
+		return fmt.Errorf("update_position requires new_stop_loss or new_take_profit")
 	}
 
 	if d.Action == "open_long" || d.Action == "open_short" {

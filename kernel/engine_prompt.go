@@ -454,9 +454,10 @@ func writeVergexOutputFormat(sb *strings.Builder, accountEquity, availableBalanc
 
 	if zh {
 		sb.WriteString("## Field Requirements\n\n")
-		sb.WriteString("- `action`: open_long | open_short | close_long | close_short | hold | wait\n")
+		sb.WriteString("- `action`: open_long | open_short | close_long | close_short | update_position | hold | wait\n")
 		sb.WriteString(fmt.Sprintf("- `confidence`: 0-100; required for every action. For `wait`, report the strongest rejected setup's entry confidence, which must be below %d; do not report confidence in the decision to wait.\n", riskControl.MinConfidence))
 		sb.WriteString("- Required when opening: leverage, position_size_usd, stop_loss, take_profit, confidence, risk_usd\n")
+		sb.WriteString("- Required for `update_position`: `new_stop_loss`, `new_take_profit`, or both; include confidence.\n")
 		sb.WriteString("- All numeric values must be calculated numbers, not formulas.\n")
 		if singleSymbol {
 			sb.WriteString(fmt.Sprintf("- This strategy trades only `%s`; JSON symbol must match it exactly.\n", exampleSymbol))
@@ -466,9 +467,10 @@ func writeVergexOutputFormat(sb *strings.Builder, accountEquity, availableBalanc
 		sb.WriteString("\n")
 	} else {
 		sb.WriteString("## Field Requirements\n\n")
-		sb.WriteString("- `action`: open_long | open_short | close_long | close_short | hold | wait\n")
+		sb.WriteString("- `action`: open_long | open_short | close_long | close_short | update_position | hold | wait\n")
 		sb.WriteString(fmt.Sprintf("- `confidence`: 0-100; required for every action. For `wait`, report the strongest rejected setup's entry confidence, which must be below %d; do not report confidence in the decision to wait.\n", riskControl.MinConfidence))
 		sb.WriteString("- Required when opening: leverage, position_size_usd, stop_loss, take_profit, confidence, risk_usd\n")
+		sb.WriteString("- Required for `update_position`: `new_stop_loss`, `new_take_profit`, or both; include confidence.\n")
 		sb.WriteString("- All numeric values must be calculated numbers, not formulas.\n")
 		if singleSymbol {
 			sb.WriteString(fmt.Sprintf("- This strategy trades only `%s`; JSON symbol must match it exactly.\n", exampleSymbol))
@@ -583,6 +585,12 @@ func writeTradeThrottleGuidance(sb *strings.Builder, throttle store.TradeThrottl
 	sb.WriteString(fmt.Sprintf("- Wait %s after closing a symbol before re-entry.\n", formatThrottleDuration(throttle.ReentryCooldownMinutes)))
 	sb.WriteString(fmt.Sprintf("- Open no more than %d new positions per hour and %d per decision cycle.\n", throttle.MaxOpensPerHour, throttle.MaxOpensPerCycle))
 	sb.WriteString("- Keep stops beyond thesis invalidation and targets far enough to cover fees; do not scalp noise.\n\n")
+	sb.WriteString("# Open Position Management\n\n")
+	sb.WriteString("- Use `update_position` instead of `hold` when an open position's protection should change. Provide `new_stop_loss`, `new_take_profit`, or both.\n")
+	sb.WriteString("- Once profit reaches +1R, move the stop to breakeven plus fees when market structure permits. At +2R, trail behind a confirmed 15m swing or volatility support/resistance. Never loosen a stop.\n")
+	sb.WriteString("- For a runaway move: when price has completed most of the path to the existing target and momentum/volume still confirm a breakout, extend the take-profit one step and tighten the stop in the same `update_position` decision.\n")
+	sb.WriteString("- Never move a take-profit farther merely to avoid a likely fill. If momentum weakens, keep the existing target and protect profit with the stop.\n")
+	sb.WriteString("- If no protection level should change, use `hold`.\n\n")
 }
 
 func writeHardConstraints(sb *strings.Builder, accountEquity, availableBalance float64, riskControl store.RiskControlConfig, btcEthPosValueRatio, altcoinPosValueRatio float64, singleSymbol bool, primarySymbol string, zh bool) {
@@ -748,9 +756,10 @@ func writeOutputFormat(sb *strings.Builder, accountEquity, availableBalance, btc
 
 	if zh {
 		sb.WriteString("## Field Description\n\n")
-		sb.WriteString("- `action`: open_long | open_short | close_long | close_short | hold | wait\n")
+		sb.WriteString("- `action`: open_long | open_short | close_long | close_short | update_position | hold | wait\n")
 		sb.WriteString(fmt.Sprintf("- `confidence`: 0-100 and required for every action. For `wait`, it is the strongest rejected setup's entry confidence and must be below %d, not confidence in waiting.\n", riskControl.MinConfidence))
 		sb.WriteString("- Required when opening: leverage, position_size_usd, stop_loss, take_profit, confidence, risk_usd\n")
+		sb.WriteString("- Required for `update_position`: `new_stop_loss`, `new_take_profit`, or both; include confidence.\n")
 		sb.WriteString("- **IMPORTANT**: all numeric values must be calculated numbers, NOT formulas/expressions (e.g. use `27.76`, not `3000 * 0.01`)\n")
 		if singleSymbol {
 			sb.WriteString(fmt.Sprintf("- **This strategy trades only %s.** The JSON `symbol` MUST match `%s` exactly — do not write `%s` variants that drop the suffix or add USDT.\n", primarySymbol, primarySymbol, primarySymbol))
@@ -758,9 +767,10 @@ func writeOutputFormat(sb *strings.Builder, accountEquity, availableBalance, btc
 		sb.WriteString("\n")
 	} else {
 		sb.WriteString("## Field Description\n\n")
-		sb.WriteString("- `action`: open_long | open_short | close_long | close_short | hold | wait\n")
+		sb.WriteString("- `action`: open_long | open_short | close_long | close_short | update_position | hold | wait\n")
 		sb.WriteString(fmt.Sprintf("- `confidence`: 0-100 and required for every action. For `wait`, it is the strongest rejected setup's entry confidence and must be below %d, not confidence in waiting.\n", riskControl.MinConfidence))
 		sb.WriteString("- Required when opening: leverage, position_size_usd, stop_loss, take_profit, confidence, risk_usd\n")
+		sb.WriteString("- Required for `update_position`: `new_stop_loss`, `new_take_profit`, or both; include confidence.\n")
 		sb.WriteString("- **IMPORTANT**: all numeric values must be calculated numbers, NOT formulas/expressions (e.g. use `27.76`, not `3000 * 0.01`)\n")
 		if singleSymbol {
 			sb.WriteString(fmt.Sprintf("- **This strategy trades only %s.** The JSON `symbol` MUST match `%s` exactly — do not add USDT/USDC suffix variants.\n", primarySymbol, primarySymbol))
@@ -1049,10 +1059,10 @@ func (e *StrategyEngine) formatPositionInfo(index int, pos PositionInfo, ctx *Co
 		positionValue = -positionValue
 	}
 
-	sb.WriteString(fmt.Sprintf("%d. %s %s | Entry %.4f Current %.4f | Qty %.4f | Position Value %.2f USDT | PnL%+.2f%% | PnL Amount%+.2f USDT | Peak PnL%.2f%% | Leverage %dx | Margin %.0f | Liq Price %.4f%s\n\n",
+	sb.WriteString(fmt.Sprintf("%d. %s %s | Entry %.4f Current %.4f | Qty %.4f | Position Value %.2f USDT | PnL%+.2f%% | PnL Amount%+.2f USDT | Peak PnL%.2f%% | Stop %.4f | Target %.4f | Leverage %dx | Margin %.0f | Liq Price %.4f%s\n\n",
 		index, pos.Symbol, strings.ToUpper(pos.Side),
 		pos.EntryPrice, pos.MarkPrice, pos.Quantity, positionValue, pos.UnrealizedPnLPct, pos.UnrealizedPnL, pos.PeakPnLPct,
-		pos.Leverage, pos.MarginUsed, pos.LiquidationPrice, holdingDuration))
+		pos.StopLoss, pos.TakeProfit, pos.Leverage, pos.MarginUsed, pos.LiquidationPrice, holdingDuration))
 
 	if marketData, ok := ctx.MarketDataMap[pos.Symbol]; ok {
 		sb.WriteString(e.formatMarketData(marketData))

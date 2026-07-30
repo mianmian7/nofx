@@ -1,9 +1,7 @@
 package market
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
 	"math"
 	"nofx/logger"
 	"nofx/provider/hyperliquid"
@@ -257,36 +255,7 @@ func GetWithTimeframes(symbol string, timeframes []string, primaryTimeframe stri
 
 // getOpenInterestData retrieves OI data
 func getOpenInterestData(symbol string) (*OIData, error) {
-	url := fmt.Sprintf("https://fapi.binance.com/fapi/v1/openInterest?symbol=%s", symbol)
-
-	apiClient := NewAPIClient()
-	resp, err := apiClient.client.Get(url)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var result struct {
-		OpenInterest string `json:"openInterest"`
-		Symbol       string `json:"symbol"`
-		Time         int64  `json:"time"`
-	}
-
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, err
-	}
-
-	oi, _ := strconv.ParseFloat(result.OpenInterest, 64)
-
-	return &OIData{
-		Latest:  oi,
-		Average: oi * 0.999, // Approximate average
-	}, nil
+	return NewAPIClient().GetOpenInterest(symbol)
 }
 
 // getFundingRate retrieves funding rate (optimized: uses 1-hour cache)

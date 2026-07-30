@@ -764,6 +764,13 @@ func (s *Server) newConfiguredAIClient(userID, modelID string) (mcp.AIClient, *s
 		aiClient.SetAPIKey(apiKey, "", model.CustomModelName)
 	default:
 		aiClient.SetAPIKey(apiKey, model.CustomAPIURL, model.CustomModelName)
+		if model.CustomAPIURL != "" {
+			if configurator, ok := aiClient.(mcp.CustomURLConfigurator); ok {
+				if err := configurator.ConfigureCustomURL(model.CustomAPIURL); err != nil {
+					return nil, nil, fmt.Errorf("invalid custom model URL: %w", err)
+				}
+			}
+		}
 	}
 	aiClient.SetTimeout(90 * time.Second)
 	return aiClient, model, nil

@@ -36,9 +36,15 @@ func (at *AutoTrader) executeDecisionWithRecord(decision *kernel.Decision, actio
 		}
 	}
 	if at.executionMode == ExecutionModePaper && (decision.Action == "open_long" || decision.Action == "open_short") {
+		if _, err := at.validateBinanceOpenMarket(decision.Symbol); err != nil {
+			return err
+		}
 		if err := at.enforceOpenRiskBudget(decision); err != nil {
 			return err
 		}
+	}
+	if decision.Action == "update_position" {
+		return at.executeUpdatePositionWithRecord(decision, actionRecord)
 	}
 	if at.executionMode == ExecutionModePaper {
 		if at.paperBroker == nil {
@@ -80,6 +86,216 @@ func (at *AutoTrader) executeDecisionWithRecord(decision *kernel.Decision, actio
 	default:
 		return fmt.Errorf("unknown action: %s", decision.Action)
 	}
+}
+
+type managedPosition struct {
+	symbol, side         string
+	quantity             float64
+	entry, current       float64
+	stopLoss, takeProfit float64
+}
+
+func (at *AutoTrader) executeUpdatePositionWithRecord(decision *kernel.Decision, actionRecord *store.DecisionAction) error {
+	position, err := at.loadManagedPosition(decision.Symbol)
+	if err != nil {
+		return err
+	}
+	if err := validateProtectionUpdate(position, decision); err != nil {
+		return err
+	}
+
+	actionRecord.Action = decision.Action
+	actionRecord.Symbol = position.symbol
+	actionRecord.Quantity = position.quantity
+	actionRecord.Price = position.current
+	actionRecord.StopLoss = decision.NewStopLoss
+	actionRecord.TakeProfit = decision.NewTakeProfit
+	actionRecord.Timestamp = time.Now().UTC()
+
+	if at.executionMode == ExecutionModePaper {
+		if at.paperBroker == nil {
+			return fmt.Errorf("paper broker is not configured")
+		}
+		if _, err := at.paperBroker.ExecuteDecision(decision); err != nil {
+			return err
+		}
+		actionRecord.Success = true
+		return nil
+	}
+
+	positionSide := strings.ToUpper(position.side)
+	if decision.NewStopLoss > 0 {
+		if position.stopLoss <= 0 {
+			return fmt.Errorf("cannot safely replace stop loss for %s: current stop price is unknown", position.symbol)
+		}
+		if err := at.replaceStopLoss(position, positionSide, decision.NewStopLoss); err != nil {
+			return err
+		}
+	}
+	if decision.NewTakeProfit > 0 {
+		if position.takeProfit <= 0 {
+			return fmt.Errorf("cannot safely replace take profit for %s: current target price is unknown", position.symbol)
+		}
+		if err := at.replaceTakeProfit(position, positionSide, decision.NewTakeProfit); err != nil {
+			if decision.NewStopLoss <= 0 {
+				return err
+			}
+			if restoreErr := at.replaceStopLoss(position, positionSide, position.stopLoss); restoreErr != nil {
+				return fmt.Errorf("replace take profit: %v; CRITICAL: restore old stop %.4f failed: %v", err, position.stopLoss, restoreErr)
+			}
+			return fmt.Errorf("replace take profit: %w; old stop %.4f restored", err, position.stopLoss)
+		}
+	}
+	actionRecord.Success = true
+	return nil
+}
+
+func (at *AutoTrader) loadManagedPosition(symbol string) (managedPosition, error) {
+	positions, err := at.trader.GetPositions()
+	if err != nil {
+		return managedPosition{}, fmt.Errorf("get positions for protection update: %w", err)
+	}
+	normalized := normalizedDecisionSymbol(at.exchange, symbol)
+	var result managedPosition
+	for _, position := range positions {
+		positionSymbol, _ := position["symbol"].(string)
+		if normalizedDecisionSymbol(at.exchange, positionSymbol) != normalized {
+			continue
+		}
+		if result.symbol != "" {
+			return managedPosition{}, fmt.Errorf("position side is ambiguous for %s", symbol)
+		}
+		result.symbol = positionSymbol
+		result.side, _ = position["side"].(string)
+		result.quantity = math.Abs(floatFromPosition(position, "positionAmt", "quantity"))
+		result.entry = floatFromPosition(position, "entryPrice", "entry_price")
+		result.current = floatFromPosition(position, "markPrice", "mark_price")
+		result.stopLoss = floatFromPosition(position, "stop_loss", "stopLoss")
+		result.takeProfit = floatFromPosition(position, "take_profit", "takeProfit")
+	}
+	if result.symbol == "" || result.quantity <= 0 || result.entry <= 0 {
+		return managedPosition{}, fmt.Errorf("open position not found for %s", symbol)
+	}
+	if marketPrice, priceErr := at.trader.GetMarketPrice(result.symbol); priceErr == nil && marketPrice > 0 {
+		result.current = marketPrice
+	}
+	if result.current <= 0 {
+		return managedPosition{}, fmt.Errorf("current price unavailable for %s", symbol)
+	}
+	if result.stopLoss <= 0 || result.takeProfit <= 0 {
+		orders, orderErr := at.trader.GetOpenOrders(result.symbol)
+		if orderErr == nil {
+			for _, order := range orders {
+				if order.PositionSide != "" && !strings.EqualFold(order.PositionSide, result.side) {
+					continue
+				}
+				orderType := strings.ToUpper(order.Type)
+				trigger := order.StopPrice
+				if trigger <= 0 {
+					trigger = order.Price
+				}
+				switch {
+				case strings.Contains(orderType, "TAKE_PROFIT"):
+					result.takeProfit = trigger
+				case strings.Contains(orderType, "STOP"):
+					result.stopLoss = trigger
+				}
+			}
+		}
+	}
+	return result, nil
+}
+
+func validateProtectionUpdate(position managedPosition, decision *kernel.Decision) error {
+	if decision.NewStopLoss <= 0 && decision.NewTakeProfit <= 0 {
+		return fmt.Errorf("update_position requires new_stop_loss or new_take_profit")
+	}
+	long := strings.EqualFold(position.side, "long")
+	profitable := (long && position.current > position.entry) || (!long && position.current < position.entry)
+	if decision.NewStopLoss > 0 {
+		if long {
+			if decision.NewStopLoss >= position.current {
+				return fmt.Errorf("long stop %.4f must stay below current price %.4f", decision.NewStopLoss, position.current)
+			}
+			if position.stopLoss > 0 && decision.NewStopLoss <= position.stopLoss {
+				return fmt.Errorf("long stop may only tighten: current %.4f, requested %.4f", position.stopLoss, decision.NewStopLoss)
+			}
+			if profitable && decision.NewStopLoss < position.entry*1.001 {
+				return fmt.Errorf("profitable long stop must lock breakeven plus fees (minimum %.4f)", position.entry*1.001)
+			}
+		} else {
+			if decision.NewStopLoss <= position.current {
+				return fmt.Errorf("short stop %.4f must stay above current price %.4f", decision.NewStopLoss, position.current)
+			}
+			if position.stopLoss > 0 && decision.NewStopLoss >= position.stopLoss {
+				return fmt.Errorf("short stop may only tighten: current %.4f, requested %.4f", position.stopLoss, decision.NewStopLoss)
+			}
+			if profitable && decision.NewStopLoss > position.entry*0.999 {
+				return fmt.Errorf("profitable short stop must lock breakeven plus fees (maximum %.4f)", position.entry*0.999)
+			}
+		}
+	}
+	if decision.NewTakeProfit > 0 {
+		if decision.NewStopLoss <= 0 {
+			return fmt.Errorf("extending take profit requires a tightened new_stop_loss in the same decision")
+		}
+		if !profitable || decision.Confidence < 80 {
+			return fmt.Errorf("take-profit extension requires an already profitable position and confidence >= 80")
+		}
+		if position.takeProfit <= 0 {
+			return fmt.Errorf("current take-profit price is unavailable")
+		}
+		targetDistance := math.Abs(position.takeProfit - position.entry)
+		progress := math.Abs(position.current-position.entry) / targetDistance
+		if targetDistance <= 0 || progress < 0.55 {
+			return fmt.Errorf("take-profit extension is premature: %.0f%% of the current target path completed, need at least 55%%", progress*100)
+		}
+		maxStep := math.Min(targetDistance*0.5, position.current*0.03)
+		if long {
+			if decision.NewTakeProfit <= math.Max(position.current, position.takeProfit) {
+				return fmt.Errorf("long take profit may only extend beyond current target %.4f", position.takeProfit)
+			}
+			if decision.NewTakeProfit > position.takeProfit+maxStep {
+				return fmt.Errorf("long take-profit extension is too large; maximum next target %.4f", position.takeProfit+maxStep)
+			}
+		} else {
+			if decision.NewTakeProfit >= math.Min(position.current, position.takeProfit) {
+				return fmt.Errorf("short take profit may only extend below current target %.4f", position.takeProfit)
+			}
+			if decision.NewTakeProfit < position.takeProfit-maxStep {
+				return fmt.Errorf("short take-profit extension is too large; minimum next target %.4f", position.takeProfit-maxStep)
+			}
+		}
+	}
+	return nil
+}
+
+func (at *AutoTrader) replaceStopLoss(position managedPosition, positionSide string, requested float64) error {
+	if err := at.trader.CancelStopLossOrders(position.symbol); err != nil {
+		return fmt.Errorf("cancel current stop loss for %s: %w", position.symbol, err)
+	}
+	if err := at.trader.SetStopLoss(position.symbol, positionSide, position.quantity, requested); err != nil {
+		restoreErr := at.trader.SetStopLoss(position.symbol, positionSide, position.quantity, position.stopLoss)
+		if restoreErr != nil {
+			return fmt.Errorf("set new stop loss: %v; CRITICAL: restore old stop %.4f failed: %v", err, position.stopLoss, restoreErr)
+		}
+		return fmt.Errorf("set new stop loss: %w; old stop %.4f restored", err, position.stopLoss)
+	}
+	return nil
+}
+
+func (at *AutoTrader) replaceTakeProfit(position managedPosition, positionSide string, requested float64) error {
+	if err := at.trader.CancelTakeProfitOrders(position.symbol); err != nil {
+		return fmt.Errorf("cancel current take profit for %s: %w", position.symbol, err)
+	}
+	if err := at.trader.SetTakeProfit(position.symbol, positionSide, position.quantity, requested); err != nil {
+		restoreErr := at.trader.SetTakeProfit(position.symbol, positionSide, position.quantity, position.takeProfit)
+		if restoreErr != nil {
+			return fmt.Errorf("set new take profit: %v; CRITICAL: restore old target %.4f failed: %v", err, position.takeProfit, restoreErr)
+		}
+		return fmt.Errorf("set new take profit: %w; old target %.4f restored", err, position.takeProfit)
+	}
+	return nil
 }
 
 type leverageLimitProvider interface {
@@ -366,6 +582,22 @@ func validateExecutionSymbol(exchange, symbol string) error {
 	return nil
 }
 
+func (at *AutoTrader) validateBinanceOpenMarket(symbol string) (*market.MarketAvailability, error) {
+	if at == nil || (at.executionMode != ExecutionModePaper && !strings.EqualFold(at.exchange, "binance")) {
+		return nil, nil
+	}
+	// Tests and specialized in-memory traders may construct AutoTrader directly.
+	// Production instances always receive this client from NewAutoTrader.
+	if at.binanceMarketClient == nil {
+		return nil, nil
+	}
+	availability, err := at.binanceMarketClient.ValidateMarketAvailability(symbol)
+	if err != nil {
+		return nil, fmt.Errorf("refusing to open %s while Binance public market data is unavailable: %w", symbol, err)
+	}
+	return availability, nil
+}
+
 // executeOpenLongWithRecord executes open long position and records detailed information
 func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actionRecord *store.DecisionAction) error {
 	logger.Infof("  📈 Open long: %s", decision.Symbol)
@@ -392,6 +624,13 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 	marketData, err := market.GetWithExchange(decision.Symbol, at.exchange)
 	if err != nil {
 		return fmt.Errorf("failed to get market data for %s: %w", decision.Symbol, err)
+	}
+	availability, err := at.validateBinanceOpenMarket(decision.Symbol)
+	if err != nil {
+		return err
+	}
+	if availability != nil {
+		marketData.CurrentPrice = availability.Price
 	}
 
 	// Get balance (needed for multiple checks)
@@ -516,6 +755,13 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 	marketData, err := market.GetWithExchange(decision.Symbol, at.exchange)
 	if err != nil {
 		return fmt.Errorf("failed to get market data for %s: %w", decision.Symbol, err)
+	}
+	availability, err := at.validateBinanceOpenMarket(decision.Symbol)
+	if err != nil {
+		return err
+	}
+	if availability != nil {
+		marketData.CurrentPrice = availability.Price
 	}
 
 	// Get balance (needed for multiple checks)

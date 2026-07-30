@@ -15,5 +15,8 @@ export function buildUpdateTraderRequest(
     execution_mode: traderConfig.execution_mode,
     initial_balance: traderConfig.initial_balance,
     reset_paper_account: traderConfig.reset_paper_account,
+    startup_delay_minutes: traderConfig.startup_delay_minutes,
+    fallback_model_names: traderConfig.fallback_model_names,
+    fallback_ai_model_ids: traderConfig.fallback_ai_model_ids,
   }
 }

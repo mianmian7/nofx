@@ -27,15 +27,16 @@ type ModelConfig struct {
 
 // SafeModelConfig Safe model configuration structure (does not contain sensitive information)
 type SafeModelConfig struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	Provider        string `json:"provider"`
-	Enabled         bool   `json:"enabled"`
-	HasAPIKey       bool   `json:"has_api_key"`
-	CustomAPIURL    string `json:"customApiUrl"`    // Custom API URL (usually not sensitive)
-	CustomModelName string `json:"customModelName"` // Custom model name (not sensitive)
-	WalletAddress   string `json:"walletAddress,omitempty"`
-	BalanceUSDC     string `json:"balanceUsdc,omitempty"`
+	ID              string   `json:"id"`
+	Name            string   `json:"name"`
+	Provider        string   `json:"provider"`
+	Enabled         bool     `json:"enabled"`
+	HasAPIKey       bool     `json:"has_api_key"`
+	CustomAPIURL    string   `json:"customApiUrl"`    // Custom API URL (usually not sensitive)
+	CustomModelName string   `json:"customModelName"` // Custom model name (not sensitive)
+	ModelNames      []string `json:"modelNames,omitempty"`
+	WalletAddress   string   `json:"walletAddress,omitempty"`
+	BalanceUSDC     string   `json:"balanceUsdc,omitempty"`
 }
 
 // ModelConfigUpdate is a single model's update payload. It is a named type
@@ -43,10 +44,11 @@ type SafeModelConfig struct {
 // guaranteed to stay in sync with this shape — a mismatch there is what let
 // plaintext credentials reach the logs previously.
 type ModelConfigUpdate struct {
-	Enabled         bool   `json:"enabled"`
-	APIKey          string `json:"api_key"`
-	CustomAPIURL    string `json:"custom_api_url"`
-	CustomModelName string `json:"custom_model_name"`
+	Enabled         bool     `json:"enabled"`
+	APIKey          string   `json:"api_key"`
+	CustomAPIURL    string   `json:"custom_api_url"`
+	CustomModelName string   `json:"custom_model_name"`
+	ModelNames      []string `json:"model_names"`
 }
 
 type UpdateModelConfigRequest struct {
@@ -97,6 +99,7 @@ func (s *Server) handleGetModelConfigs(c *gin.Context) {
 			HasAPIKey:       model.APIKey != "",
 			CustomAPIURL:    model.CustomAPIURL,
 			CustomModelName: model.CustomModelName,
+			ModelNames:      store.DecodeStringList(model.ModelNames),
 		}
 
 		if model.Provider == "claw402" {
@@ -198,11 +201,25 @@ func (s *Server) handleUpdateModelConfigs(c *gin.Context) {
 		// SSRF protection: validate custom_api_url before storing
 		if modelData.CustomAPIURL != "" {
 			cleanURL := strings.TrimSuffix(modelData.CustomAPIURL, "#")
-			if err := security.ValidateURL(cleanURL); err != nil {
+			if err := security.ValidateModelURL(cleanURL); err != nil {
 				logger.Warnf("Invalid custom_api_url for model %s: %v", modelID, err)
-				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid custom_api_url for model %s: URL must be a valid HTTPS endpoint", modelID)})
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid custom_api_url for model %s: URL must be a valid HTTP(S) endpoint or an internal origin explicitly trusted by the operator", modelID)})
 				return
 			}
+		}
+
+		validatedModelNames, validationErr := s.validateModelConfigCatalogSelection(
+			c.Request.Context(),
+			userID,
+			modelID,
+			modelData,
+		)
+		if validationErr != nil {
+			SafeBadRequestWithDetails(c, "The selected models could not be verified against the configured API", "model.config.invalid_model_selection", nil)
+			return
+		}
+		if modelData.ModelNames != nil {
+			modelData.ModelNames = validatedModelNames
 		}
 
 		// Find traders using this AI model BEFORE updating
@@ -211,7 +228,16 @@ func (s *Server) handleUpdateModelConfigs(c *gin.Context) {
 			tradersToReload[t.ID] = true
 		}
 
-		err := s.store.AIModel().Update(userID, modelID, modelData.Enabled, modelData.APIKey, modelData.CustomAPIURL, modelData.CustomModelName)
+		err := s.store.AIModel().UpdateWithModelNames(
+			userID,
+			modelID,
+			"",
+			modelData.Enabled,
+			modelData.APIKey,
+			modelData.CustomAPIURL,
+			modelData.CustomModelName,
+			modelData.ModelNames,
+		)
 		if err != nil {
 			SafeInternalError(c, fmt.Sprintf("Update model %s", modelID), err)
 			return

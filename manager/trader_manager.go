@@ -88,30 +88,52 @@ func (tm *TraderManager) GetTraderIDs() []string {
 	return ids
 }
 
+func (tm *TraderManager) sortedTraderIDsLocked() []string {
+	traderIDs := make([]string, 0, len(tm.traders))
+	for traderID := range tm.traders {
+		traderIDs = append(traderIDs, traderID)
+	}
+	sort.Slice(traderIDs, func(firstIndex, secondIndex int) bool {
+		firstTrader := tm.traders[traderIDs[firstIndex]]
+		secondTrader := tm.traders[traderIDs[secondIndex]]
+		if firstTrader.GetName() == secondTrader.GetName() {
+			return traderIDs[firstIndex] < traderIDs[secondIndex]
+		}
+		return firstTrader.GetName() < secondTrader.GetName()
+	})
+	return traderIDs
+}
+
 // StartAll starts all traders
 func (tm *TraderManager) StartAll() {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
 
 	logger.Info("🚀 Starting all traders...")
-	for id, t := range tm.traders {
-		go func(traderID string, at *trader.AutoTrader) {
+	traderIDs := tm.sortedTraderIDsLocked()
+	for traderIndex, traderID := range traderIDs {
+		at := tm.traders[traderID]
+		go func(index int, traderID string, at *trader.AutoTrader) {
 			logger.Infof("%s ▶️ Starting trader runtime", traderLogTag(traderID, at.GetName()))
-			if err := at.Run(); err != nil {
+			startupDelay := at.GetStartupDelay()
+			if startupDelay <= 0 {
+				startupDelay = time.Duration(index) * 5 * time.Minute
+			}
+			if err := at.RunWithStartupDelay(startupDelay); err != nil {
 				logger.Warnf("%s runtime error: %v", traderLogTag(traderID, at.GetName()), err)
 			}
-		}(id, t)
+		}(traderIndex, traderID, at)
 	}
 }
 
-// StopAll stops all traders
+// StopAll permanently stops all trader runtimes and background monitors.
 func (tm *TraderManager) StopAll() {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
 
 	logger.Info("⏹  Stopping all traders...")
 	for _, t := range tm.traders {
-		t.Stop()
+		t.Shutdown()
 	}
 }
 
@@ -141,15 +163,23 @@ func (tm *TraderManager) AutoStartRunningTraders(st *store.Store) {
 	defer tm.mu.RUnlock()
 
 	startedCount := 0
-	for id, t := range tm.traders {
-		if runningTraderIDs[id] {
-			go func(traderID string, at *trader.AutoTrader) {
+	traderIDs := tm.sortedTraderIDsLocked()
+	runningIndex := 0
+	for _, traderID := range traderIDs {
+		at := tm.traders[traderID]
+		if runningTraderIDs[traderID] {
+			go func(index int, traderID string, at *trader.AutoTrader) {
 				logger.Infof("%s ▶️ Auto-restoring trader runtime", traderLogTag(traderID, at.GetName()))
-				if err := at.Run(); err != nil {
+				startupDelay := at.GetStartupDelay()
+				if startupDelay <= 0 {
+					startupDelay = time.Duration(index) * 5 * time.Minute
+				}
+				if err := at.RunWithStartupDelay(startupDelay); err != nil {
 					logger.Warnf("%s runtime error: %v", traderLogTag(traderID, at.GetName()), err)
 				}
-			}(id, t)
+			}(runningIndex, traderID, at)
 			startedCount++
+			runningIndex++
 		}
 	}
 
@@ -398,18 +428,14 @@ func (tm *TraderManager) GetTopTradersData() (map[string]interface{}, error) {
 
 // RemoveTrader removes a trader from memory (does not affect database)
 // Used to force reload when updating trader configuration
-// If the trader is running, it will be stopped first
+// The trader and its background monitors are permanently stopped first.
 func (tm *TraderManager) RemoveTrader(traderID string) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
 	if t, exists := tm.traders[traderID]; exists {
-		// Stop the trader if it's running (this ensures the goroutine exits)
-		status := t.GetStatus()
-		if isRunning, ok := status["is_running"].(bool); ok && isRunning {
-			logger.Infof("⏹ Stopping trader %s before removing from memory...", traderID)
-			t.Stop()
-		}
+		logger.Infof("⏹ Shutting down trader %s before removing from memory...", traderID)
+		t.Shutdown()
 		delete(tm.traders, traderID)
 		logger.Infof("✓ Trader %s removed from memory", traderID)
 	}
@@ -642,6 +668,70 @@ func (tm *TraderManager) LoadTradersFromStore(st *store.Store) error {
 }
 
 // addTraderFromStore internal method: adds trader from store configuration
+func buildTraderAIModelCandidates(traderCfg *store.Trader, primaryModel *store.AIModel, st *store.Store) ([]trader.AIModelCandidate, error) {
+	primaryAPIKey := store.ResolveAIModelAPIKey(primaryModel)
+	if primaryAPIKey == "" {
+		return nil, fmt.Errorf("primary AI model %s is missing credentials", primaryModel.ID)
+	}
+
+	candidates := []trader.AIModelCandidate{
+		{
+			ID:           primaryModel.ID,
+			Provider:     primaryModel.Provider,
+			APIKey:       primaryAPIKey,
+			CustomAPIURL: primaryModel.CustomAPIURL,
+			ModelName:    primaryModel.CustomModelName,
+		},
+	}
+
+	for _, modelName := range store.DecodeStringList(traderCfg.FallbackModelNames) {
+		if modelName == primaryModel.CustomModelName {
+			continue
+		}
+		candidates = append(candidates, trader.AIModelCandidate{
+			ID:           primaryModel.ID,
+			Provider:     primaryModel.Provider,
+			APIKey:       primaryAPIKey,
+			CustomAPIURL: primaryModel.CustomAPIURL,
+			ModelName:    modelName,
+		})
+	}
+
+	configuredFallbackIDs := store.DecodeStringList(traderCfg.FallbackAIModelIDs)
+	if len(configuredFallbackIDs) == 0 {
+		return candidates, nil
+	}
+
+	availableModels, err := st.AIModel().List(traderCfg.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load fallback AI models: %w", err)
+	}
+
+	modelsByID := make(map[string]*store.AIModel, len(availableModels))
+	for _, model := range availableModels {
+		modelsByID[model.ID] = model
+	}
+	for _, fallbackID := range configuredFallbackIDs {
+		fallbackModel, exists := modelsByID[fallbackID]
+		if !exists || fallbackModel == nil {
+			return nil, fmt.Errorf("fallback AI model %s does not exist", fallbackID)
+		}
+		fallbackAPIKey := store.ResolveAIModelAPIKey(fallbackModel)
+		if !fallbackModel.Enabled || fallbackAPIKey == "" {
+			return nil, fmt.Errorf("fallback AI model %s is disabled or missing credentials", fallbackID)
+		}
+		candidates = append(candidates, trader.AIModelCandidate{
+			ID:           fallbackModel.ID,
+			Provider:     fallbackModel.Provider,
+			APIKey:       fallbackAPIKey,
+			CustomAPIURL: fallbackModel.CustomAPIURL,
+			ModelName:    fallbackModel.CustomModelName,
+		})
+	}
+
+	return candidates, nil
+}
+
 func (tm *TraderManager) addTraderFromStore(traderCfg *store.Trader, aiModelCfg *store.AIModel, exchangeCfg *store.Exchange, st *store.Store) error {
 	if _, exists := tm.traders[traderCfg.ID]; exists {
 		return fmt.Errorf("trader ID '%s' already exists", traderCfg.ID)
@@ -679,6 +769,22 @@ func (tm *TraderManager) addTraderFromStore(traderCfg *store.Trader, aiModelCfg 
 		return fmt.Errorf("Hyperliquid trading authorization is incomplete for exchange %s; reconnect Hyperliquid wallet and complete trading authorization before starting trader %s", exchangeCfg.AccountName, traderCfg.Name)
 	}
 
+	scanIntervalMinutes := traderCfg.ScanIntervalMinutes
+	if scanIntervalMinutes <= 0 {
+		scanIntervalMinutes = 15
+	} else if scanIntervalMinutes < 3 {
+		scanIntervalMinutes = 3
+	}
+	startupDelayMinutes := traderCfg.StartupDelayMinutes
+	if startupDelayMinutes < 0 || startupDelayMinutes >= scanIntervalMinutes {
+		logger.Warnf("⚠️ Invalid startup delay %d for trader %s; resetting to zero", startupDelayMinutes, traderCfg.Name)
+		startupDelayMinutes = 0
+	}
+	modelCandidates, err := buildTraderAIModelCandidates(traderCfg, aiModelCfg, st)
+	if err != nil {
+		return fmt.Errorf("failed to configure AI models for trader %s: %w", traderCfg.Name, err)
+	}
+
 	// Build AutoTraderConfig (ai500APIURL/oiTopAPIURL obtained from strategy config, used in StrategyEngine)
 	traderConfig := trader.AutoTraderConfig{
 		ID:                    traderCfg.ID,
@@ -697,7 +803,9 @@ func (tm *TraderManager) addTraderFromStore(traderCfg *store.Trader, aiModelCfg 
 		QwenKey:               "",
 		CustomAPIURL:          aiModelCfg.CustomAPIURL,
 		CustomModelName:       aiModelCfg.CustomModelName,
-		ScanInterval:          time.Duration(traderCfg.ScanIntervalMinutes) * time.Minute,
+		AIModelCandidates:     modelCandidates,
+		ScanInterval:          time.Duration(scanIntervalMinutes) * time.Minute,
+		StartupDelay:          time.Duration(startupDelayMinutes) * time.Minute,
 		InitialBalance:        traderCfg.InitialBalance,
 		IsCrossMargin:         traderCfg.IsCrossMargin,
 		ShowInCompetition:     traderCfg.ShowInCompetition,
@@ -706,8 +814,8 @@ func (tm *TraderManager) addTraderFromStore(traderCfg *store.Trader, aiModelCfg 
 		StrategyConfigRaw:     strategyConfigRaw,
 	}
 
-	logger.Infof("📊 Loading trader %s: ScanIntervalMinutes=%d (from DB), ScanInterval=%v",
-		traderCfg.Name, traderCfg.ScanIntervalMinutes, traderConfig.ScanInterval)
+	logger.Infof("📊 Loading trader %s: ScanIntervalMinutes=%d, StartupDelayMinutes=%d, ScanInterval=%v, AI candidates=%d",
+		traderCfg.Name, scanIntervalMinutes, startupDelayMinutes, traderConfig.ScanInterval, len(modelCandidates))
 
 	// Set API keys based on exchange type (convert EncryptedString to string)
 	switch exchangeCfg.ExchangeType {
@@ -782,6 +890,7 @@ func (tm *TraderManager) addTraderFromStore(traderCfg *store.Trader, aiModelCfg 
 	}
 
 	tm.traders[traderCfg.ID] = at
+	at.StartBackgroundMonitoring()
 	logger.Infof("✓ Trader '%s' (%s + %s/%s) loaded to memory", traderCfg.Name, aiModelCfg.Provider, exchangeCfg.ExchangeType, exchangeCfg.AccountName)
 
 	// Auto-start if trader was running before shutdown

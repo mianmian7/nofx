@@ -409,21 +409,23 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
         apiKey: '',
         customApiUrl: '',
         customModelName: '',
+        modelNames: [],
         enabled: false,
       }),
-      buildRequest: (models) => ({
-        models: Object.fromEntries(
-          models.map((model) => [
-            model.provider,
-            {
-              enabled: model.enabled,
-              api_key: model.apiKey || '',
-              custom_api_url: model.customApiUrl || '',
-              custom_model_name: model.customModelName || '',
+      buildRequest: (models) => {
+        const model = models.find((item) => item.id === modelId)!
+        return {
+          models: {
+            [model.id]: {
+              enabled: false,
+              api_key: '',
+              custom_api_url: '',
+              custom_model_name: '',
+              model_names: [],
             },
-          ])
-        ),
-      }),
+          },
+        }
+      },
       updateApi: api.updateModelConfigs,
       refreshApi: api.getModelConfigs,
       setItems: (items) => {
@@ -441,7 +443,8 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
     modelId: string,
     apiKey: string,
     customApiUrl?: string,
-    customModelName?: string
+    customModelName?: string,
+    modelNames: string[] = []
   ) => {
     try {
       const existingModel = allModels?.find((m) => m.id === modelId)
@@ -463,6 +466,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
                   apiKey,
                   customApiUrl: customApiUrl || '',
                   customModelName: customModelName || '',
+                  modelNames,
                   enabled: true,
                 }
               : m
@@ -473,23 +477,23 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
           apiKey,
           customApiUrl: customApiUrl || '',
           customModelName: customModelName || '',
+          modelNames,
           enabled: true,
         }
         updatedModels = [...(allModels || []), newModel]
       }
 
+      const savedModel = updatedModels.find((model) => model.id === modelId)!
       const request = {
-        models: Object.fromEntries(
-          updatedModels.map((model) => [
-            model.provider,
-            {
-              enabled: model.enabled,
-              api_key: model.apiKey || '',
-              custom_api_url: model.customApiUrl || '',
-              custom_model_name: model.customModelName || '',
-            },
-          ])
-        ),
+        models: {
+          [savedModel.id]: {
+            enabled: savedModel.enabled,
+            api_key: savedModel.apiKey || '',
+            custom_api_url: savedModel.customApiUrl || '',
+            custom_model_name: savedModel.customModelName || '',
+            model_names: savedModel.modelNames || [],
+          },
+        },
       }
 
       await api.updateModelConfigs(request)

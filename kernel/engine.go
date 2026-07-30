@@ -37,6 +37,8 @@ type PositionInfo struct {
 	PeakPnLPct       float64 `json:"peak_pnl_pct"` // Historical peak profit percentage
 	LiquidationPrice float64 `json:"liquidation_price"`
 	MarginUsed       float64 `json:"margin_used"`
+	StopLoss         float64 `json:"stop_loss,omitempty"`
+	TakeProfit       float64 `json:"take_profit,omitempty"`
 	UpdateTime       int64   `json:"update_time"` // Position update timestamp (milliseconds)
 }
 
@@ -116,7 +118,7 @@ type Context struct {
 // Decision AI trading decision
 type Decision struct {
 	Symbol string `json:"symbol"`
-	Action string `json:"action"` // Standard: "open_long", "open_short", "close_long", "close_short", "hold", "wait"
+	Action string `json:"action"` // Standard: "open_long", "open_short", "close_long", "close_short", "update_position", "hold", "wait"
 	// Grid actions: "place_buy_limit", "place_sell_limit", "cancel_order", "cancel_all_orders", "pause_grid", "resume_grid", "adjust_grid"
 
 	// Opening position parameters
@@ -124,6 +126,8 @@ type Decision struct {
 	PositionSizeUSD float64 `json:"position_size_usd,omitempty"`
 	StopLoss        float64 `json:"stop_loss,omitempty"`
 	TakeProfit      float64 `json:"take_profit,omitempty"`
+	NewStopLoss     float64 `json:"new_stop_loss,omitempty"`
+	NewTakeProfit   float64 `json:"new_take_profit,omitempty"`
 
 	// Grid trading parameters
 	Price      float64 `json:"price,omitempty"`       // Limit order price (for grid)

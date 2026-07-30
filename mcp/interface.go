@@ -10,6 +10,12 @@ type ClientEmbedder interface {
 	BaseClient() *Client
 }
 
+// CustomURLConfigurator applies the same SSRF policy to a custom model URL
+// that is used by the runtime HTTP client, not only when the URL is saved.
+type CustomURLConfigurator interface {
+	ConfigureCustomURL(rawURL string) error
+}
+
 // AIClient public AI client interface (for external use)
 type AIClient interface {
 	SetAPIKey(apiKey string, customURL string, customModel string)

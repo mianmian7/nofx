@@ -348,6 +348,9 @@ func (b *PaperBroker) ExecuteDecision(decision *kernel.Decision) (PaperFill, err
 	if decision.Action == "hold" || decision.Action == "wait" {
 		return PaperFill{Symbol: decision.Symbol, Action: decision.Action, Time: time.Now().UTC()}, nil
 	}
+	if decision.Action == "update_position" {
+		return b.updateProtection(decision)
+	}
 	if decision.Action == "close_long" || decision.Action == "close_short" {
 		side := "long"
 		if decision.Action == "close_short" {
@@ -449,6 +452,55 @@ func (b *PaperBroker) ExecuteDecision(decision *kernel.Decision) (PaperFill, err
 		return PaperFill{}, err
 	}
 	return fill, nil
+}
+
+func (b *PaperBroker) updateProtection(decision *kernel.Decision) (PaperFill, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	var key string
+	var position PaperPosition
+	for candidateKey, candidate := range b.positions {
+		if strings.EqualFold(candidate.Symbol, decision.Symbol) {
+			if key != "" {
+				return PaperFill{}, fmt.Errorf("paper position side is ambiguous for %s", decision.Symbol)
+			}
+			key, position = candidateKey, candidate
+		}
+	}
+	if key == "" {
+		return PaperFill{}, fmt.Errorf("paper position not found for %s", decision.Symbol)
+	}
+
+	now := b.now()
+	if decision.NewStopLoss > 0 {
+		position.StopLoss = decision.NewStopLoss
+	}
+	if decision.NewTakeProfit > 0 {
+		position.TakeProfit = decision.NewTakeProfit
+		for orderID, order := range b.pendingOrders {
+			if strings.EqualFold(order.Symbol, position.Symbol) && paperIsTakeProfitAction(order.Action) {
+				delete(b.pendingOrders, orderID)
+				order.UpdatedAt = now
+				b.recordOrderEventLocked(order, "CANCELED", "protection_replaced", 0, 0)
+			}
+		}
+		tp := PaperPendingOrder{
+			OrderID: b.nextID, Symbol: position.Symbol, Action: paperTakeProfitAction(position.Side),
+			Side: position.Side, LimitPrice: position.TakeProfit,
+			Quantity: position.Quantity, RemainingQuantity: position.Quantity,
+			Leverage: position.Leverage, ReduceOnly: true, Status: "NEW",
+			CreatedAt: now, UpdatedAt: now,
+		}
+		b.nextID++
+		b.pendingOrders[tp.OrderID] = tp
+		b.recordOrderEventLocked(tp, "NEW", "protection_updated", 0, 0)
+	}
+	b.positions[key] = position
+	if err := b.persistLocked(); err != nil {
+		return PaperFill{}, err
+	}
+	return PaperFill{Symbol: position.Symbol, Action: decision.Action, Side: position.Side, Time: now}, nil
 }
 
 func (b *PaperBroker) placeMakerClose(symbol, action, side string) (PaperFill, error) {
