@@ -6,6 +6,7 @@ import type {
   Statistics,
   TraderFullStats,
   CompetitionData,
+  PublicTraderConfigData,
   PositionHistoryResponse,
 } from '../../types'
 import { API_BASE, httpClient } from './helpers'
@@ -448,8 +449,10 @@ export const dataApi = {
     return result.data!
   },
 
-  async getPublicTraderConfig(traderId: string): Promise<any> {
-    const result = await httpClient.get<any>(
+  async getPublicTraderConfig(
+    traderId: string
+  ): Promise<PublicTraderConfigData> {
+    const result = await httpClient.get<PublicTraderConfigData>(
       `${API_BASE}/traders/${traderId}/public-config`
     )
     if (!result.success) throw new Error('Failed to fetch public trader config')

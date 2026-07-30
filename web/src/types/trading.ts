@@ -286,6 +286,18 @@ export interface CompetitionData {
   count: number
 }
 
+// Public trader configuration returned by the competition endpoint.
+export interface PublicTraderConfigData {
+  trader_id: string
+  trader_name: string
+  ai_model: string
+  exchange: string
+  is_running: boolean
+  invert_signals?: boolean
+  ai_provider?: string
+  start_time?: string
+}
+
 // Trader Configuration Data for View Modal
 export interface TraderConfigData {
   trader_id?: string

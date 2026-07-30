@@ -1,4 +1,4 @@
-import type { TraderConfigData } from '../../types'
+import type { PublicTraderConfigData } from '../../types'
 import { t } from '../../i18n/translations'
 import { useLanguage } from '../../contexts/LanguageContext'
 import { PunkAvatar, getTraderAvatar } from '../common/PunkAvatar'
@@ -12,7 +12,7 @@ function getShortName(fullName: string): string {
 interface TraderConfigViewModalProps {
   isOpen: boolean
   onClose: () => void
-  traderData?: TraderConfigData | null
+  traderData?: PublicTraderConfigData | null
 }
 
 export function TraderConfigViewModal({
@@ -112,51 +112,24 @@ export function TraderConfigViewModal({
               />
               <InfoRow
                 label={t('traderConfigView.exchange', language)}
-                value={getShortName(traderData.exchange_id).toUpperCase()}
+                value={getShortName(traderData.exchange).toUpperCase()}
               />
               <InfoRow
-                label={t('traderConfigView.initialBalance', language)}
-                value={`$${traderData.initial_balance.toLocaleString()}`}
-              />
-              <InfoRow
-                label={t('traderConfigView.marginMode', language)}
-                value={
-                  traderData.is_cross_margin
-                    ? t('traderConfigView.crossMargin', language)
-                    : t('traderConfigView.isolatedMargin', language)
+                label={
+                  language === 'zh' ? '信号决策模式' : 'Signal Decision Mode'
                 }
-              />
-              <InfoRow
-                label={t('traderConfigView.scanIntervalLabel', language)}
-                value={t('traderConfigView.scanInterval', language, {
-                  minutes: traderData.scan_interval_minutes || 15,
-                })}
-              />
-              <InfoRow
-                label={language === 'zh' ? '信号决策模式' : 'Signal Decision Mode'}
                 value={
                   traderData.invert_signals
-                    ? (language === 'zh' ? '🔄 开启反向交易 (开多↔开空取反)' : '🔄 Inverted Signals')
-                    : (language === 'zh' ? '➡️ 正向交易 (标准)' : '➡️ Standard Signals')
+                    ? language === 'zh'
+                      ? '🔄 开启反向交易 (开多↔开空取反)'
+                      : '🔄 Inverted Signals'
+                    : language === 'zh'
+                      ? '➡️ 正向交易 (标准)'
+                      : '➡️ Standard Signals'
                 }
               />
             </div>
           </div>
-
-          {/* Strategy Info - only show if strategy is bound */}
-          {traderData.strategy_id && (
-            <div className="bg-nofx-bg border border-nofx-gold/20 rounded-lg p-5">
-              <h3 className="text-lg font-semibold text-nofx-text mb-4 flex items-center gap-2">
-                {'📋 ' + t('traderConfigView.strategyUsed', language)}
-              </h3>
-              <div className="space-y-3">
-                <InfoRow
-                  label={t('traderConfigView.strategyName', language)}
-                  value={traderData.strategy_name || traderData.strategy_id}
-                />
-              </div>
-            </div>
-          )}
         </div>
 
         {/* Footer */}

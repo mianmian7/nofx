@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Trophy } from 'lucide-react'
 import useSWR from 'swr'
 import { api } from '../../lib/api'
-import type { CompetitionData } from '../../types'
+import type { CompetitionData, PublicTraderConfigData } from '../../types'
 import { ComparisonChart } from '../charts/ComparisonChart'
 import { TraderConfigViewModal } from './TraderConfigViewModal'
 import { getTraderColor } from '../../utils/traderColors'
@@ -13,7 +13,8 @@ import { DeepVoidBackground } from '../common/DeepVoidBackground'
 
 export function CompetitionPage() {
   const { language } = useLanguage()
-  const [selectedTrader, setSelectedTrader] = useState<any>(null)
+  const [selectedTrader, setSelectedTrader] =
+    useState<PublicTraderConfigData | null>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
 
   const { data: competition } = useSWR<CompetitionData>(
