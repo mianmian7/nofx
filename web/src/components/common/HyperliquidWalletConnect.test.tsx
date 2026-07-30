@@ -22,13 +22,31 @@ vi.mock('../../lib/api', () => ({
 }))
 
 vi.mock('../../lib/hyperliquidWallet', () => ({
-  buildTypedData: vi.fn(),
   formatUSDC: (value?: number) =>
     typeof value === 'number' ? value.toFixed(2) : '--',
   getPreferredWalletProvider: () => mocks.getProvider(),
   normalizeAddress: (value: string) => value.toLowerCase(),
   shortAddress: (value?: string) => value || '--',
-  splitSignature: () => ({ r: '0x1', s: '0x2', v: 27 }),
+  signHyperliquidUserAction: async (
+    provider: {
+      request: (args: {
+        method: string
+        params?: unknown[]
+      }) => Promise<unknown>
+    },
+    signerAddress: string,
+    action: Record<string, unknown>
+  ) => {
+    const raw = await provider.request({
+      method: 'eth_signTypedData_v4',
+      params: [signerAddress, '{}'],
+    })
+    if (typeof raw !== 'string') throw new Error('Invalid test signature')
+    return {
+      action: { ...action, signatureChainId: '0xa4b1' },
+      signature: { r: '0x1', s: '0x2', v: 27 },
+    }
+  },
 }))
 
 describe('Hyperliquid guided connection', () => {
