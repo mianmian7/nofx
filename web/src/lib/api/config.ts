@@ -9,6 +9,37 @@ import type {
   CurrentBeginnerWalletResponse,
 } from '../../types'
 import { API_BASE, httpClient, CryptoService } from './helpers'
+import { diagnoseWebCryptoEnvironment } from '../crypto'
+
+async function encryptSensitivePayload(request: unknown): Promise<unknown> {
+  const config = await CryptoService.fetchCryptoConfig()
+  if (config.transport_encryption !== true) {
+    throw new Error(
+      'Sensitive configuration writes are disabled until transport encryption is enabled'
+    )
+  }
+
+  const environment = diagnoseWebCryptoEnvironment()
+  if (
+    !environment.hasSubtleCrypto ||
+    (!environment.isSecureContext && !environment.isLocalhost)
+  ) {
+    throw new Error(
+      'Sensitive configuration writes require HTTPS or a localhost secure context'
+    )
+  }
+
+  const publicKey = await CryptoService.fetchPublicKey()
+  if (!publicKey) {
+    throw new Error('Server did not provide a transport-encryption public key')
+  }
+  await CryptoService.initialize(publicKey)
+  return CryptoService.encryptSensitiveData(
+    JSON.stringify(request),
+    localStorage.getItem('user_id') || '',
+    sessionStorage.getItem('session_id') || ''
+  )
+}
 
 export const configApi = {
   async getModelConfigs(): Promise<AIModel[]> {
@@ -31,17 +62,7 @@ export const configApi = {
     api_key: string
     custom_api_url: string
   }): Promise<string[]> {
-    const encryptionConfig = await CryptoService.fetchCryptoConfig()
-    let payload: unknown = request
-    if (encryptionConfig.transport_encryption) {
-      const publicKey = await CryptoService.fetchPublicKey()
-      await CryptoService.initialize(publicKey)
-      payload = await CryptoService.encryptSensitiveData(
-        JSON.stringify(request),
-        localStorage.getItem('user_id') || '',
-        sessionStorage.getItem('session_id') || ''
-      )
-    }
+    const payload = await encryptSensitivePayload(request)
     const result = await httpClient.post<{ models: string[] }>(
       `${API_BASE}/models/discover`,
       payload
@@ -61,34 +82,7 @@ export const configApi = {
   },
 
   async updateModelConfigs(request: UpdateModelConfigRequest): Promise<void> {
-    // Check if transport encryption is enabled
-    const config = await CryptoService.fetchCryptoConfig()
-
-    if (!config.transport_encryption) {
-      // Transport encryption disabled, send plaintext
-      const result = await httpClient.put(`${API_BASE}/models`, request)
-      if (!result.success) throw new Error('Failed to update model configs')
-      return
-    }
-
-    // Fetch RSA public key
-    const publicKey = await CryptoService.fetchPublicKey()
-
-    // Initialize crypto service
-    await CryptoService.initialize(publicKey)
-
-    // Get user info from localStorage
-    const userId = localStorage.getItem('user_id') || ''
-    const sessionId = sessionStorage.getItem('session_id') || ''
-
-    // Encrypt sensitive data
-    const encryptedPayload = await CryptoService.encryptSensitiveData(
-      JSON.stringify(request),
-      userId,
-      sessionId
-    )
-
-    // Send encrypted data
+    const encryptedPayload = await encryptSensitivePayload(request)
     const result = await httpClient.put(`${API_BASE}/models`, encryptedPayload)
     if (!result.success) throw new Error('Failed to update model configs')
   },
@@ -120,55 +114,19 @@ export const configApi = {
   async updateExchangeConfigs(
     request: UpdateExchangeConfigRequest
   ): Promise<void> {
-    const result = await httpClient.put(`${API_BASE}/exchanges`, request)
-    if (!result.success) throw new Error('Failed to update exchange configs')
+    return configApi.updateExchangeConfigsEncrypted(request)
   },
 
   async createExchange(
     request: CreateExchangeRequest
   ): Promise<{ id: string }> {
-    const result = await httpClient.post<{ id: string }>(
-      `${API_BASE}/exchanges`,
-      request
-    )
-    if (!result.success) throw new Error('Failed to create exchange account')
-    return result.data!
+    return configApi.createExchangeEncrypted(request)
   },
 
   async createExchangeEncrypted(
     request: CreateExchangeRequest
   ): Promise<{ id: string }> {
-    // Check if transport encryption is enabled
-    const config = await CryptoService.fetchCryptoConfig()
-
-    if (!config.transport_encryption) {
-      // Transport encryption disabled, send plaintext
-      const result = await httpClient.post<{ id: string }>(
-        `${API_BASE}/exchanges`,
-        request
-      )
-      if (!result.success) throw new Error('Failed to create exchange account')
-      return result.data!
-    }
-
-    // Fetch RSA public key
-    const publicKey = await CryptoService.fetchPublicKey()
-
-    // Initialize crypto service
-    await CryptoService.initialize(publicKey)
-
-    // Get user info
-    const userId = localStorage.getItem('user_id') || ''
-    const sessionId = sessionStorage.getItem('session_id') || ''
-
-    // Encrypt sensitive data
-    const encryptedPayload = await CryptoService.encryptSensitiveData(
-      JSON.stringify(request),
-      userId,
-      sessionId
-    )
-
-    // Send encrypted data
+    const encryptedPayload = await encryptSensitivePayload(request)
     const result = await httpClient.post<{ id: string }>(
       `${API_BASE}/exchanges`,
       encryptedPayload
@@ -187,34 +145,7 @@ export const configApi = {
   async updateExchangeConfigsEncrypted(
     request: UpdateExchangeConfigRequest
   ): Promise<void> {
-    // Check if transport encryption is enabled
-    const config = await CryptoService.fetchCryptoConfig()
-
-    if (!config.transport_encryption) {
-      // Transport encryption disabled, send plaintext
-      const result = await httpClient.put(`${API_BASE}/exchanges`, request)
-      if (!result.success) throw new Error('Failed to update exchange configs')
-      return
-    }
-
-    // Fetch RSA public key
-    const publicKey = await CryptoService.fetchPublicKey()
-
-    // Initialize crypto service
-    await CryptoService.initialize(publicKey)
-
-    // Get user info from localStorage
-    const userId = localStorage.getItem('user_id') || ''
-    const sessionId = sessionStorage.getItem('session_id') || ''
-
-    // Encrypt sensitive data
-    const encryptedPayload = await CryptoService.encryptSensitiveData(
-      JSON.stringify(request),
-      userId,
-      sessionId
-    )
-
-    // Send encrypted data
+    const encryptedPayload = await encryptSensitivePayload(request)
     const result = await httpClient.put(
       `${API_BASE}/exchanges`,
       encryptedPayload

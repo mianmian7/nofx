@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"nofx/config"
 	"nofx/crypto"
 	"nofx/mcp"
 	"nofx/security"
@@ -181,12 +180,6 @@ func (s *Server) decodeModelDiscoveryRequest(c *gin.Context) (*modelDiscoveryReq
 		return nil, err
 	}
 	var request modelDiscoveryRequest
-	if !config.Get().TransportEncryption {
-		if err := json.Unmarshal(body, &request); err != nil {
-			return nil, err
-		}
-		return &request, nil
-	}
 
 	var encryptedPayload crypto.EncryptedPayload
 	if err := json.Unmarshal(body, &encryptedPayload); err != nil {
@@ -207,6 +200,9 @@ func (s *Server) decodeModelDiscoveryRequest(c *gin.Context) (*modelDiscoveryReq
 
 func (s *Server) handleDiscoverAIModels(c *gin.Context) {
 	userID := c.GetString("user_id")
+	if !requireTransportEncryption(c) {
+		return
+	}
 	request, err := s.decodeModelDiscoveryRequest(c)
 	if err != nil {
 		SafeBadRequest(c, "Invalid model discovery request")

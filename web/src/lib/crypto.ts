@@ -44,6 +44,9 @@ export class CryptoService {
       throw new Error(`Failed to fetch crypto config: ${response.statusText}`)
     }
     const data = await response.json()
+    if (typeof data.transport_encryption !== 'boolean') {
+      throw new Error('Server returned an invalid transport-encryption configuration')
+    }
     this._transportEncryption = data.transport_encryption
     return data
   }
@@ -176,7 +179,11 @@ export class CryptoService {
     if (typeof data.transport_encryption === 'boolean') {
       this._transportEncryption = data.transport_encryption
     }
-    return data.public_key || ''
+    const publicKey = data.public_key || ''
+    if (this._transportEncryption !== true || !publicKey) {
+      throw new Error('Server did not provide an active transport-encryption key')
+    }
+    return publicKey
   }
 
   // NOTE: there is intentionally no decryptSensitiveData() here. Transport

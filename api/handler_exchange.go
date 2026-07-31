@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strings"
 
-	"nofx/config"
 	"nofx/crypto"
 	"nofx/logger"
 	"nofx/store"
@@ -162,10 +161,12 @@ func effectiveHyperliquidUnifiedAccount(exchangeType string, requested *bool, fa
 	return false
 }
 
-// handleUpdateExchangeConfigs Update exchange configurations (supports both encrypted and plain text based on config)
+// handleUpdateExchangeConfigs updates exchange configurations using encrypted transport only.
 func (s *Server) handleUpdateExchangeConfigs(c *gin.Context) {
 	userID := c.GetString("user_id")
-	cfg := config.Get()
+	if !requireTransportEncryption(c) {
+		return
+	}
 
 	// Read raw request body
 	bodyBytes, err := c.GetRawData()
@@ -175,52 +176,39 @@ func (s *Server) handleUpdateExchangeConfigs(c *gin.Context) {
 	}
 
 	var req UpdateExchangeConfigRequest
-
-	// Check if transport encryption is enabled
-	if !cfg.TransportEncryption {
-		// Transport encryption disabled, accept plain JSON
-		if err := json.Unmarshal(bodyBytes, &req); err != nil {
-			logger.Infof("❌ Failed to parse plain JSON request: %v", err)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
-			return
-		}
-		logger.Infof("📝 Received plain text exchange config (UserID: %s)", userID)
-	} else {
-		// Transport encryption enabled, require encrypted payload
-		var encryptedPayload crypto.EncryptedPayload
-		if err := json.Unmarshal(bodyBytes, &encryptedPayload); err != nil {
-			logger.Infof("❌ Failed to parse encrypted payload: %v", err)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format, encrypted transmission required"})
-			return
-		}
-
-		// Verify encrypted data
-		if encryptedPayload.WrappedKey == "" {
-			logger.Infof("❌ Detected unencrypted request (UserID: %s)", userID)
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error":   "This endpoint only supports encrypted transmission, please use encrypted client",
-				"code":    "ENCRYPTION_REQUIRED",
-				"message": "Encrypted transmission is required for security reasons",
-			})
-			return
-		}
-
-		// Decrypt data
-		decrypted, err := s.cryptoHandler.cryptoService.DecryptSensitiveData(&encryptedPayload)
-		if err != nil {
-			logger.Infof("❌ Failed to decrypt exchange config (UserID: %s): %v", userID, err)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to decrypt data"})
-			return
-		}
-
-		// Parse decrypted data
-		if err := json.Unmarshal([]byte(decrypted), &req); err != nil {
-			logger.Infof("❌ Failed to parse decrypted data: %v", err)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to parse decrypted data"})
-			return
-		}
-		logger.Infof("🔓 Decrypted exchange config data (UserID: %s)", userID)
+	var encryptedPayload crypto.EncryptedPayload
+	if err := json.Unmarshal(bodyBytes, &encryptedPayload); err != nil {
+		logger.Infof("❌ Failed to parse encrypted payload: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format, encrypted transmission required"})
+		return
 	}
+
+	// Verify encrypted data
+	if encryptedPayload.WrappedKey == "" {
+		logger.Infof("❌ Detected unencrypted request (UserID: %s)", userID)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "This endpoint only supports encrypted transmission, please use encrypted client",
+			"code":    "ENCRYPTION_REQUIRED",
+			"message": "Encrypted transmission is required for security reasons",
+		})
+		return
+	}
+
+	// Decrypt data
+	decrypted, err := s.cryptoHandler.cryptoService.DecryptSensitiveData(&encryptedPayload)
+	if err != nil {
+		logger.Infof("❌ Failed to decrypt exchange config (UserID: %s): %v", userID, err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to decrypt data"})
+		return
+	}
+
+	// Parse decrypted data
+	if err := json.Unmarshal([]byte(decrypted), &req); err != nil {
+		logger.Infof("❌ Failed to parse decrypted data: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to parse decrypted data"})
+		return
+	}
+	logger.Infof("🔓 Decrypted exchange config data (UserID: %s)", userID)
 
 	// Update each exchange's configuration and track traders that need reload
 	tradersToReload := make(map[string]bool)
@@ -338,7 +326,9 @@ func (s *Server) handleUpdateExchangeConfigs(c *gin.Context) {
 // handleCreateExchange Create a new exchange account
 func (s *Server) handleCreateExchange(c *gin.Context) {
 	userID := c.GetString("user_id")
-	cfg := config.Get()
+	if !requireTransportEncryption(c) {
+		return
+	}
 
 	// Read raw request body
 	bodyBytes, err := c.GetRawData()
@@ -348,42 +338,30 @@ func (s *Server) handleCreateExchange(c *gin.Context) {
 	}
 
 	var req CreateExchangeRequest
+	var encryptedPayload crypto.EncryptedPayload
+	if err := json.Unmarshal(bodyBytes, &encryptedPayload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format, encrypted transmission required"})
+		return
+	}
 
-	// Check if transport encryption is enabled
-	if !cfg.TransportEncryption {
-		// Transport encryption disabled, accept plain JSON
-		if err := json.Unmarshal(bodyBytes, &req); err != nil {
-			logger.Infof("❌ Failed to parse plain JSON request: %v", err)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
-			return
-		}
-	} else {
-		// Transport encryption enabled, require encrypted payload
-		var encryptedPayload crypto.EncryptedPayload
-		if err := json.Unmarshal(bodyBytes, &encryptedPayload); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format, encrypted transmission required"})
-			return
-		}
+	if encryptedPayload.WrappedKey == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "This endpoint only supports encrypted transmission",
+			"code":    "ENCRYPTION_REQUIRED",
+			"message": "Encrypted transmission is required for security reasons",
+		})
+		return
+	}
 
-		if encryptedPayload.WrappedKey == "" {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error":   "This endpoint only supports encrypted transmission",
-				"code":    "ENCRYPTION_REQUIRED",
-				"message": "Encrypted transmission is required for security reasons",
-			})
-			return
-		}
+	decrypted, err := s.cryptoHandler.cryptoService.DecryptSensitiveData(&encryptedPayload)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to decrypt data"})
+		return
+	}
 
-		decrypted, err := s.cryptoHandler.cryptoService.DecryptSensitiveData(&encryptedPayload)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to decrypt data"})
-			return
-		}
-
-		if err := json.Unmarshal([]byte(decrypted), &req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to parse decrypted data"})
-			return
-		}
+	if err := json.Unmarshal([]byte(decrypted), &req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to parse decrypted data"})
+		return
 	}
 
 	// Validate exchange type

@@ -39,8 +39,8 @@ type Config struct {
 	DBSSLMode  string // PostgreSQL SSL mode
 
 	// Security configuration
-	// TransportEncryption enables browser-side encryption for API keys
-	// Requires HTTPS or localhost. Set to false for HTTP access via IP.
+	// TransportEncryption enables browser-side encryption for API keys. Sensitive
+	// configuration writes are rejected when this is disabled.
 	TransportEncryption bool
 
 	// Experience improvement (anonymous usage statistics)
@@ -75,6 +75,7 @@ func Init() {
 func initConfig() error {
 	cfg := &Config{
 		APIServerPort:         8080,
+		TransportEncryption:   true,
 		ExperienceImprovement: true, // Default: enabled to help improve the product
 		// Database defaults
 		DBType:    "sqlite",
@@ -106,8 +107,8 @@ func initConfig() error {
 		}
 	}
 
-	// Transport encryption: default false for easier deployment
-	// Set TRANSPORT_ENCRYPTION=true to enable (requires HTTPS or localhost)
+	// Transport encryption is secure-by-default. Setting it false disables all
+	// sensitive configuration writes rather than allowing plaintext credentials.
 	if v := os.Getenv("TRANSPORT_ENCRYPTION"); v != "" {
 		cfg.TransportEncryption = strings.ToLower(v) == "true"
 	}
