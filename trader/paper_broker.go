@@ -283,7 +283,11 @@ func NewPaperBroker(config PaperBrokerConfig, prices PaperPriceSource) (*PaperBr
 		config.MaintenanceMarginRatio = 0.005
 	}
 	if config.MarkStaleTTL <= 0 {
-		config.MarkStaleTTL = 30 * time.Second
+		// The background paper monitor runs every 30s by default. Keeping a
+		// mark for three monitor intervals lets one delayed/failed refresh
+		// degrade to a cached mark without immediately blocking risk context
+		// construction, while still failing closed after a bounded window.
+		config.MarkStaleTTL = 90 * time.Second
 	}
 	if config.FundingHistoryFallbackInterval <= 0 {
 		config.FundingHistoryFallbackInterval = 5 * time.Minute
@@ -1169,6 +1173,19 @@ func (b *PaperBroker) Snapshot() PaperSnapshot {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return b.snapshotLocked()
+}
+
+// HasActiveExecution reports whether the paper broker has any state that
+// requires exchange-backed execution or risk refreshes. It is intentionally a
+// cheap, read-only check used by the background monitor to avoid touching
+// Binance while a paper trader is idle.
+func (b *PaperBroker) HasActiveExecution() bool {
+	if b == nil {
+		return false
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return len(b.positions) > 0 || len(b.pendingOrders) > 0
 }
 
 func (b *PaperBroker) RecentFills(limit int) []PaperFill {

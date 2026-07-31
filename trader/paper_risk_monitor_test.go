@@ -166,6 +166,28 @@ func TestPaperRiskMonitorContinuesAfterAutomaticTradingIsPaused(t *testing.T) {
 	}
 }
 
+func TestPaperRiskMonitorSkipsIdleBroker(t *testing.T) {
+	prices := &mutablePaperPriceSource{price: 100}
+	broker, err := NewPaperBroker(PaperBrokerConfig{InitialBalance: 1_000}, prices)
+	if err != nil {
+		t.Fatalf("NewPaperBroker: %v", err)
+	}
+	if broker.HasActiveExecution() {
+		t.Fatal("new paper broker should be idle")
+	}
+
+	at := newMonitorTestAutoTrader(ExecutionModePaper, broker, 2*time.Millisecond)
+	at.stopMonitorCh = make(chan struct{})
+	at.startPaperRiskMonitor()
+	time.Sleep(20 * time.Millisecond)
+	close(at.stopMonitorCh)
+	at.monitorWg.Wait()
+
+	if calls := prices.Calls(); calls != 0 {
+		t.Fatalf("idle paper monitor price calls = %d, want 0", calls)
+	}
+}
+
 func TestLiveModeDoesNotStartPaperRiskMonitor(t *testing.T) {
 	prices := &mutablePaperPriceSource{price: 100}
 	broker, err := NewPaperBroker(PaperBrokerConfig{InitialBalance: 1_000}, prices)
@@ -352,6 +374,36 @@ func TestPaperRefreshUsesFreshCachedMarkButFailsClosedAfterTTL(t *testing.T) {
 	err = broker.RefreshOpenPositions()
 	if err == nil || CanContinueWithCachedPaperMarks(err) {
 		t.Fatalf("expired-cache refresh error = %v, want fail-closed error", err)
+	}
+}
+
+func TestPaperRefreshUsesDefaultCachedMarkTTL(t *testing.T) {
+	now := time.Date(2026, 7, 22, 15, 0, 0, 0, time.UTC)
+	prices := &switchablePaperPriceSource{price: 100}
+	broker, err := NewPaperBroker(PaperBrokerConfig{
+		InitialBalance: 1_000,
+		Clock:          func() time.Time { return now },
+	}, prices)
+	if err != nil {
+		t.Fatalf("NewPaperBroker: %v", err)
+	}
+	if _, err := broker.ExecuteDecision(&kernel.Decision{
+		Symbol: "MUUSDT", Action: "open_long", PositionSizeUSD: 300, Leverage: 3,
+	}); err != nil {
+		t.Fatalf("open_long: %v", err)
+	}
+	prices.err = io.ErrUnexpectedEOF
+
+	now = now.Add(89 * time.Second)
+	err = broker.RefreshOpenPositions()
+	if err == nil || !CanContinueWithCachedPaperMarks(err) {
+		t.Fatalf("default-TTL fresh-cache refresh error = %v, want cached-mark warning", err)
+	}
+
+	now = now.Add(2 * time.Second)
+	err = broker.RefreshOpenPositions()
+	if err == nil || CanContinueWithCachedPaperMarks(err) {
+		t.Fatalf("default-TTL expired-cache refresh error = %v, want fail-closed error", err)
 	}
 }
 

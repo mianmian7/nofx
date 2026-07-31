@@ -8,7 +8,7 @@ func (at *AutoTrader) startPaperRiskMonitor() {
 	}
 	interval := at.config.PaperRiskMonitorInterval
 	if interval <= 0 {
-		interval = 5 * time.Second
+		interval = defaultPaperRiskMonitorInterval
 	}
 	at.monitorWg.Add(1)
 	go func() {
@@ -19,6 +19,12 @@ func (at *AutoTrader) startPaperRiskMonitor() {
 		for {
 			select {
 			case <-ticker.C:
+				// An idle paper trader has no marks to refresh and no maker
+				// orders to reconcile. Do not issue even a public Binance
+				// request until the broker has active execution state.
+				if !at.paperBroker.HasActiveExecution() {
+					continue
+				}
 				now := at.paperBroker.now()
 				if fills, err := at.paperBroker.RefreshMakerOrders(now); err != nil {
 					at.logWarnf("⚠️ Paper maker-order refresh failed: %v", err)

@@ -26,6 +26,11 @@ import (
 	"time"
 )
 
+// Keep paper risk refreshes independent from the AI loop while avoiding a
+// high-frequency Binance poll for every paper trader. The broker skips the
+// refresh entirely while it has no positions or pending orders.
+const defaultPaperRiskMonitorInterval = 30 * time.Second
+
 func (at *AutoTrader) logTag() string {
 	if at == nil {
 		return "[trader_id=unknown]"
@@ -225,7 +230,7 @@ type AutoTrader struct {
 func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*AutoTrader, error) {
 	// Set default values
 	if config.PaperRiskMonitorInterval <= 0 {
-		config.PaperRiskMonitorInterval = 5 * time.Second
+		config.PaperRiskMonitorInterval = defaultPaperRiskMonitorInterval
 	}
 	if config.PaperFundingMonitorInterval <= 0 {
 		config.PaperFundingMonitorInterval = time.Minute
