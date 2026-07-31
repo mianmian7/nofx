@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"nofx/hook"
 	"strings"
 	"sync"
@@ -437,6 +438,123 @@ func TestGetKlinesKeepsBinanceTradFiSymbol(t *testing.T) {
 	}
 	if len(klines) != 1 || klines[0].Close != 120.9 || klines[0].Trades != 42 {
 		t.Fatalf("klines = %#v", klines)
+	}
+}
+
+func TestGetKlinesUsesLastValidSnapshotAfterTransientFailure(t *testing.T) {
+	var calls atomic.Int32
+	coordinator := newBinancePublicCoordinator()
+	client := &APIClient{
+		baseURL: "https://binance.test",
+		client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if calls.Add(1) == 1 {
+				return binanceJSONResponse(`[[1784650000000,"120.1","121.2","119.8","120.9","10.5",1784650059999,"1269.45",42,"5.2","628.68","0"]]`), nil
+			}
+			return &http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Body:       io.NopCloser(strings.NewReader(`{"code":-1003,"msg":"Too many requests"}`)),
+				Header:     make(http.Header),
+			}, nil
+		})},
+		coordinator: coordinator,
+	}
+
+	first, err := client.GetKlines("MUUSDT", "1m", 3)
+	if err != nil {
+		t.Fatalf("initial GetKlines: %v", err)
+	}
+	path := binancePath("/fapi/v1/klines", url.Values{
+		"symbol": {"MUUSDT"}, "interval": {"1m"}, "limit": {"3"},
+	})
+	coordinator.cacheMutex.Lock()
+	entry := coordinator.cache[client.binanceBaseURL()+"|"+path]
+	entry.expiresAt = time.Now().Add(-time.Second)
+	coordinator.cache[client.binanceBaseURL()+"|"+path] = entry
+	coordinator.cacheMutex.Unlock()
+
+	second, err := client.GetKlines("MUUSDT", "1m", 3)
+	if err != nil {
+		t.Fatalf("fallback GetKlines: %v", err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls.Load())
+	}
+	if len(second) != len(first) || second[0].Close != first[0].Close {
+		t.Fatalf("fallback klines = %#v, want %#v", second, first)
+	}
+}
+
+func TestGetKlinesFreshRejectsUpstreamFailureInsteadOfUsingSnapshot(t *testing.T) {
+	var calls atomic.Int32
+	coordinator := newBinancePublicCoordinator()
+	client := &APIClient{
+		baseURL: "https://binance.test",
+		client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if calls.Add(1) == 1 {
+				return binanceJSONResponse(`[[1784650000000,"120.1","121.2","119.8","120.9","10.5",1784650059999,"1269.45",42,"5.2","628.68","0"]]`), nil
+			}
+			return &http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Body:       io.NopCloser(strings.NewReader(`{"code":-1003,"msg":"Too many requests"}`)),
+				Header:     make(http.Header),
+			}, nil
+		})},
+		coordinator: coordinator,
+	}
+
+	if _, err := client.GetKlines("MUUSDT", "1m", 3); err != nil {
+		t.Fatalf("initial GetKlines: %v", err)
+	}
+	path := binancePath("/fapi/v1/klines", url.Values{
+		"symbol": {"MUUSDT"}, "interval": {"1m"}, "limit": {"3"},
+	})
+	coordinator.cacheMutex.Lock()
+	entry := coordinator.cache[client.binanceBaseURL()+"|"+path]
+	entry.expiresAt = time.Now().Add(-time.Second)
+	coordinator.cache[client.binanceBaseURL()+"|"+path] = entry
+	coordinator.cacheMutex.Unlock()
+
+	if _, err := client.GetKlinesFresh("MUUSDT", "1m", 3); err == nil {
+		t.Fatal("GetKlinesFresh unexpectedly returned the cached K-line snapshot")
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("upstream calls = %d, want 2", got)
+	}
+}
+
+func TestGetKlinesUsesLastValidSnapshotAfterEmptyResponse(t *testing.T) {
+	var calls atomic.Int32
+	coordinator := newBinancePublicCoordinator()
+	client := &APIClient{
+		baseURL: "https://binance.test",
+		client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if calls.Add(1) == 1 {
+				return binanceJSONResponse(`[[1784650000000,"120.1","121.2","119.8","120.9","10.5",1784650059999,"1269.45",42,"5.2","628.68","0"]]`), nil
+			}
+			return binanceJSONResponse(`[]`), nil
+		})},
+		coordinator: coordinator,
+	}
+
+	first, err := client.GetKlines("MUUSDT", "15m", 200)
+	if err != nil {
+		t.Fatalf("initial GetKlines: %v", err)
+	}
+	path := binancePath("/fapi/v1/klines", url.Values{
+		"symbol": {"MUUSDT"}, "interval": {"15m"}, "limit": {"200"},
+	})
+	coordinator.cacheMutex.Lock()
+	entry := coordinator.cache[client.binanceBaseURL()+"|"+path]
+	entry.expiresAt = time.Now().Add(-time.Second)
+	coordinator.cache[client.binanceBaseURL()+"|"+path] = entry
+	coordinator.cacheMutex.Unlock()
+
+	second, err := client.GetKlines("MUUSDT", "15m", 200)
+	if err != nil {
+		t.Fatalf("empty-response fallback GetKlines: %v", err)
+	}
+	if calls.Load() != 2 || len(second) != len(first) {
+		t.Fatalf("calls/klines = %d/%#v, want 2 and the last valid snapshot", calls.Load(), second)
 	}
 }
 

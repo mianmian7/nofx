@@ -143,6 +143,19 @@ func (at *AutoTrader) runCycle() error {
 	}
 
 	if err != nil {
+		var marketDataErr *kernel.MarketDataUnavailableError
+		if errors.As(err, &marketDataErr) {
+			at.logWarnf("⏭️ Skipping live AI decision: %v", marketDataErr)
+			record.Success = false
+			record.ErrorMessage = fmt.Sprintf("Skipped AI decision because fresh Binance market data was unavailable: %v", marketDataErr)
+			record.ExecutionLog = append(record.ExecutionLog, record.ErrorMessage)
+			if saveErr := at.saveDecision(record); saveErr != nil {
+				at.logWarnf("⚠ Failed to save decision record: %v", saveErr)
+			}
+			// This is an upstream market-data safety stop, not an AI failure;
+			// do not increment consecutive AI failures or enter AI safe mode.
+			return nil
+		}
 		at.consecutiveAIFailures++
 		record.Success = false
 		record.ErrorMessage = fmt.Sprintf("Failed to get AI decision: %v", err)
@@ -642,9 +655,10 @@ func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 
 	// 6. Build context
 	ctx := &kernel.Context{
-		CurrentTime:    time.Now().UTC().Format("2006-01-02 15:04:05 UTC"),
-		RuntimeMinutes: int(time.Since(at.startTime).Minutes()),
-		CallCount:      callCount,
+		CurrentTime:            time.Now().UTC().Format("2006-01-02 15:04:05 UTC"),
+		RuntimeMinutes:         int(time.Since(at.startTime).Minutes()),
+		CallCount:              callCount,
+		RequireFreshMarketData: at.executionMode == ExecutionModeLive && strings.EqualFold(at.exchange, "binance"),
 		Account: kernel.AccountInfo{
 			TotalEquity:      totalEquity,
 			AvailableBalance: availableBalance,

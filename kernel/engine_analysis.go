@@ -12,6 +12,38 @@ import (
 	"time"
 )
 
+// MarketDataUnavailableError tells the trader loop that no AI call should be
+// attempted because live decision data was not fresh enough. It is separate
+// from an AI provider failure so the trader does not enter AI safe mode merely
+// because Binance temporarily refused market data.
+type MarketDataUnavailableError struct {
+	Symbols []string
+	Cause   error
+}
+
+func (err *MarketDataUnavailableError) Error() string {
+	if err == nil {
+		return "fresh market data unavailable"
+	}
+	if len(err.Symbols) == 0 {
+		if err.Cause != nil {
+			return fmt.Sprintf("fresh market data unavailable: %v", err.Cause)
+		}
+		return "fresh market data unavailable"
+	}
+	if err.Cause != nil {
+		return fmt.Sprintf("fresh market data unavailable for %s: %v", strings.Join(err.Symbols, ", "), err.Cause)
+	}
+	return fmt.Sprintf("fresh market data unavailable for %s", strings.Join(err.Symbols, ", "))
+}
+
+func (err *MarketDataUnavailableError) Unwrap() error {
+	if err == nil {
+		return nil
+	}
+	return err.Cause
+}
+
 // ============================================================================
 // Pre-compiled regular expressions (performance optimization)
 // ============================================================================
@@ -83,6 +115,8 @@ func GetFullDecisionWithStrategy(ctx *Context, mcpClient mcp.AIClient, engine *S
 		if err := fetchMarketDataWithStrategy(ctx, engine); err != nil {
 			return nil, fmt.Errorf("failed to fetch market data: %w", err)
 		}
+	} else if ctx.RequireFreshMarketData && !ctx.MarketDataFetchedFresh {
+		return nil, &MarketDataUnavailableError{Cause: fmt.Errorf("preloaded market data has no freshness proof")}
 	}
 	pruneCandidateCoinsWithoutMarketData(ctx)
 	enrichVergexDataWithStrategy(ctx, engine)
@@ -170,6 +204,7 @@ func enrichVergexDataWithStrategy(ctx *Context, engine *StrategyEngine) {
 func fetchMarketDataWithStrategy(ctx *Context, engine *StrategyEngine) error {
 	config := engine.GetConfig()
 	ctx.MarketDataMap = make(map[string]*market.Data)
+	ctx.MarketDataFetchedFresh = false
 
 	timeframes := config.Indicators.Klines.SelectedTimeframes
 	primaryTimeframe := config.Indicators.Klines.PrimaryTimeframe
@@ -197,9 +232,18 @@ func fetchMarketDataWithStrategy(ctx *Context, engine *StrategyEngine) error {
 
 	// 1. First fetch data for position coins (must fetch)
 	for _, pos := range ctx.Positions {
-		data, err := market.GetWithTimeframes(pos.Symbol, timeframes, primaryTimeframe, klineCount)
+		var data *market.Data
+		var err error
+		if ctx.RequireFreshMarketData {
+			data, err = market.GetWithTimeframesFresh(pos.Symbol, timeframes, primaryTimeframe, klineCount)
+		} else {
+			data, err = market.GetWithTimeframes(pos.Symbol, timeframes, primaryTimeframe, klineCount)
+		}
 		if err != nil {
 			logger.Infof("⚠️  Failed to fetch market data for position %s: %v", pos.Symbol, err)
+			if ctx.RequireFreshMarketData {
+				return &MarketDataUnavailableError{Symbols: []string{pos.Symbol}, Cause: err}
+			}
 			continue
 		}
 		ctx.MarketDataMap[pos.Symbol] = data
@@ -218,9 +262,18 @@ func fetchMarketDataWithStrategy(ctx *Context, engine *StrategyEngine) error {
 			continue
 		}
 
-		data, err := market.GetWithTimeframes(coin.Symbol, timeframes, primaryTimeframe, klineCount)
+		var data *market.Data
+		var err error
+		if ctx.RequireFreshMarketData {
+			data, err = market.GetWithTimeframesFresh(coin.Symbol, timeframes, primaryTimeframe, klineCount)
+		} else {
+			data, err = market.GetWithTimeframes(coin.Symbol, timeframes, primaryTimeframe, klineCount)
+		}
 		if err != nil {
 			logger.Infof("⚠️  Failed to fetch market data for %s: %v", coin.Symbol, err)
+			// Candidate coins fail open by skipping the individual symbol: a
+			// single newly-listed/delisted pair must not block the whole live
+			// decision. Open positions still fail closed above.
 			continue
 		}
 
@@ -241,6 +294,7 @@ func fetchMarketDataWithStrategy(ctx *Context, engine *StrategyEngine) error {
 	}
 
 	logger.Infof("📊 Successfully fetched multi-timeframe market data for %d coins", len(ctx.MarketDataMap))
+	ctx.MarketDataFetchedFresh = ctx.RequireFreshMarketData
 	return nil
 }
 

@@ -3,6 +3,7 @@ package market
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -289,6 +290,21 @@ func (c *APIClient) Get24hrTickers() ([]Ticker24hr, error) {
 // public endpoint. Binance symbols are normalized without consulting any
 // Hyperliquid/XYZ asset registry.
 func (c *APIClient) GetKlines(symbol, interval string, limit int) ([]Kline, error) {
+	return c.getKlines(symbol, interval, limit, true)
+}
+
+// GetKlinesFresh is the strict variant used by live decision making. It never
+// substitutes the 20-minute stale snapshot when Binance fails or returns
+// malformed data. It still reuses the normal short-TTL response cache (and
+// singleflight coalescing) shared with GetKlines: "fresh" only means the data
+// is never older than the standard 5s K-line TTL. Callers that need bounded
+// degradation (paper trading, UI, diagnostics) should continue to use
+// GetKlines.
+func (c *APIClient) GetKlinesFresh(symbol, interval string, limit int) ([]Kline, error) {
+	return c.getKlines(symbol, interval, limit, false)
+}
+
+func (c *APIClient) getKlines(symbol, interval string, limit int, allowStale bool) ([]Kline, error) {
 	var err error
 	symbol, err = NormalizeBinanceSymbol(symbol)
 	if err != nil {
@@ -310,9 +326,36 @@ func (c *APIClient) GetKlines(symbol, interval string, limit int) ([]Kline, erro
 	})
 	var raw [][]json.RawMessage
 	if err := c.getBinanceJSON(path, &raw); err != nil {
+		if allowStale {
+			return c.klineFallback(path, err)
+		}
 		return nil, err
 	}
+	klines, err := parseBinanceKlines(raw)
+	if err != nil {
+		if allowStale {
+			return c.klineFallback(path, err)
+		}
+		return nil, err
+	}
+	if err := validateBinanceKlines(klines); err != nil {
+		if allowStale {
+			return c.klineFallback(path, err)
+		}
+		return nil, err
+	}
+	if len(klines) == 0 {
+		emptyErr := fmt.Errorf("binance klines response is empty")
+		if allowStale {
+			return c.klineFallback(path, emptyErr)
+		}
+		return nil, emptyErr
+	}
+	c.requestCoordinator().storeKlines(c.klineCacheKey(path), klines, time.Now())
+	return klines, nil
+}
 
+func parseBinanceKlines(raw [][]json.RawMessage) ([]Kline, error) {
 	klines := make([]Kline, 0, len(raw))
 	for i, item := range raw {
 		if len(item) < 11 {
@@ -354,6 +397,61 @@ func (c *APIClient) GetKlines(symbol, interval string, limit int) ([]Kline, erro
 	return klines, nil
 }
 
+func validateBinanceKlines(klines []Kline) error {
+	if len(klines) == 0 {
+		return fmt.Errorf("binance klines response is empty")
+	}
+	var previousOpenTime int64
+	for index, kline := range klines {
+		for field, value := range map[string]float64{
+			"open": kline.Open, "high": kline.High, "low": kline.Low, "close": kline.Close,
+		} {
+			if value <= 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+				return fmt.Errorf("binance kline %d has invalid %s price", index, field)
+			}
+		}
+		if kline.OpenTime > 0 && previousOpenTime > 0 && kline.OpenTime < previousOpenTime {
+			return fmt.Errorf("binance klines are not sorted by open time")
+		}
+		if kline.OpenTime > 0 && kline.CloseTime > 0 && kline.CloseTime < kline.OpenTime {
+			return fmt.Errorf("binance kline %d has invalid close time", index)
+		}
+		if kline.OpenTime > 0 {
+			previousOpenTime = kline.OpenTime
+		}
+	}
+	return nil
+}
+
+func (c *APIClient) klineCacheKey(path string) string {
+	return c.binanceBaseURL() + "|" + path
+}
+
+func (c *APIClient) klineFallback(path string, cause error) ([]Kline, error) {
+	if !shouldUseKlineFallback(cause) {
+		return nil, cause
+	}
+	klines, age, ok := c.requestCoordinator().getStaleKlines(c.klineCacheKey(path), time.Now())
+	if !ok {
+		return nil, cause
+	}
+	log.Printf("Binance K-line request failed; using last valid snapshot (age=%s, path=%s): %v", age.Round(time.Second), path, cause)
+	return klines, nil
+}
+
+func shouldUseKlineFallback(err error) bool {
+	if err == nil {
+		return false
+	}
+	var requestError *BinancePublicError
+	if errors.As(err, &requestError) {
+		return requestError.StatusCode == 0 || requestError.StatusCode == http.StatusTooManyRequests ||
+			requestError.StatusCode == http.StatusTeapot || requestError.StatusCode == http.StatusUnavailableForLegalReasons ||
+			requestError.StatusCode >= http.StatusInternalServerError
+	}
+	return true
+}
+
 func parseBinanceFloat(raw json.RawMessage) (float64, error) {
 	return strconv.ParseFloat(strings.Trim(string(raw), `"`), 64)
 }
@@ -364,6 +462,13 @@ func parseBinanceInt64(raw json.RawMessage) (int64, error) {
 
 func GetBinanceKlines(symbol, interval string, limit int) ([]Kline, error) {
 	return NewAPIClient().GetKlines(symbol, interval, limit)
+}
+
+// GetBinanceKlinesFresh returns only a fresh upstream K-line response. It is
+// intended for live decision paths that must fail closed during a Binance or
+// proxy outage instead of reasoning from an old snapshot.
+func GetBinanceKlinesFresh(symbol, interval string, limit int) ([]Kline, error) {
+	return NewAPIClient().GetKlinesFresh(symbol, interval, limit)
 }
 
 func (c *APIClient) getBinanceJSON(path string, target any) error {
@@ -389,10 +494,7 @@ func (c *APIClient) getBinanceResponseBody(path string, allowCache bool) ([]byte
 	if c.initializationError != nil {
 		return nil, c.initializationError
 	}
-	clientBaseURL := c.baseURL
-	if clientBaseURL == "" {
-		clientBaseURL = baseURL
-	}
+	clientBaseURL := c.binanceBaseURL()
 	baseRequestKey := clientBaseURL + "|" + path
 	requestKey := baseRequestKey
 	if !allowCache {
@@ -447,6 +549,13 @@ func (c *APIClient) getBinanceResponseBody(path string, allowCache bool) ([]byte
 		return nil, fmt.Errorf("unexpected Binance response type %T", response)
 	}
 	return append([]byte(nil), responseBody...), nil
+}
+
+func (c *APIClient) binanceBaseURL() string {
+	if c.baseURL == "" {
+		return baseURL
+	}
+	return c.baseURL
 }
 
 func (c *APIClient) executeBinanceRequest(clientBaseURL, path string) ([]byte, error) {

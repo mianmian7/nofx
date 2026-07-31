@@ -13,9 +13,13 @@ import (
 )
 
 const (
-	binancePriceCacheTTL        = 2 * time.Second
-	binanceDepthCacheTTL        = 500 * time.Millisecond
-	binanceKlineCacheTTL        = 5 * time.Second
+	binancePriceCacheTTL = 2 * time.Second
+	binanceDepthCacheTTL = 500 * time.Millisecond
+	binanceKlineCacheTTL = 5 * time.Second
+	// Keep the last valid K-line snapshot long enough to bridge a short-lived
+	// Binance/proxy outage (including the 30s public circuit cooldown). The
+	// snapshot is analysis-only; order entry still requires a fresh price.
+	binanceKlineStaleTTL        = 20 * time.Minute
 	binanceOpenInterestCacheTTL = 15 * time.Second
 	binanceFundingCacheTTL      = 10 * time.Second
 	binanceTickerCacheTTL       = 30 * time.Second
@@ -68,6 +72,11 @@ type binanceCacheEntry struct {
 	expiresAt time.Time
 }
 
+type binanceKlineCacheEntry struct {
+	klines    []Kline
+	fetchedAt time.Time
+}
+
 type binanceCircuitState struct {
 	active        bool
 	statusCode    int
@@ -81,13 +90,46 @@ type binancePublicCoordinator struct {
 
 	cacheMutex sync.RWMutex
 	cache      map[string]binanceCacheEntry
+	klineCache map[string]binanceKlineCacheEntry
 
 	circuitMutex sync.Mutex
 	circuit      binanceCircuitState
 }
 
 func newBinancePublicCoordinator() *binancePublicCoordinator {
-	return &binancePublicCoordinator{cache: make(map[string]binanceCacheEntry)}
+	return &binancePublicCoordinator{
+		cache:      make(map[string]binanceCacheEntry),
+		klineCache: make(map[string]binanceKlineCacheEntry),
+	}
+}
+
+func (coordinator *binancePublicCoordinator) getStaleKlines(cacheKey string, now time.Time) ([]Kline, time.Duration, bool) {
+	coordinator.cacheMutex.RLock()
+	entry, exists := coordinator.klineCache[cacheKey]
+	coordinator.cacheMutex.RUnlock()
+	if !exists || len(entry.klines) == 0 || entry.fetchedAt.IsZero() {
+		return nil, 0, false
+	}
+	age := now.Sub(entry.fetchedAt)
+	if age < 0 || age > binanceKlineStaleTTL {
+		return nil, 0, false
+	}
+	return append([]Kline(nil), entry.klines...), age, true
+}
+
+func (coordinator *binancePublicCoordinator) storeKlines(cacheKey string, klines []Kline, fetchedAt time.Time) {
+	if len(klines) == 0 {
+		return
+	}
+	coordinator.cacheMutex.Lock()
+	if coordinator.klineCache == nil {
+		coordinator.klineCache = make(map[string]binanceKlineCacheEntry)
+	}
+	coordinator.klineCache[cacheKey] = binanceKlineCacheEntry{
+		klines:    append([]Kline(nil), klines...),
+		fetchedAt: fetchedAt,
+	}
+	coordinator.cacheMutex.Unlock()
 }
 
 func (coordinator *binancePublicCoordinator) getFreshResponse(requestKey string, now time.Time) ([]byte, bool) {

@@ -95,24 +95,29 @@ type RecentOrder struct {
 
 // Context trading context (complete information passed to AI)
 type Context struct {
-	CurrentTime        string                             `json:"current_time"`
-	RuntimeMinutes     int                                `json:"runtime_minutes"`
-	CallCount          int                                `json:"call_count"`
-	Account            AccountInfo                        `json:"account"`
-	Positions          []PositionInfo                     `json:"positions"`
-	CandidateCoins     []CandidateCoin                    `json:"candidate_coins"`
-	PromptVariant      string                             `json:"prompt_variant,omitempty"`
-	TradingStats       *TradingStats                      `json:"trading_stats,omitempty"`
-	RecentOrders       []RecentOrder                      `json:"recent_orders,omitempty"`
-	MarketDataMap      map[string]*market.Data            `json:"-"`
-	MultiTFMarket      map[string]map[string]*market.Data `json:"-"`
-	OITopDataMap       map[string]*OITopData              `json:"-"`
-	QuantDataMap       map[string]*QuantData              `json:"-"`
-	VergexDataMap      map[string]*vergex.MarketAnalysis  `json:"-"`
-	OIRankingData      *nofxos.OIRankingData              `json:"-"` // Market-wide OI ranking data
-	NetFlowRankingData *nofxos.NetFlowRankingData         `json:"-"` // Market-wide fund flow ranking data
-	PriceRankingData   *nofxos.PriceRankingData           `json:"-"` // Market-wide price gainers/losers
-	Timeframes         []string                           `json:"-"`
+	CurrentTime    string                             `json:"current_time"`
+	RuntimeMinutes int                                `json:"runtime_minutes"`
+	CallCount      int                                `json:"call_count"`
+	Account        AccountInfo                        `json:"account"`
+	Positions      []PositionInfo                     `json:"positions"`
+	CandidateCoins []CandidateCoin                    `json:"candidate_coins"`
+	PromptVariant  string                             `json:"prompt_variant,omitempty"`
+	TradingStats   *TradingStats                      `json:"trading_stats,omitempty"`
+	RecentOrders   []RecentOrder                      `json:"recent_orders,omitempty"`
+	MarketDataMap  map[string]*market.Data            `json:"-"`
+	MultiTFMarket  map[string]map[string]*market.Data `json:"-"`
+	// RequireFreshMarketData is set by live Binance traders. When enabled, the
+	// strategy fetcher fails closed instead of using a public K-line snapshot
+	// that was retained through an upstream outage.
+	RequireFreshMarketData bool                              `json:"-"`
+	MarketDataFetchedFresh bool                              `json:"-"`
+	OITopDataMap           map[string]*OITopData             `json:"-"`
+	QuantDataMap           map[string]*QuantData             `json:"-"`
+	VergexDataMap          map[string]*vergex.MarketAnalysis `json:"-"`
+	OIRankingData          *nofxos.OIRankingData             `json:"-"` // Market-wide OI ranking data
+	NetFlowRankingData     *nofxos.NetFlowRankingData        `json:"-"` // Market-wide fund flow ranking data
+	PriceRankingData       *nofxos.PriceRankingData          `json:"-"` // Market-wide price gainers/losers
+	Timeframes             []string                          `json:"-"`
 }
 
 // Decision AI trading decision

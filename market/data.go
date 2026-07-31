@@ -156,6 +156,17 @@ func GetWithExchange(symbol, exchange string) (*Data, error) {
 // primaryTimeframe: primary timeframe (used for calculating current indicators), defaults to timeframes[0]
 // count: number of K-lines for each timeframe
 func GetWithTimeframes(symbol string, timeframes []string, primaryTimeframe string, count int) (*Data, error) {
+	return getWithTimeframes(symbol, timeframes, primaryTimeframe, count, false)
+}
+
+// GetWithTimeframesFresh is the fail-closed variant used by live AI decision
+// cycles. Any selected Binance timeframe that cannot be fetched fresh aborts
+// the symbol instead of silently using the public client's stale snapshot.
+func GetWithTimeframesFresh(symbol string, timeframes []string, primaryTimeframe string, count int) (*Data, error) {
+	return getWithTimeframes(symbol, timeframes, primaryTimeframe, count, true)
+}
+
+func getWithTimeframes(symbol string, timeframes []string, primaryTimeframe string, count int, requireFresh bool) (*Data, error) {
 	symbol = NormalizeForExchange("binance", symbol)
 
 	if len(timeframes) == 0 {
@@ -188,14 +199,24 @@ func GetWithTimeframes(symbol string, timeframes []string, primaryTimeframe stri
 		var klines []Kline
 		var err error
 
-		klines, err = GetBinanceKlines(symbol, tf, 200)
+		if requireFresh {
+			klines, err = GetBinanceKlinesFresh(symbol, tf, 200)
+		} else {
+			klines, err = GetBinanceKlines(symbol, tf, 200)
+		}
 		if err != nil {
 			logger.Infof("⚠️ Failed to get %s %s K-line from Binance: %v", symbol, tf, err)
+			if requireFresh {
+				return nil, fmt.Errorf("fresh %s K-line unavailable: %w", tf, err)
+			}
 			continue
 		}
 
 		if len(klines) == 0 {
 			logger.Infof("⚠️ %s %s K-line data is empty", symbol, tf)
+			if requireFresh {
+				return nil, fmt.Errorf("fresh %s K-line data is empty", tf)
+			}
 			continue
 		}
 
