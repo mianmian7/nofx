@@ -1,6 +1,7 @@
 package market
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -28,6 +29,10 @@ const (
 	binanceDefaultRateLimitCooldown = 30 * time.Second
 	binanceDefaultBanCooldown       = 15 * time.Minute
 	binanceProxyFailureCooldown     = 2 * time.Minute
+	// A single process can run several traders at once. Serialize public
+	// requests and leave headroom below Binance's per-IP weight window instead
+	// of allowing every distinct symbol to burst through MaxConnsPerHost.
+	binancePublicRequestInterval = 100 * time.Millisecond
 )
 
 // BinancePublicError preserves the upstream classification needed for
@@ -92,6 +97,11 @@ type binancePublicCoordinator struct {
 	cache      map[string]binanceCacheEntry
 	klineCache map[string]binanceKlineCacheEntry
 
+	requestGate     chan struct{}
+	requestGateOnce sync.Once
+	pacingMutex     sync.Mutex
+	nextRequestAt   time.Time
+
 	circuitMutex sync.Mutex
 	circuit      binanceCircuitState
 }
@@ -130,6 +140,64 @@ func (coordinator *binancePublicCoordinator) storeKlines(cacheKey string, klines
 		fetchedAt: fetchedAt,
 	}
 	coordinator.cacheMutex.Unlock()
+}
+
+// acquireRequestSlot applies a process-wide admission gate for one Binance
+// public coordinator. It intentionally serializes actual HTTP calls, while
+// singleflight still removes duplicate requests for the same URL. This keeps
+// different symbols/timeframes from creating a burst that trips the shared
+// egress IP's weight limit.
+func (coordinator *binancePublicCoordinator) acquireRequestSlot(ctx context.Context) (func(), error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	coordinator.requestGateOnce.Do(func() {
+		coordinator.requestGate = make(chan struct{}, 1)
+	})
+	select {
+	case coordinator.requestGate <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	coordinator.pacingMutex.Lock()
+	now := time.Now()
+	if wait := time.Until(coordinator.nextRequestAt); wait > 0 {
+		coordinator.pacingMutex.Unlock()
+		timer := time.NewTimer(wait)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			<-coordinator.requestGate
+			return nil, ctx.Err()
+		}
+		coordinator.pacingMutex.Lock()
+		now = time.Now()
+	}
+	coordinator.nextRequestAt = now.Add(binancePublicRequestInterval)
+	coordinator.pacingMutex.Unlock()
+
+	return func() { <-coordinator.requestGate }, nil
+}
+
+// requestBlockedAfterAdmission closes the race where a caller passed the
+// circuit check before another queued request received a rate-limit response.
+// It is intentionally checked only after the pacing gate is acquired, so a
+// burst already waiting in the process does not continue hitting Binance
+// after the first 429/418/451 has opened the circuit.
+func (coordinator *binancePublicCoordinator) requestBlockedAfterAdmission(endpoint string, now time.Time) error {
+	coordinator.circuitMutex.Lock()
+	defer coordinator.circuitMutex.Unlock()
+	if !coordinator.circuit.active || !now.Before(coordinator.circuit.blockedUntil) {
+		return nil
+	}
+	return coordinator.circuitErrorLocked(endpoint)
 }
 
 func (coordinator *binancePublicCoordinator) getFreshResponse(requestKey string, now time.Time) ([]byte, bool) {

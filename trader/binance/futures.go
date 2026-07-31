@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"nofx/hook"
 	"nofx/logger"
+	"nofx/market/binanceguard"
 	"strings"
 	"sync"
 	"time"
@@ -82,6 +83,9 @@ func NewFuturesTrader(apiKey, secretKey string, userId string) *FuturesTrader {
 	if hookRes != nil && hookRes.GetResult() != nil {
 		client = hookRes.GetResult()
 	}
+	// All Binance clients in this process share one egress-IP request gate,
+	// including signed account/order traffic and public market-data traffic.
+	client.HTTPClient = binanceguard.WrapClient(client.HTTPClient)
 
 	// Sync time to avoid "Timestamp ahead" error
 	syncBinanceServerTime(client)

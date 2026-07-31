@@ -558,6 +558,79 @@ func TestGetKlinesUsesLastValidSnapshotAfterEmptyResponse(t *testing.T) {
 	}
 }
 
+func TestBinanceCoordinatorSerializesDistinctPublicRequests(t *testing.T) {
+	var inFlight atomic.Int32
+	var maxInFlight atomic.Int32
+	coordinator := newBinancePublicCoordinator()
+	client := &APIClient{
+		baseURL: "https://binance.test",
+		client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			current := inFlight.Add(1)
+			for {
+				previous := maxInFlight.Load()
+				if current <= previous || maxInFlight.CompareAndSwap(previous, current) {
+					break
+				}
+			}
+			time.Sleep(10 * time.Millisecond)
+			inFlight.Add(-1)
+			return binanceJSONResponse(`{"symbol":"BTCUSDT","price":"65000"}`), nil
+		})},
+		coordinator: coordinator,
+	}
+
+	var callers sync.WaitGroup
+	for _, symbol := range []string{"BTCUSDT", "ETHUSDT"} {
+		callers.Add(1)
+		go func(symbol string) {
+			defer callers.Done()
+			if _, err := client.GetCurrentPrice(symbol); err != nil {
+				t.Errorf("GetCurrentPrice(%s): %v", symbol, err)
+			}
+		}(symbol)
+	}
+	callers.Wait()
+	if maxInFlight.Load() != 1 {
+		t.Fatalf("max concurrent Binance requests = %d, want 1", maxInFlight.Load())
+	}
+}
+
+func TestBinanceCircuitStopsQueuedDistinctRequests(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	coordinator := newBinancePublicCoordinator()
+	client := &APIClient{
+		baseURL: "https://binance.test",
+		client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			upstreamCalls.Add(1)
+			return &http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Body:       io.NopCloser(strings.NewReader(`{"code":-1003,"msg":"Too many requests"}`)),
+				Header:     make(http.Header),
+			}, nil
+		})},
+		coordinator: coordinator,
+	}
+
+	start := make(chan struct{})
+	var callers sync.WaitGroup
+	for _, request := range []func() error{
+		func() error { _, err := client.GetCurrentPrice("BTCUSDT"); return err },
+		func() error { _, err := client.GetOpenInterest("ETHUSDT"); return err },
+	} {
+		callers.Add(1)
+		go func(request func() error) {
+			defer callers.Done()
+			<-start
+			_ = request()
+		}(request)
+	}
+	close(start)
+	callers.Wait()
+	if upstreamCalls.Load() != 1 {
+		t.Fatalf("upstream calls = %d, want only the first request before circuit open", upstreamCalls.Load())
+	}
+}
+
 func TestGetBinanceDynamicSymbolsRetriesTransientRequestFailure(t *testing.T) {
 	resetBinanceCandidateCaches(t)
 	exchangeInfoCalls := 0

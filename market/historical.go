@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"nofx/market/binanceguard"
 	"time"
 )
 
@@ -60,7 +61,7 @@ func GetKlinesRangeContext(ctx context.Context, symbol string, timeframe string,
 	var all []Kline
 	cursor := startMs
 
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := binanceguard.WrapClient(&http.Client{Timeout: 15 * time.Second})
 
 	for cursor < endMs {
 		if err := ctx.Err(); err != nil {

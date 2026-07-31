@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"nofx/hook"
+	"nofx/market/binanceguard"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,7 +29,7 @@ const (
 	binanceDynamicStaleTTL = 15 * time.Minute
 )
 
-var binancePublicTransport = func() *http.Transport {
+var binancePublicTransport = func() http.RoundTripper {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.MaxIdleConns = 100
 	transport.MaxIdleConnsPerHost = 20
@@ -36,7 +37,7 @@ var binancePublicTransport = func() *http.Transport {
 	transport.IdleConnTimeout = 90 * time.Second
 	transport.TLSHandshakeTimeout = 5 * time.Second
 	transport.ResponseHeaderTimeout = 5 * time.Second
-	return transport
+	return binanceguard.NewTransport(transport)
 }()
 
 var binanceExchangeInfoCache struct {
@@ -83,6 +84,7 @@ func NewAPIClient() *APIClient {
 			client = hookRes.Client
 		}
 	}
+	client = binanceguard.WrapClient(client)
 
 	return &APIClient{
 		client:              client,
@@ -522,8 +524,10 @@ func (c *APIClient) getBinanceResponseBody(path string, allowCache bool) ([]byte
 
 		responseBody, requestErr := c.executeBinanceRequest(clientBaseURL, path)
 		if requestErr != nil {
+			// executeBinanceRequest already opened the circuit for 429/418/451
+			// before releasing the admission slot so queued callers observe it
+			// immediately. Do not re-open it here.
 			if structuredError, ok := asBinancePublicError(requestErr); ok && isBinanceCircuitStatus(structuredError.StatusCode) {
-				coordinator.openCircuit(structuredError, time.Now())
 				return nil, structuredError
 			}
 			if probeRequest {
@@ -568,6 +572,16 @@ func (c *APIClient) executeBinanceRequest(clientBaseURL, path string) ([]byte, e
 			cancel()
 			return nil, err
 		}
+		releaseRequestSlot, slotErr := c.requestCoordinator().acquireRequestSlot(ctx)
+		if slotErr != nil {
+			cancel()
+			return nil, slotErr
+		}
+		if circuitErr := c.requestCoordinator().requestBlockedAfterAdmission(path, time.Now()); circuitErr != nil {
+			releaseRequestSlot()
+			cancel()
+			return nil, circuitErr
+		}
 		resp, err := c.client.Do(req)
 		if err == nil {
 			body, readErr := io.ReadAll(resp.Body)
@@ -584,14 +598,22 @@ func (c *APIClient) executeBinanceRequest(clientBaseURL, path string) ([]byte, e
 				}
 				err = requestError
 				if isBinanceCircuitStatus(resp.StatusCode) || resp.StatusCode < http.StatusInternalServerError {
+					// Record rate-limit/ban state before releasing the admission
+					// slot so queued callers observe the circuit immediately.
+					if isBinanceCircuitStatus(resp.StatusCode) {
+						c.requestCoordinator().openCircuit(requestError, time.Now())
+					}
+					releaseRequestSlot()
 					cancel()
 					return nil, err
 				}
 			} else {
+				releaseRequestSlot()
 				cancel()
 				return body, nil
 			}
 		}
+		releaseRequestSlot()
 		cancel()
 		lastErr = err
 		if attempt < binanceMaxAttempts {
