@@ -302,8 +302,18 @@ type leverageLimitProvider interface {
 	GetMaxLeverage(symbol string) (int, error)
 }
 
+type notionalAwareLeverageLimitProvider interface {
+	GetMaxLeverageForNotional(symbol string, notional float64) (int, error)
+}
+
 func clampDecisionToExchangeLeverageLimit(decision *kernel.Decision, provider leverageLimitProvider) error {
-	maxLeverage, err := provider.GetMaxLeverage(decision.Symbol)
+	maxLeverage := 0
+	var err error
+	if tiered, ok := provider.(notionalAwareLeverageLimitProvider); ok && decision.PositionSizeUSD > 0 {
+		maxLeverage, err = tiered.GetMaxLeverageForNotional(decision.Symbol, decision.PositionSizeUSD)
+	} else {
+		maxLeverage, err = provider.GetMaxLeverage(decision.Symbol)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to verify exchange leverage limit for %s: %w", decision.Symbol, err)
 	}

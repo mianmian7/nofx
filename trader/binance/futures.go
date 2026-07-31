@@ -94,7 +94,7 @@ func NewFuturesTrader(apiKey, secretKey string, userId string) *FuturesTrader {
 }
 
 type maxLeverageCacheEntry struct {
-	value     int
+	brackets  []futures.Bracket
 	expiresAt time.Time
 }
 

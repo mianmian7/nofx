@@ -18,13 +18,6 @@ func (t *FuturesTrader) OpenLong(symbol string, quantity float64, leverage int) 
 		logger.Infof("  ⚠ Failed to cancel old pending orders (may not have any): %v", err)
 	}
 
-	// Set leverage
-	if err := t.SetLeverage(symbol, leverage); err != nil {
-		return nil, err
-	}
-
-	// Note: Margin mode should be set by the caller (AutoTrader) before opening position via SetMarginMode
-
 	// Format quantity to correct precision
 	quantityStr, err := t.FormatQuantity(symbol, quantity)
 	if err != nil {
@@ -36,11 +29,22 @@ func (t *FuturesTrader) OpenLong(symbol string, quantity float64, leverage int) 
 	if parseErr != nil || quantityFloat <= 0 {
 		return nil, fmt.Errorf("position size too small, rounded to 0 (original: %.8f → formatted: %s). Suggest increasing position amount or selecting a lower-priced coin", quantity, quantityStr)
 	}
+	marketPrice, err := t.GetMarketPrice(symbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get market price: %w", err)
+	}
 
 	// Check minimum notional value (Binance requires at least 10 USDT)
-	if err := t.CheckMinNotional(symbol, quantityFloat); err != nil {
+	if err := t.CheckMinNotionalAtPrice(symbol, quantityFloat, marketPrice); err != nil {
 		return nil, err
 	}
+
+	// Set leverage using the bracket for this order's actual notional.
+	if err := t.SetLeverageForNotional(symbol, leverage, quantityFloat*marketPrice); err != nil {
+		return nil, err
+	}
+
+	// Note: Margin mode should be set by the caller (AutoTrader) before opening position via SetMarginMode
 
 	// Create market buy order (using br ID)
 	order, err := t.client.NewCreateOrderService().
@@ -73,13 +77,6 @@ func (t *FuturesTrader) OpenShort(symbol string, quantity float64, leverage int)
 		logger.Infof("  ⚠ Failed to cancel old pending orders (may not have any): %v", err)
 	}
 
-	// Set leverage
-	if err := t.SetLeverage(symbol, leverage); err != nil {
-		return nil, err
-	}
-
-	// Note: Margin mode should be set by the caller (AutoTrader) before opening position via SetMarginMode
-
 	// Format quantity to correct precision
 	quantityStr, err := t.FormatQuantity(symbol, quantity)
 	if err != nil {
@@ -91,11 +88,22 @@ func (t *FuturesTrader) OpenShort(symbol string, quantity float64, leverage int)
 	if parseErr != nil || quantityFloat <= 0 {
 		return nil, fmt.Errorf("position size too small, rounded to 0 (original: %.8f → formatted: %s). Suggest increasing position amount or selecting a lower-priced coin", quantity, quantityStr)
 	}
+	marketPrice, err := t.GetMarketPrice(symbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get market price: %w", err)
+	}
 
 	// Check minimum notional value (Binance requires at least 10 USDT)
-	if err := t.CheckMinNotional(symbol, quantityFloat); err != nil {
+	if err := t.CheckMinNotionalAtPrice(symbol, quantityFloat, marketPrice); err != nil {
 		return nil, err
 	}
+
+	// Set leverage using the bracket for this order's actual notional.
+	if err := t.SetLeverageForNotional(symbol, leverage, quantityFloat*marketPrice); err != nil {
+		return nil, err
+	}
+
+	// Note: Margin mode should be set by the caller (AutoTrader) before opening position via SetMarginMode
 
 	// Create market sell order (using br ID)
 	order, err := t.client.NewCreateOrderService().
@@ -448,10 +456,15 @@ func (t *FuturesTrader) placeLimitOrder(req *types.LimitOrderRequest, requirePos
 		return nil, fmt.Errorf("failed to format price: %w", err)
 	}
 
-	// Set leverage if specified
+	// Set leverage if specified, using the formatted limit-order notional.
 	if req.Leverage > 0 {
-		if err := t.SetLeverage(req.Symbol, req.Leverage); err != nil {
-			logger.Warnf("Failed to set leverage: %v", err)
+		formattedQuantity, quantityErr := strconv.ParseFloat(quantityStr, 64)
+		formattedPrice, priceErr := strconv.ParseFloat(priceStr, 64)
+		if quantityErr != nil || priceErr != nil || formattedQuantity <= 0 || formattedPrice <= 0 {
+			return nil, fmt.Errorf("invalid formatted limit order notional")
+		}
+		if err := t.SetLeverageForNotional(req.Symbol, req.Leverage, formattedQuantity*formattedPrice); err != nil {
+			return nil, fmt.Errorf("failed to set leverage for limit order: %w", err)
 		}
 	}
 

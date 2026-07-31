@@ -3,6 +3,7 @@ package binance
 import (
 	"context"
 	"fmt"
+	"math"
 	"nofx/logger"
 	"strconv"
 	"strings"
@@ -119,9 +120,31 @@ func (t *FuturesTrader) SetMarginMode(symbol string, isCrossMargin bool) error {
 
 // SetLeverage sets leverage (with smart detection and cooldown period)
 func (t *FuturesTrader) SetLeverage(symbol string, leverage int) error {
+	return t.setLeverage(symbol, leverage)
+}
+
+// SetLeverageForNotional sets leverage using the bracket that applies to the
+// intended order notional. This prevents a small-position leverage tier from
+// being reused for a larger order.
+func (t *FuturesTrader) SetLeverageForNotional(symbol string, leverage int, notional float64) error {
+	maxLeverage, err := t.GetMaxLeverageForNotional(symbol, notional)
+	if err != nil {
+		return fmt.Errorf("failed to get leverage bracket for %s: %w", symbol, err)
+	}
+	return t.setLeverageWithLimit(symbol, leverage, maxLeverage)
+}
+
+func (t *FuturesTrader) setLeverage(symbol string, leverage int) error {
 	maxLeverage, err := t.GetMaxLeverage(symbol)
 	if err != nil {
 		return fmt.Errorf("failed to get leverage bracket for %s: %w", symbol, err)
+	}
+	return t.setLeverageWithLimit(symbol, leverage, maxLeverage)
+}
+
+func (t *FuturesTrader) setLeverageWithLimit(symbol string, leverage, maxLeverage int) error {
+	if maxLeverage <= 0 {
+		return fmt.Errorf("exchange returned invalid leverage limit %d for %s", maxLeverage, symbol)
 	}
 	if leverage > maxLeverage {
 		logger.Infof("  ⚠️ %s requested leverage %dx exceeds exchange maximum %dx; reducing to %dx", symbol, leverage, maxLeverage, maxLeverage)
@@ -173,37 +196,86 @@ func (t *FuturesTrader) SetLeverage(symbol string, leverage int) error {
 }
 
 // GetMaxLeverage returns the highest initial leverage currently allowed by
-// Binance's signed per-symbol leverage bracket endpoint.
+// Binance's signed per-symbol leverage bracket endpoint. Callers that know the
+// intended order notional should use GetMaxLeverageForNotional instead.
 func (t *FuturesTrader) GetMaxLeverage(symbol string) (int, error) {
+	brackets, err := t.getLeverageBrackets(symbol)
+	if err != nil {
+		return 0, err
+	}
+	maxLeverage := 0
+	for _, bracket := range brackets {
+		if bracket.InitialLeverage > maxLeverage {
+			maxLeverage = bracket.InitialLeverage
+		}
+	}
+	if maxLeverage <= 0 {
+		return 0, fmt.Errorf("no valid leverage bracket returned for %s", symbol)
+	}
+	return maxLeverage, nil
+}
+
+// GetMaxLeverageForNotional selects the leverage tier whose notional floor and
+// cap contain the intended order value. It fails closed when Binance returns
+// no matching tier instead of falling back to the global maximum.
+func (t *FuturesTrader) GetMaxLeverageForNotional(symbol string, notional float64) (int, error) {
+	if math.IsNaN(notional) || math.IsInf(notional, 0) || notional < 0 {
+		return 0, fmt.Errorf("notional must be a finite non-negative value")
+	}
+	brackets, err := t.getLeverageBrackets(symbol)
+	if err != nil {
+		return 0, err
+	}
+	if notional == 0 {
+		return t.GetMaxLeverage(symbol)
+	}
+
+	matchedFloor := -1.0
+	matchedLeverage := 0
+	for _, bracket := range brackets {
+		if bracket.InitialLeverage <= 0 || notional < bracket.NotionalFloor {
+			continue
+		}
+		if bracket.NotionalCap > 0 && notional > bracket.NotionalCap {
+			continue
+		}
+		if bracket.NotionalFloor >= matchedFloor {
+			matchedFloor = bracket.NotionalFloor
+			matchedLeverage = bracket.InitialLeverage
+		}
+	}
+	if matchedLeverage <= 0 {
+		return 0, fmt.Errorf("no leverage bracket covers notional %.4f for %s", notional, symbol)
+	}
+	return matchedLeverage, nil
+}
+
+func (t *FuturesTrader) getLeverageBrackets(symbol string) ([]futures.Bracket, error) {
 	symbol = strings.ToUpper(strings.TrimSpace(symbol))
 	if symbol == "" {
-		return 0, fmt.Errorf("symbol is required")
+		return nil, fmt.Errorf("symbol is required")
 	}
 
 	t.maxLeverageMutex.RLock()
 	entry, ok := t.maxLeverageCache[symbol]
 	t.maxLeverageMutex.RUnlock()
-	if ok && entry.value > 0 && time.Now().Before(entry.expiresAt) {
-		return entry.value, nil
+	if ok && len(entry.brackets) > 0 && time.Now().Before(entry.expiresAt) {
+		return append([]futures.Bracket(nil), entry.brackets...), nil
 	}
 
-	maxLeverage := 0
 	brackets, err := t.client.NewGetLeverageBracketService().Symbol(symbol).Do(context.Background())
 	if err != nil {
-		return 0, fmt.Errorf("query Binance leverage bracket: %w", err)
+		return nil, fmt.Errorf("query Binance leverage bracket: %w", err)
 	}
+	var selected []futures.Bracket
 	for _, item := range brackets {
 		if item == nil || !strings.EqualFold(item.Symbol, symbol) {
 			continue
 		}
-		for _, bracket := range item.Brackets {
-			if bracket.InitialLeverage > maxLeverage {
-				maxLeverage = bracket.InitialLeverage
-			}
-		}
+		selected = append(selected, item.Brackets...)
 	}
-	if maxLeverage <= 0 {
-		return 0, fmt.Errorf("no valid leverage bracket returned for %s", symbol)
+	if len(selected) == 0 {
+		return nil, fmt.Errorf("no valid leverage bracket returned for %s", symbol)
 	}
 
 	t.maxLeverageMutex.Lock()
@@ -211,11 +283,11 @@ func (t *FuturesTrader) GetMaxLeverage(symbol string) (int, error) {
 		t.maxLeverageCache = make(map[string]maxLeverageCacheEntry)
 	}
 	t.maxLeverageCache[symbol] = maxLeverageCacheEntry{
-		value:     maxLeverage,
+		brackets:  append([]futures.Bracket(nil), selected...),
 		expiresAt: time.Now().Add(time.Minute),
 	}
 	t.maxLeverageMutex.Unlock()
-	return maxLeverage, nil
+	return selected, nil
 }
 
 // GetMarketPrice gets market price
@@ -256,6 +328,15 @@ func (t *FuturesTrader) CheckMinNotional(symbol string, quantity float64) error 
 	price, err := t.GetMarketPrice(symbol)
 	if err != nil {
 		return fmt.Errorf("failed to get market price: %w", err)
+	}
+	return t.CheckMinNotionalAtPrice(symbol, quantity, price)
+}
+
+// CheckMinNotionalAtPrice validates an order against a caller-provided price,
+// allowing order placement to reuse the same price for leverage-tier checks.
+func (t *FuturesTrader) CheckMinNotionalAtPrice(symbol string, quantity, price float64) error {
+	if quantity <= 0 || price <= 0 || math.IsNaN(quantity) || math.IsInf(quantity, 0) || math.IsNaN(price) || math.IsInf(price, 0) {
+		return fmt.Errorf("quantity and price must be finite positive values")
 	}
 
 	notionalValue := quantity * price

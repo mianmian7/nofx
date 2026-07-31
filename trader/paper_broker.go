@@ -410,7 +410,7 @@ func (b *PaperBroker) ExecuteDecision(decision *kernel.Decision) (PaperFill, err
 	quantity := decision.PositionSizeUSD / fillPrice
 	fee := decision.PositionSizeUSD * b.config.TakerFeeBPS / 10_000
 	requiredMargin := decision.PositionSizeUSD / float64(decision.Leverage)
-	availableBalance := b.balance - b.usedMarginLocked()
+	availableBalance := b.balance - b.usedMarginLocked() - b.reservedMarginLocked()
 	if requiredMargin+fee > availableBalance {
 		return PaperFill{}, fmt.Errorf("paper available balance is insufficient for initial margin and fee")
 	}

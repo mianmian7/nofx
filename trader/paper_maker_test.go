@@ -62,6 +62,41 @@ func TestPaperMakerOpenCreatesPendingOrderWithoutChargingOrOpeningPosition(t *te
 	}
 }
 
+func TestPaperTakerOpenRespectsReservedMakerMargin(t *testing.T) {
+	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	source := &fixedPaperMakerSource{
+		price: 100,
+		bids:  [][]string{{"99.90", "5"}},
+		asks:  [][]string{{"100.10", "5"}},
+	}
+	broker, err := NewPaperBroker(PaperBrokerConfig{
+		InitialBalance: 1_000,
+		MakerFirst:     true,
+		MakerFeeBPS:    2,
+		TakerFeeBPS:    5,
+		MakerTimeout:   15 * time.Second,
+		Clock:          func() time.Time { return now },
+	}, source)
+	if err != nil {
+		t.Fatalf("NewPaperBroker: %v", err)
+	}
+	if _, err := broker.ExecuteDecision(&kernel.Decision{
+		Symbol: "MUUSDT", Action: "open_long", PositionSizeUSD: 300, Leverage: 3,
+	}); err != nil {
+		t.Fatalf("maker open: %v", err)
+	}
+
+	// Use a different symbol and force the next order through the taker path.
+	// The maker order reserves 300/3 = 100 USD of margin, leaving only 900 USD
+	// before fees; the 2,700 USD taker request must therefore be rejected.
+	broker.config.MakerFirst = false
+	if _, err := broker.ExecuteDecision(&kernel.Decision{
+		Symbol: "ETHUSDT", Action: "open_long", PositionSizeUSD: 2_700, Leverage: 3,
+	}); err == nil {
+		t.Fatal("expected taker open to reject margin already reserved by maker order")
+	}
+}
+
 func TestPaperMakerOrderDoesNotFillBeforeMarketCrossesItsLimit(t *testing.T) {
 	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
 	source := &fixedPaperMakerSource{
