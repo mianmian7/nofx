@@ -24,6 +24,20 @@ func (t *FuturesTrader) GetPositions() ([]map[string]interface{}, error) {
 	}
 	t.positionsCacheMutex.RUnlock()
 
+	// AI cycles, risk checks, and order synchronization may all observe an
+	// expired cache together. Coalesce the refresh and re-check after waiting so
+	// one expiry produces one Binance position request per trader.
+	t.positionsFetchMutex.Lock()
+	defer t.positionsFetchMutex.Unlock()
+	t.positionsCacheMutex.RLock()
+	if t.cachedPositions != nil && time.Since(t.positionsCacheTime) < t.cacheDuration {
+		cacheAge := time.Since(t.positionsCacheTime)
+		t.positionsCacheMutex.RUnlock()
+		logger.Infof("✓ Using cached position information after coalescing (cache age: %.1f seconds ago)", cacheAge.Seconds())
+		return t.cachedPositions, nil
+	}
+	t.positionsCacheMutex.RUnlock()
+
 	// Cache expired or doesn't exist, call API
 	logger.Infof("🔄 Cache expired, calling Binance API to get position information...")
 	positions, err := t.client.NewGetPositionRiskService().Do(context.Background())
@@ -263,6 +277,17 @@ func (t *FuturesTrader) getLeverageBrackets(symbol string) ([]futures.Bracket, e
 		return append([]futures.Bracket(nil), entry.brackets...), nil
 	}
 
+	// Leverage bracket lookup is also shared by concurrent order paths. Avoid
+	// sending duplicate signed requests when the one-minute cache expires.
+	t.maxLeverageFetchMutex.Lock()
+	defer t.maxLeverageFetchMutex.Unlock()
+	t.maxLeverageMutex.RLock()
+	entry, ok = t.maxLeverageCache[symbol]
+	t.maxLeverageMutex.RUnlock()
+	if ok && len(entry.brackets) > 0 && time.Now().Before(entry.expiresAt) {
+		return append([]futures.Bracket(nil), entry.brackets...), nil
+	}
+
 	brackets, err := t.client.NewGetLeverageBracketService().Symbol(symbol).Do(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("query Binance leverage bracket: %w", err)
@@ -352,11 +377,43 @@ func (t *FuturesTrader) CheckMinNotionalAtPrice(symbol string, quantity, price f
 	return nil
 }
 
+func (t *FuturesTrader) getExchangeInfo() (*futures.ExchangeInfo, error) {
+	t.exchangeInfoMutex.RLock()
+	if t.exchangeInfoCache != nil && time.Since(t.exchangeInfoFetchedAt) < 15*time.Minute {
+		info := t.exchangeInfoCache
+		t.exchangeInfoMutex.RUnlock()
+		return info, nil
+	}
+	t.exchangeInfoMutex.RUnlock()
+
+	// Precision lookups are called by several order paths. Coalesce the
+	// relatively expensive exchangeInfo request and keep it for 15 minutes.
+	t.exchangeInfoFetchMu.Lock()
+	defer t.exchangeInfoFetchMu.Unlock()
+	t.exchangeInfoMutex.RLock()
+	if t.exchangeInfoCache != nil && time.Since(t.exchangeInfoFetchedAt) < 15*time.Minute {
+		info := t.exchangeInfoCache
+		t.exchangeInfoMutex.RUnlock()
+		return info, nil
+	}
+	t.exchangeInfoMutex.RUnlock()
+
+	info, err := t.client.NewExchangeInfoService().Do(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("failed to get trading rules: %w", err)
+	}
+	t.exchangeInfoMutex.Lock()
+	t.exchangeInfoCache = info
+	t.exchangeInfoFetchedAt = time.Now()
+	t.exchangeInfoMutex.Unlock()
+	return info, nil
+}
+
 // GetSymbolPrecision gets the quantity precision for a trading pair
 func (t *FuturesTrader) GetSymbolPrecision(symbol string) (int, error) {
-	exchangeInfo, err := t.client.NewExchangeInfoService().Do(context.Background())
+	exchangeInfo, err := t.getExchangeInfo()
 	if err != nil {
-		return 0, fmt.Errorf("failed to get trading rules: %w", err)
+		return 0, err
 	}
 
 	for _, s := range exchangeInfo.Symbols {
@@ -391,9 +448,9 @@ func (t *FuturesTrader) FormatQuantity(symbol string, quantity float64) (string,
 
 // GetSymbolPricePrecision gets the price precision for a trading pair
 func (t *FuturesTrader) GetSymbolPricePrecision(symbol string) (int, error) {
-	exchangeInfo, err := t.client.NewExchangeInfoService().Do(context.Background())
+	exchangeInfo, err := t.getExchangeInfo()
 	if err != nil {
-		return 0, fmt.Errorf("failed to get trading rules: %w", err)
+		return 0, err
 	}
 
 	for _, s := range exchangeInfo.Symbols {

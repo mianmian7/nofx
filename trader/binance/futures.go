@@ -47,18 +47,25 @@ func getBrOrderID() string {
 type FuturesTrader struct {
 	client *futures.Client
 
-	maxLeverageCache map[string]maxLeverageCacheEntry
-	maxLeverageMutex sync.RWMutex
+	maxLeverageCache      map[string]maxLeverageCacheEntry
+	maxLeverageMutex      sync.RWMutex
+	maxLeverageFetchMutex sync.Mutex
+	exchangeInfoCache     *futures.ExchangeInfo
+	exchangeInfoFetchedAt time.Time
+	exchangeInfoMutex     sync.RWMutex
+	exchangeInfoFetchMu   sync.Mutex
 
 	// Balance cache
 	cachedBalance     map[string]interface{}
 	balanceCacheTime  time.Time
 	balanceCacheMutex sync.RWMutex
+	balanceFetchMutex sync.Mutex
 
 	// Position cache
 	cachedPositions     []map[string]interface{}
 	positionsCacheTime  time.Time
 	positionsCacheMutex sync.RWMutex
+	positionsFetchMutex sync.Mutex
 
 	// Cache validity period (15 seconds)
 	cacheDuration time.Duration

@@ -21,6 +21,20 @@ func (t *FuturesTrader) GetBalance() (map[string]interface{}, error) {
 	}
 	t.balanceCacheMutex.RUnlock()
 
+	// Several independent loops (AI cycle, risk monitor, and order sync) can
+	// expire the same cache at once. Re-check after taking the fetch lock so
+	// only one of them consumes a Binance account request.
+	t.balanceFetchMutex.Lock()
+	defer t.balanceFetchMutex.Unlock()
+	t.balanceCacheMutex.RLock()
+	if t.cachedBalance != nil && time.Since(t.balanceCacheTime) < t.cacheDuration {
+		cacheAge := time.Since(t.balanceCacheTime)
+		t.balanceCacheMutex.RUnlock()
+		logger.Infof("✓ Using cached account balance after coalescing (cache age: %.1f seconds ago)", cacheAge.Seconds())
+		return t.cachedBalance, nil
+	}
+	t.balanceCacheMutex.RUnlock()
+
 	// Cache expired or doesn't exist, call API
 	logger.Infof("🔄 Cache expired, calling Binance API to get account balance...")
 	account, err := t.client.NewGetAccountService().Do(context.Background())
