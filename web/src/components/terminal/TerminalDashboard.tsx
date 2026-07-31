@@ -27,8 +27,6 @@ import { EdgeProfile } from './EdgeProfile'
 import { useLanguage } from '../../contexts/LanguageContext'
 import { t } from '../../i18n/translations'
 
-// Fixed height for the Binance order-book and candle panels.
-const ROW1_H = 500
 import './terminal.css'
 
 interface TerminalDashboardProps {
@@ -40,6 +38,43 @@ interface TerminalDashboardProps {
   account?: AccountInfo
   positions?: Position[]
   decisions?: DecisionRecord[]
+}
+
+interface TraderSelectorProps {
+  traderId?: string
+  traders?: TraderInfo[]
+  onTraderSelect: (traderId: string) => void
+  ariaLabel: string
+}
+
+function TraderSelector({
+  traderId,
+  traders,
+  onTraderSelect,
+  ariaLabel,
+}: TraderSelectorProps) {
+  if (!traders || traders.length === 0) {
+    return null
+  }
+
+  return (
+    <select
+      value={traderId ?? ''}
+      onChange={(event) => onTraderSelect(event.target.value)}
+      aria-label={ariaLabel}
+      className="tm-mono terminal-trader-select"
+    >
+      {traders.map((trader) => (
+        <option
+          key={trader.trader_id}
+          value={trader.trader_id}
+          style={{ color: '#111' }}
+        >
+          {trader.trader_name}
+        </option>
+      ))}
+    </select>
+  )
 }
 
 function fmtUsd(n: number | undefined, signed = false): string {
@@ -517,6 +552,8 @@ export function TerminalDashboard({
     setNavSlot(document.getElementById('dash-header-slot'))
   }, [])
 
+  const traderSelectorLabel = t('switchTrader', language)
+
   return (
     <div className="nofx-terminal" style={{ minHeight: '100vh', padding: 0 }}>
       {/* centered, capped content column — no border (keeps it from feeling
@@ -539,31 +576,12 @@ export function TerminalDashboard({
             <span className="tm-sc" style={{ color: 'var(--tm-muted)' }}>
               {tt('orchestration')}
             </span>
-            {traders && traders.length > 0 && (
-              <select
-                value={traderId || ''}
-                onChange={(e) => onTraderSelect(e.target.value)}
-                className="tm-mono"
-                style={{
-                  background: 'var(--tm-panel)',
-                  color: 'var(--tm-ink)',
-                  border: '1px solid var(--tm-hair)',
-                  borderRadius: 0,
-                  fontSize: 11,
-                  padding: '3px 6px',
-                }}
-              >
-                {traders.map((t) => (
-                  <option
-                    key={t.trader_id}
-                    value={t.trader_id}
-                    style={{ color: '#111' }}
-                  >
-                    {t.trader_name}
-                  </option>
-                ))}
-              </select>
-            )}
+            <TraderSelector
+              traderId={traderId}
+              traders={traders}
+              onTraderSelect={onTraderSelect}
+              ariaLabel={traderSelectorLabel}
+            />
             <span
               style={{ color: running ? 'var(--tm-up)' : 'var(--tm-muted)' }}
             >
@@ -584,8 +602,32 @@ export function TerminalDashboard({
           </span>,
           navSlot
         )}
+      {/* The desktop selector lives in HeaderBar. Keep a real control in the
+          dashboard flow on small screens because the desktop header slot is
+          intentionally hidden below the lg breakpoint. */}
+      <div className="terminal-mobile-context tm-mono">
+        <span className="terminal-mobile-context-label tm-sc">
+          {traderSelectorLabel}
+        </span>
+        <TraderSelector
+          traderId={traderId}
+          traders={traders}
+          onTraderSelect={onTraderSelect}
+          ariaLabel={traderSelectorLabel}
+        />
+        <span
+          className="terminal-context-status"
+          style={{ color: running ? 'var(--tm-up)' : 'var(--tm-muted)' }}
+        >
+          {running ? `● ${tt('running')}` : `○ ${tt('stopped')}`}
+        </span>
+        <span className="terminal-context-cycle tm-sc">
+          {tt('cycle')} {status?.call_count ?? '—'}
+        </span>
+        <span className="terminal-context-clock tm-px">{clock}</span>
+      </div>
       <div
-        className="tm-box"
+        className="tm-box terminal-dashboard-shell"
         style={{ maxWidth: 1280, margin: '0 auto', border: 'none' }}
       >
         {status?.execution_mode === 'paper' && status.paper && (
@@ -738,7 +780,10 @@ export function TerminalDashboard({
         {/* metric row — "Total P/L" is equity-based (includes unrealized);
             "Realized P/L" is closed-trades only and matches PF/win-rate/sharpe,
             so the two never read as contradicting each other */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)' }}>
+        <div
+          className="terminal-metric-grid"
+          style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)' }}
+        >
           {[
             {
               l: tt('equity'),
@@ -877,16 +922,17 @@ export function TerminalDashboard({
 
         {/* Binance USDⓈ-M public market data. */}
         <div
+          className="terminal-market-grid"
           style={{
             display: 'grid',
             gridTemplateColumns: 'minmax(0,0.9fr) minmax(0,1.4fr)',
           }}
         >
           <div
+            className="terminal-market-panel"
             style={{
               ...sc,
               borderRight: cellBorder,
-              height: ROW1_H,
               overflow: 'hidden',
             }}
           >
@@ -899,9 +945,9 @@ export function TerminalDashboard({
             />
           </div>
           <div
+            className="terminal-market-panel"
             style={{
               ...sc,
-              height: ROW1_H,
               display: 'flex',
               flexDirection: 'column',
               minHeight: 0,
@@ -979,6 +1025,7 @@ export function TerminalDashboard({
 
         {/* ── row 3: execution log · risk radar · recent trades ── */}
         <div
+          className="terminal-data-grid"
           style={{
             display: 'grid',
             gridTemplateColumns: 'minmax(0,1.1fr) minmax(0,1fr) minmax(0,1fr)',
@@ -1014,91 +1061,95 @@ export function TerminalDashboard({
               </span>
             </div>
             {positions && positions.length > 0 ? (
-              <table
-                className="tm-mono"
-                style={{
-                  width: '100%',
-                  borderCollapse: 'collapse',
-                  fontSize: 11,
-                }}
-              >
-                <thead>
-                  <tr className="tm-sc" style={{ fontSize: 9 }}>
-                    <td style={{ padding: '0 0 3px' }}>{tt('symbol')}</td>
-                    <td style={{ padding: '0 0 3px' }}>{tt('sideLeverage')}</td>
-                    <td style={{ padding: '0 0 3px', textAlign: 'right' }}>
-                      {tt('entry')}
-                    </td>
-                    <td style={{ padding: '0 0 3px', textAlign: 'right' }}>
-                      {tt('size')}
-                    </td>
-                    <td style={{ padding: '0 0 3px', textAlign: 'right' }}>
-                      {tt('pnl')}
-                    </td>
-                    <td style={{ padding: '0 0 3px', textAlign: 'right' }}>
-                      {tt('returnPct')}
-                    </td>
-                  </tr>
-                </thead>
-                <tbody>
-                  {positions.map((p, i) => {
-                    const long = /long|buy/i.test(p.side)
-                    const win = (p.unrealized_pnl ?? 0) >= 0
-                    const notional =
-                      Math.abs(p.quantity ?? 0) *
-                      (p.mark_price || p.entry_price || 0)
-                    return (
-                      <tr
-                        key={`${p.symbol}-${i}`}
-                        style={{ borderTop: '1px solid var(--tm-hair)' }}
-                      >
-                        <td style={{ padding: '5px 0', fontWeight: 500 }}>
-                          {baseLabel(p.symbol)}
-                        </td>
-                        <td
-                          style={{ padding: '5px 0' }}
-                          className={long ? 'tm-up' : 'tm-dn'}
+              <div className="terminal-table-scroll">
+                <table
+                  className="tm-mono"
+                  style={{
+                    width: '100%',
+                    borderCollapse: 'collapse',
+                    fontSize: 11,
+                  }}
+                >
+                  <thead>
+                    <tr className="tm-sc" style={{ fontSize: 9 }}>
+                      <td style={{ padding: '0 0 3px' }}>{tt('symbol')}</td>
+                      <td style={{ padding: '0 0 3px' }}>
+                        {tt('sideLeverage')}
+                      </td>
+                      <td style={{ padding: '0 0 3px', textAlign: 'right' }}>
+                        {tt('entry')}
+                      </td>
+                      <td style={{ padding: '0 0 3px', textAlign: 'right' }}>
+                        {tt('size')}
+                      </td>
+                      <td style={{ padding: '0 0 3px', textAlign: 'right' }}>
+                        {tt('pnl')}
+                      </td>
+                      <td style={{ padding: '0 0 3px', textAlign: 'right' }}>
+                        {tt('returnPct')}
+                      </td>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {positions.map((p, i) => {
+                      const long = /long|buy/i.test(p.side)
+                      const win = (p.unrealized_pnl ?? 0) >= 0
+                      const notional =
+                        Math.abs(p.quantity ?? 0) *
+                        (p.mark_price || p.entry_price || 0)
+                      return (
+                        <tr
+                          key={`${p.symbol}-${i}`}
+                          style={{ borderTop: '1px solid var(--tm-hair)' }}
                         >
-                          {long ? tt('long') : tt('short')}{' '}
-                          <span style={{ color: 'var(--tm-muted)' }}>
-                            {p.leverage}×
-                          </span>
-                        </td>
-                        <td
-                          style={{
-                            padding: '5px 0',
-                            textAlign: 'right',
-                            color: 'var(--tm-ink-2)',
-                          }}
-                        >
-                          {fmtPx(p.entry_price)}
-                        </td>
-                        <td
-                          style={{
-                            padding: '5px 0',
-                            textAlign: 'right',
-                            color: 'var(--tm-ink-2)',
-                          }}
-                        >
-                          {fmtUsd(notional)}
-                        </td>
-                        <td
-                          style={{ padding: '5px 0', textAlign: 'right' }}
-                          className={win ? 'tm-up' : 'tm-dn'}
-                        >
-                          {fmtUsd(p.unrealized_pnl, true)}
-                        </td>
-                        <td
-                          style={{ padding: '5px 0', textAlign: 'right' }}
-                          className={win ? 'tm-up' : 'tm-dn'}
-                        >
-                          {(p.unrealized_pnl_pct ?? 0).toFixed(2)}%
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
+                          <td style={{ padding: '5px 0', fontWeight: 500 }}>
+                            {baseLabel(p.symbol)}
+                          </td>
+                          <td
+                            style={{ padding: '5px 0' }}
+                            className={long ? 'tm-up' : 'tm-dn'}
+                          >
+                            {long ? tt('long') : tt('short')}{' '}
+                            <span style={{ color: 'var(--tm-muted)' }}>
+                              {p.leverage}×
+                            </span>
+                          </td>
+                          <td
+                            style={{
+                              padding: '5px 0',
+                              textAlign: 'right',
+                              color: 'var(--tm-ink-2)',
+                            }}
+                          >
+                            {fmtPx(p.entry_price)}
+                          </td>
+                          <td
+                            style={{
+                              padding: '5px 0',
+                              textAlign: 'right',
+                              color: 'var(--tm-ink-2)',
+                            }}
+                          >
+                            {fmtUsd(notional)}
+                          </td>
+                          <td
+                            style={{ padding: '5px 0', textAlign: 'right' }}
+                            className={win ? 'tm-up' : 'tm-dn'}
+                          >
+                            {fmtUsd(p.unrealized_pnl, true)}
+                          </td>
+                          <td
+                            style={{ padding: '5px 0', textAlign: 'right' }}
+                            className={win ? 'tm-up' : 'tm-dn'}
+                          >
+                            {(p.unrealized_pnl_pct ?? 0).toFixed(2)}%
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
             ) : (
               <div className="tm-sc" style={{ padding: '8px 0' }}>
                 {tt('noOpenPositions')}
@@ -1121,78 +1172,80 @@ export function TerminalDashboard({
               <span className="tm-sc">{tt('recentTradesDesc')}</span>
             </div>
             {recentTrades.length > 0 ? (
-              <table
-                className="tm-mono"
-                style={{
-                  width: '100%',
-                  borderCollapse: 'collapse',
-                  fontSize: 11,
-                }}
-              >
-                <thead>
-                  <tr className="tm-sc" style={{ fontSize: 9 }}>
-                    <td style={{ padding: '0 0 3px' }}>{tt('symbol')}</td>
-                    <td style={{ padding: '0 0 3px' }}>{tt('side')}</td>
-                    <td style={{ padding: '0 0 3px', textAlign: 'right' }}>
-                      {tt('holdTime')}
-                    </td>
-                    <td style={{ padding: '0 0 3px' }}>{tt('closed')}</td>
-                    <td style={{ padding: '0 0 3px', textAlign: 'right' }}>
-                      {tt('pnl')}
-                    </td>
-                  </tr>
-                </thead>
-                <tbody>
-                  {recentTrades.map((p) => {
-                    const win = p.realized_pnl >= 0
-                    return (
-                      <tr
-                        key={p.id}
-                        style={{ borderTop: '1px solid var(--tm-hair)' }}
-                      >
-                        <td style={{ padding: '5px 0', fontWeight: 500 }}>
-                          {baseLabel(p.symbol)}
-                        </td>
-                        <td
-                          style={{ padding: '5px 0' }}
-                          className={
-                            p.side === 'long' || p.side === 'LONG'
-                              ? 'tm-up'
-                              : 'tm-dn'
-                          }
+              <div className="terminal-table-scroll">
+                <table
+                  className="tm-mono"
+                  style={{
+                    width: '100%',
+                    borderCollapse: 'collapse',
+                    fontSize: 11,
+                  }}
+                >
+                  <thead>
+                    <tr className="tm-sc" style={{ fontSize: 9 }}>
+                      <td style={{ padding: '0 0 3px' }}>{tt('symbol')}</td>
+                      <td style={{ padding: '0 0 3px' }}>{tt('side')}</td>
+                      <td style={{ padding: '0 0 3px', textAlign: 'right' }}>
+                        {tt('holdTime')}
+                      </td>
+                      <td style={{ padding: '0 0 3px' }}>{tt('closed')}</td>
+                      <td style={{ padding: '0 0 3px', textAlign: 'right' }}>
+                        {tt('pnl')}
+                      </td>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {recentTrades.map((p) => {
+                      const win = p.realized_pnl >= 0
+                      return (
+                        <tr
+                          key={p.id}
+                          style={{ borderTop: '1px solid var(--tm-hair)' }}
                         >
-                          {p.side === 'long' || p.side === 'LONG'
-                            ? tt('long')
-                            : tt('short')}
-                        </td>
-                        <td
-                          style={{
-                            padding: '5px 0',
-                            textAlign: 'right',
-                            color: 'var(--tm-ink-2)',
-                          }}
-                        >
-                          {fmtHold(p.entry_time, p.exit_time)}
-                        </td>
-                        <td
-                          style={{
-                            padding: '5px 0 5px 6px',
-                            color: 'var(--tm-muted)',
-                          }}
-                        >
-                          {fmtTime(p.exit_time)}
-                        </td>
-                        <td
-                          style={{ padding: '5px 0', textAlign: 'right' }}
-                          className={win ? 'tm-up' : 'tm-dn'}
-                        >
-                          {fmtUsd(p.realized_pnl, true)}
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
+                          <td style={{ padding: '5px 0', fontWeight: 500 }}>
+                            {baseLabel(p.symbol)}
+                          </td>
+                          <td
+                            style={{ padding: '5px 0' }}
+                            className={
+                              p.side === 'long' || p.side === 'LONG'
+                                ? 'tm-up'
+                                : 'tm-dn'
+                            }
+                          >
+                            {p.side === 'long' || p.side === 'LONG'
+                              ? tt('long')
+                              : tt('short')}
+                          </td>
+                          <td
+                            style={{
+                              padding: '5px 0',
+                              textAlign: 'right',
+                              color: 'var(--tm-ink-2)',
+                            }}
+                          >
+                            {fmtHold(p.entry_time, p.exit_time)}
+                          </td>
+                          <td
+                            style={{
+                              padding: '5px 0 5px 6px',
+                              color: 'var(--tm-muted)',
+                            }}
+                          >
+                            {fmtTime(p.exit_time)}
+                          </td>
+                          <td
+                            style={{ padding: '5px 0', textAlign: 'right' }}
+                            className={win ? 'tm-up' : 'tm-dn'}
+                          >
+                            {fmtUsd(p.realized_pnl, true)}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
             ) : (
               <div className="tm-sc" style={{ padding: '8px 0' }}>
                 {tt('noClosedTrades')}
@@ -1204,6 +1257,7 @@ export function TerminalDashboard({
 
         {/* Closed-trade analytics only; no external signal or flow board. */}
         <div
+          className="terminal-analytics-grid"
           style={{
             display: 'grid',
             gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)',
