@@ -11,6 +11,30 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func TestCORSMiddlewareRejectsWildcardAndUnknownOrigins(t *testing.T) {
+	t.Setenv("CORS_ALLOWED_ORIGINS", "*")
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(corsMiddleware())
+	router.GET("/", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("Origin", "https://attacker.example")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if got := response.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("wildcard configuration reflected attacker origin %q", got)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("Origin", "http://localhost:3100")
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if got := response.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:3100" {
+		t.Fatalf("safe local origin was not allowed, got %q", got)
+	}
+}
+
 // TestPublicDecryptRouteNotRegistered is a security regression test: the
 // unauthenticated POST /api/crypto/decrypt route was a decryption oracle and
 // must never be re-registered. A built server's router must not route to it.

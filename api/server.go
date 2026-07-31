@@ -29,6 +29,7 @@ type Server struct {
 	telegramReloadCh          chan<- struct{} // signal Telegram bot to reload
 	authLimiter               *ipRateLimiter  // per-IP throttle for login/register
 	backtestJobs              *backtestJobStore
+	backtestSlots             chan struct{}
 	depthMarketClient         depthMarketClient
 }
 
@@ -55,8 +56,9 @@ func NewServer(traderManager *manager.TraderManager, st *store.Store, cryptoServ
 		// Auth throttle: allow a small burst (typos / page reloads) then ~1
 		// attempt every 6s (10/min) sustained per IP. Generous for a human,
 		// hostile to online password brute-force.
-		authLimiter:  newIPRateLimiter(1.0/6.0, 8),
-		backtestJobs: newBacktestJobStore(),
+		authLimiter:   newIPRateLimiter(1.0/6.0, 8),
+		backtestJobs:  newBacktestJobStore(),
+		backtestSlots: make(chan struct{}, maxConcurrentBacktests),
 	}
 
 	// Setup routes
@@ -66,52 +68,49 @@ func NewServer(traderManager *manager.TraderManager, st *store.Store, cryptoServ
 }
 
 // corsMiddleware returns a CORS handler. Origins come from CORS_ALLOWED_ORIGINS
-// (comma-separated). The literal value "*" enables permissive mode — DO NOT use
-// in production: the JWT is sent via Authorization header so a wildcard ACAO
-// makes stolen tokens replayable from any site.
+// (comma-separated). Wildcard origins are intentionally rejected because this
+// API uses bearer tokens in the Authorization header.
 func corsMiddleware() gin.HandlerFunc {
 	raw := strings.TrimSpace(os.Getenv("CORS_ALLOWED_ORIGINS"))
-	allowAny := raw == "*"
-	var allowlist map[string]struct{}
-	if !allowAny {
-		allowlist = make(map[string]struct{})
-		for _, o := range strings.Split(raw, ",") {
-			o = strings.TrimSpace(o)
-			if o == "" {
-				continue
-			}
+	allowlist := make(map[string]struct{})
+	wildcardRejected := false
+	if raw == "*" {
+		logger.Errorf("[CORS] CORS_ALLOWED_ORIGINS=* is rejected; configure explicit deployment origins")
+		raw = ""
+		wildcardRejected = true
+	}
+	for _, o := range strings.Split(raw, ",") {
+		o = strings.TrimSpace(o)
+		if o == "" {
+			continue
+		}
+		allowlist[o] = struct{}{}
+	}
+	if len(allowlist) == 0 {
+		// Safe defaults for local development. The bundled macOS frontend uses
+		// nginx same-origin proxying, but its direct origin is safe to allow too.
+		for _, o := range []string{
+			"http://localhost:3000",
+			"http://127.0.0.1:3000",
+			"http://localhost:3100",
+			"http://127.0.0.1:3100",
+			"http://localhost:5173",
+			"http://127.0.0.1:5173",
+		} {
 			allowlist[o] = struct{}{}
 		}
-		if len(allowlist) == 0 {
-			// Safe defaults for local development.
-			for _, o := range []string{
-				"http://localhost:3000",
-				"http://127.0.0.1:3000",
-				"http://localhost:5173",
-				"http://127.0.0.1:5173",
-			} {
-				allowlist[o] = struct{}{}
-			}
-			logger.Warnf("[CORS] CORS_ALLOWED_ORIGINS not set; defaulting to localhost dev origins only. Set this env var for production.")
-		}
-		if allowAny {
-			logger.Warnf("[CORS] CORS_ALLOWED_ORIGINS=* is INSECURE in production; restrict to your deployment origin(s).")
+		if raw == "" && !wildcardRejected {
+			logger.Warnf("[CORS] CORS_ALLOWED_ORIGINS not set; defaulting to localhost origins only. Set this env var for production.")
 		}
 	}
 	return func(c *gin.Context) {
 		origin := c.GetHeader("Origin")
 		if origin != "" {
-			switch {
-			case allowAny:
+			if _, ok := allowlist[origin]; ok {
 				c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
 				c.Writer.Header().Set("Vary", "Origin")
-			default:
-				if _, ok := allowlist[origin]; ok {
-					c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
-					c.Writer.Header().Set("Vary", "Origin")
-				}
-				// Unknown origin: do not set ACAO; the browser will block.
 			}
+			// Unknown origin: do not set ACAO; the browser will block.
 		}
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
@@ -345,6 +344,7 @@ CRITICAL: Always use the "id" field for strategy_id.`,
 			s.route(protected, "POST", "/strategies/test-run", "Test-run strategy AI analysis", s.handleStrategyTestRun)
 			s.route(protected, "POST", "/strategies/:id/backtests", "Start an asynchronous historical AI replay", s.handleStartStrategyBacktest)
 			s.route(protected, "GET", "/strategy-backtests/:job_id", "Get historical replay progress and result", s.handleGetStrategyBacktest)
+			s.route(protected, "POST", "/strategy-backtests/:job_id/cancel", "Cancel a running historical replay", s.handleCancelStrategyBacktest)
 			s.route(protected, "GET", "/strategies/:id", "Get strategy by ID", s.handleGetStrategy)
 			s.routeWithSchema(protected, "POST", "/strategies", "Create a new trading strategy",
 				`Body: {"name":"<string, required>","description":"<string, optional>","lang":"zh|en","config":<StrategyConfig object, OPTIONAL — if omitted the system applies complete working defaults automatically (local Binance dynamic candidates, raw candles, conservative risk control)>}

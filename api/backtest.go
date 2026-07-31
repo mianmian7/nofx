@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -19,19 +20,29 @@ import (
 	"github.com/google/uuid"
 )
 
+const (
+	maxBacktestCandles     = 20_000
+	maxAIReplayCandles     = 500
+	maxConcurrentBacktests = 2
+	maxBacktestJobs        = 256
+	backtestJobRetention   = 30 * time.Minute
+	backtestJobTimeout     = 15 * time.Minute
+)
+
 type backtestJob struct {
-	ID               string           `json:"id"`
-	UserID           string           `json:"-"`
-	StrategyID       string           `json:"strategy_id"`
-	Mode             string           `json:"mode"`
-	Status           string           `json:"status"`
-	Stage            string           `json:"stage"`
-	DecisionProgress int              `json:"decision_progress"`
-	MaxAICalls       int              `json:"max_ai_calls"`
-	Error            string           `json:"error,omitempty"`
-	Result           *backtest.Result `json:"result,omitempty"`
-	CreatedAt        time.Time        `json:"created_at"`
-	UpdatedAt        time.Time        `json:"updated_at"`
+	ID               string             `json:"id"`
+	UserID           string             `json:"-"`
+	StrategyID       string             `json:"strategy_id"`
+	Mode             string             `json:"mode"`
+	Status           string             `json:"status"`
+	Stage            string             `json:"stage"`
+	DecisionProgress int                `json:"decision_progress"`
+	MaxAICalls       int                `json:"max_ai_calls"`
+	Error            string             `json:"error,omitempty"`
+	Result           *backtest.Result   `json:"result,omitempty"`
+	CreatedAt        time.Time          `json:"created_at"`
+	UpdatedAt        time.Time          `json:"updated_at"`
+	cancel           context.CancelFunc `json:"-"`
 }
 
 type backtestJobStore struct {
@@ -43,10 +54,15 @@ func newBacktestJobStore() *backtestJobStore {
 	return &backtestJobStore{jobs: make(map[string]*backtestJob)}
 }
 
-func (s *backtestJobStore) put(job *backtestJob) {
+func (s *backtestJobStore) put(job *backtestJob) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.pruneLocked(time.Now().UTC())
+	if len(s.jobs) >= maxBacktestJobs {
+		return false
+	}
 	s.jobs[job.ID] = job
+	return true
 }
 
 func (s *backtestJobStore) update(id string, mutate func(*backtestJob)) {
@@ -67,6 +83,45 @@ func (s *backtestJobStore) get(id string) *backtestJob {
 	}
 	copyValue := *job
 	return &copyValue
+}
+
+func (s *backtestJobStore) pruneLocked(now time.Time) {
+	for id, job := range s.jobs {
+		if isTerminalBacktestStatus(job.Status) && now.Sub(job.UpdatedAt) >= backtestJobRetention {
+			delete(s.jobs, id)
+		}
+	}
+}
+
+func isTerminalBacktestStatus(status string) bool {
+	switch status {
+	case "completed", "failed", "canceled":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *backtestJobStore) cancel(id, userID string) (found bool, canceled bool) {
+	s.mu.Lock()
+	job := s.jobs[id]
+	if job == nil || job.UserID != userID {
+		s.mu.Unlock()
+		return false, false
+	}
+	if isTerminalBacktestStatus(job.Status) {
+		s.mu.Unlock()
+		return true, false
+	}
+	job.Status = "canceled"
+	job.Stage = "canceled"
+	job.UpdatedAt = time.Now().UTC()
+	cancel := job.cancel
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return true, true
 }
 
 type startBacktestRequest struct {
@@ -170,10 +225,29 @@ func (s *Server) handleStartStrategyBacktest(c *gin.Context) {
 			return
 		}
 	}
+	_, timeframe, start, end, err := resolveBacktestRange(req, config)
+	if err != nil {
+		SafeBadRequest(c, err.Error())
+		return
+	}
+	if err := validateBacktestRange(timeframe, start, end, req.Mode); err != nil {
+		SafeBadRequest(c, err.Error())
+		return
+	}
 
 	if s.backtestJobs == nil {
 		s.backtestJobs = newBacktestJobStore()
 	}
+	if s.backtestSlots == nil {
+		s.backtestSlots = make(chan struct{}, maxConcurrentBacktests)
+	}
+	select {
+	case s.backtestSlots <- struct{}{}:
+	default:
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "Too many backtests are running; try again later"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), backtestJobTimeout)
 	now := time.Now().UTC()
 	job := &backtestJob{
 		ID:         uuid.NewString(),
@@ -185,11 +259,78 @@ func (s *Server) handleStartStrategyBacktest(c *gin.Context) {
 		MaxAICalls: req.MaxAICalls,
 		CreatedAt:  now,
 		UpdatedAt:  now,
+		cancel:     cancel,
 	}
-	s.backtestJobs.put(job)
+	if !s.backtestJobs.put(job) {
+		cancel()
+		<-s.backtestSlots
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "Too many backtest jobs are retained; try again later"})
+		return
+	}
 
-	go s.runStrategyBacktestJob(job.ID, userID, req, config)
+	go func() {
+		defer func() {
+			cancel()
+			<-s.backtestSlots
+		}()
+		s.runStrategyBacktestJob(ctx, job.ID, userID, req, config)
+	}()
 	c.JSON(http.StatusAccepted, job)
+}
+
+func resolveBacktestRange(req startBacktestRequest, config store.StrategyConfig) (symbol, timeframe string, start, end time.Time, err error) {
+	symbol = market.Normalize(req.Symbol)
+	if symbol == "" {
+		symbol = "BTCUSDT"
+	}
+	timeframe = strings.TrimSpace(req.Timeframe)
+	if timeframe == "" {
+		timeframe = config.Indicators.Klines.PrimaryTimeframe
+	}
+	if timeframe == "" {
+		timeframe = "15m"
+	}
+	if _, err = market.NormalizeTimeframe(timeframe); err != nil {
+		return "", "", time.Time{}, time.Time{}, err
+	}
+	end = time.Now().UTC()
+	if req.EndTime != "" {
+		end, err = time.Parse(time.RFC3339, req.EndTime)
+		if err != nil {
+			return "", "", time.Time{}, time.Time{}, fmt.Errorf("invalid end_time: %w", err)
+		}
+	}
+	start = end.Add(-7 * 24 * time.Hour)
+	if req.StartTime != "" {
+		start, err = time.Parse(time.RFC3339, req.StartTime)
+		if err != nil {
+			return "", "", time.Time{}, time.Time{}, fmt.Errorf("invalid start_time: %w", err)
+		}
+	}
+	return symbol, timeframe, start, end, nil
+}
+
+func validateBacktestRange(timeframe string, start, end time.Time, mode string) error {
+	if !end.After(start) {
+		return fmt.Errorf("end_time must be after start_time")
+	}
+	interval, err := market.TFDuration(timeframe)
+	if err != nil {
+		return err
+	}
+	maxCandles := maxBacktestCandles
+	if mode == "ai_replay" {
+		maxCandles = maxAIReplayCandles
+	}
+	duration := end.Sub(start)
+	candles := int64(duration / interval)
+	if duration%interval != 0 {
+		candles++
+	}
+	if candles > int64(maxCandles) {
+		return fmt.Errorf("replay range requests about %d candles; maximum for %s is %d", candles, mode, maxCandles)
+	}
+	return nil
 }
 
 func validateHistoricalReplaySupport(config *store.StrategyConfig) error {
@@ -228,8 +369,34 @@ func (s *Server) handleGetStrategyBacktest(c *gin.Context) {
 	c.JSON(http.StatusOK, job)
 }
 
-func (s *Server) runStrategyBacktestJob(jobID, userID string, req startBacktestRequest, config store.StrategyConfig) {
+func (s *Server) handleCancelStrategyBacktest(c *gin.Context) {
+	userID := c.GetString("user_id")
+	if userID == "" || s.backtestJobs == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Backtest job not found"})
+		return
+	}
+	found, canceled := s.backtestJobs.cancel(c.Param("job_id"), userID)
+	if !found {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Backtest job not found"})
+		return
+	}
+	if !canceled {
+		c.JSON(http.StatusConflict, gin.H{"error": "Backtest job has already finished"})
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"message": "Backtest cancellation requested"})
+}
+
+func (s *Server) runStrategyBacktestJob(ctx context.Context, jobID, userID string, req startBacktestRequest, config store.StrategyConfig) {
 	fail := func(err error) {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			s.backtestJobs.update(jobID, func(job *backtestJob) {
+				job.Status = "canceled"
+				job.Stage = "canceled"
+				job.Error = "backtest canceled or timed out"
+			})
+			return
+		}
 		s.backtestJobs.update(jobID, func(job *backtestJob) {
 			job.Status = "failed"
 			job.Stage = "failed"
@@ -237,51 +404,35 @@ func (s *Server) runStrategyBacktestJob(jobID, userID string, req startBacktestR
 		})
 	}
 
-	symbol := market.Normalize(req.Symbol)
-	if symbol == "" {
-		symbol = "BTCUSDT"
+	symbol, timeframe, start, end, err := resolveBacktestRange(req, config)
+	if err != nil {
+		fail(err)
+		return
 	}
-	timeframe := strings.TrimSpace(req.Timeframe)
-	if timeframe == "" {
-		timeframe = config.Indicators.Klines.PrimaryTimeframe
-	}
-	if timeframe == "" {
-		timeframe = "15m"
-	}
-	end := time.Now().UTC()
-	if req.EndTime != "" {
-		parsed, err := time.Parse(time.RFC3339, req.EndTime)
-		if err != nil {
-			fail(fmt.Errorf("invalid end_time: %w", err))
-			return
-		}
-		end = parsed
-	}
-	start := end.Add(-7 * 24 * time.Hour)
-	if req.StartTime != "" {
-		parsed, err := time.Parse(time.RFC3339, req.StartTime)
-		if err != nil {
-			fail(fmt.Errorf("invalid start_time: %w", err))
-			return
-		}
-		start = parsed
+	if err := validateBacktestRange(timeframe, start, end, req.Mode); err != nil {
+		fail(err)
+		return
 	}
 
 	s.backtestJobs.update(jobID, func(job *backtestJob) {
 		job.Status = "running"
 		job.Stage = "fetching_candles"
 	})
-	candles, err := market.GetKlinesRange(symbol, timeframe, start, end)
+	maxCandles := maxBacktestCandles
+	if req.Mode == "ai_replay" {
+		maxCandles = maxAIReplayCandles
+	}
+	candles, err := market.GetKlinesRangeContext(ctx, symbol, timeframe, start, end, maxCandles)
 	if err != nil {
 		fail(fmt.Errorf("failed to fetch historical candles: %w", err))
 		return
 	}
 	candles = market.FilterClosedKlines(candles, time.Now().UTC())
-	if req.Mode == "ai_replay" && len(candles) > 500 {
+	if req.Mode == "ai_replay" && len(candles) > maxAIReplayCandles {
 		fail(fmt.Errorf("AI replay range contains %d candles; reduce it to 500 or fewer", len(candles)))
 		return
 	}
-	if len(candles) > 20_000 {
+	if len(candles) > maxBacktestCandles {
 		fail(fmt.Errorf("replay range contains %d candles; reduce it to 20000 or fewer", len(candles)))
 		return
 	}
@@ -330,7 +481,7 @@ func (s *Server) runStrategyBacktestJob(jobID, userID string, req startBacktestR
 		s.backtestJobs.update(jobID, func(job *backtestJob) { job.Stage = "running_trend_benchmark" })
 		provider = trendProvider
 	}
-	result, err := backtest.Run(context.Background(), backtest.Config{
+	result, err := backtest.Run(ctx, backtest.Config{
 		Symbol:                 symbol,
 		InitialBalance:         req.InitialBalance,
 		FeeBPS:                 req.FeeBPS,
