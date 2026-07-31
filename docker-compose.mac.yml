@@ -5,7 +5,8 @@ services:
     restart: unless-stopped
     stop_grace_period: 30s
     ports:
-      - "${NOFX_BACKEND_PORT:-8080}:8080"
+      # Bind to loopback by default; set NOFX_BIND_ADDRESS explicitly when LAN access is required.
+      - "${NOFX_BIND_ADDRESS:-127.0.0.1}:${NOFX_BACKEND_PORT:-8080}:8080"
     volumes:
       - ./.env.mac:/app/.env:ro
       - ./data:/app/data
@@ -22,7 +23,7 @@ services:
     container_name: nofx-frontend
     restart: unless-stopped
     ports:
-      - "${NOFX_FRONTEND_PORT:-3100}:80"
+      - "${NOFX_BIND_ADDRESS:-127.0.0.1}:${NOFX_FRONTEND_PORT:-3100}:80"
     depends_on:
       - nofx
     healthcheck:

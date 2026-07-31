@@ -13,6 +13,17 @@ build/
 .env.test.local
 .env.production.local
 
+# Private keys and local credential material
+**/.env*
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.crt
+**/*.cert
+**/*secret*.json
+**/*credentials*.json
+
 # Testing
 coverage/
 .nyc_output/

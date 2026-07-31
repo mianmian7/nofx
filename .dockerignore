@@ -35,6 +35,19 @@ decision_logs/
 # Config files (should be mounted)
 config.json
 
+# Secrets and local state (never send these into a build context)
+**/.env*
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.crt
+**/*.cert
+**/*secret*.json
+**/*credentials*.json
+**/*.db
+**/*.sqlite*
+
 # Web build artifacts (but include source for multi-stage build)
 web/node_modules/
 web/dist/
