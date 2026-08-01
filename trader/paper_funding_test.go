@@ -274,7 +274,7 @@ func TestFundingSnapshotFailureRetainsPersistedStatusWithoutEarlyHistory(t *test
 	config := PaperBrokerConfig{
 		InitialBalance: 1_000, FundingSource: funding, Clock: func() time.Time { return now },
 	}
-	broker, err := NewPersistentPaperBroker(config, fixedPaperPriceSource{"MUUSDT": 100}, st.Paper(), "stale-status")
+	broker, err := NewPersistentPaperBroker(config, fixedPaperPriceSource{"MUUSDT": 100}, st.Paper(), "stale-status", newPaperTradeRecorder(st, "paper"))
 	if err != nil {
 		t.Fatalf("NewPersistentPaperBroker: %v", err)
 	}
@@ -295,7 +295,7 @@ func TestFundingSnapshotFailureRetainsPersistedStatusWithoutEarlyHistory(t *test
 		t.Fatalf("history calls = %d, want no early retry before nextFundingTime", got)
 	}
 
-	restored, err := NewPersistentPaperBroker(config, fixedPaperPriceSource{"MUUSDT": 100}, st.Paper(), "stale-status")
+	restored, err := NewPersistentPaperBroker(config, fixedPaperPriceSource{"MUUSDT": 100}, st.Paper(), "stale-status", newPaperTradeRecorder(st, "paper"))
 	if err != nil {
 		t.Fatalf("restore broker: %v", err)
 	}
@@ -509,7 +509,7 @@ func TestPaperFundingPaymentAndLastEventSurviveRestart(t *testing.T) {
 		}}}, snapshots: map[string]*market.FundingSnapshot{}, errors: map[string]error{},
 	}
 	config := PaperBrokerConfig{InitialBalance: 1_000, FundingSource: funding, Clock: func() time.Time { return now }}
-	first, err := NewPersistentPaperBroker(config, fixedPaperPriceSource{"MUUSDT": 100}, st.Paper(), "funding-restart")
+	first, err := NewPersistentPaperBroker(config, fixedPaperPriceSource{"MUUSDT": 100}, st.Paper(), "funding-restart", newPaperTradeRecorder(st, "paper"))
 	if err != nil {
 		t.Fatalf("first broker: %v", err)
 	}
@@ -521,7 +521,7 @@ func TestPaperFundingPaymentAndLastEventSurviveRestart(t *testing.T) {
 		t.Fatalf("first SettleFunding: %v", err)
 	}
 
-	restored, err := NewPersistentPaperBroker(config, fixedPaperPriceSource{"MUUSDT": 100}, st.Paper(), "funding-restart")
+	restored, err := NewPersistentPaperBroker(config, fixedPaperPriceSource{"MUUSDT": 100}, st.Paper(), "funding-restart", newPaperTradeRecorder(st, "paper"))
 	if err != nil {
 		t.Fatalf("restored broker: %v", err)
 	}
@@ -547,7 +547,7 @@ func TestPaperFundingRestartCatchesUpMissedSettlement(t *testing.T) {
 		}}}, snapshots: map[string]*market.FundingSnapshot{}, errors: map[string]error{},
 	}
 	config := PaperBrokerConfig{InitialBalance: 1_000, FundingSource: funding, Clock: func() time.Time { return now }}
-	first, err := NewPersistentPaperBroker(config, fixedPaperPriceSource{"MUUSDT": 100}, st.Paper(), "funding-catchup")
+	first, err := NewPersistentPaperBroker(config, fixedPaperPriceSource{"MUUSDT": 100}, st.Paper(), "funding-catchup", newPaperTradeRecorder(st, "paper"))
 	if err != nil {
 		t.Fatalf("first broker: %v", err)
 	}
@@ -556,7 +556,7 @@ func TestPaperFundingRestartCatchesUpMissedSettlement(t *testing.T) {
 	}
 
 	now = entryTime.Add(2 * time.Hour)
-	restored, err := NewPersistentPaperBroker(config, fixedPaperPriceSource{"MUUSDT": 100}, st.Paper(), "funding-catchup")
+	restored, err := NewPersistentPaperBroker(config, fixedPaperPriceSource{"MUUSDT": 100}, st.Paper(), "funding-catchup", newPaperTradeRecorder(st, "paper"))
 	if err != nil {
 		t.Fatalf("restored broker: %v", err)
 	}

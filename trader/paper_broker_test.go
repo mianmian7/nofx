@@ -58,7 +58,7 @@ func TestPaperBrokerRestoresBalanceAndPositionsAfterRestart(t *testing.T) {
 	}
 	config := PaperBrokerConfig{InitialBalance: 5_000, TakerFeeBPS: 5, SlippageBPS: 2}
 	prices := fixedPaperPriceSource{"MUUSDT": 100}
-	first, err := NewPersistentPaperBroker(config, prices, st.Paper(), "paper-restart")
+	first, err := NewPersistentPaperBroker(config, prices, st.Paper(), "paper-restart", newPaperTradeRecorder(st, "paper"))
 	if err != nil {
 		t.Fatalf("NewPersistentPaperBroker first: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestPaperBrokerRestoresBalanceAndPositionsAfterRestart(t *testing.T) {
 	}
 	want := first.Snapshot()
 
-	restored, err := NewPersistentPaperBroker(config, prices, st.Paper(), "paper-restart")
+	restored, err := NewPersistentPaperBroker(config, prices, st.Paper(), "paper-restart", newPaperTradeRecorder(st, "paper"))
 	if err != nil {
 		t.Fatalf("NewPersistentPaperBroker restored: %v", err)
 	}
@@ -238,6 +238,7 @@ func TestPaperBrokerRecomputesMarginForLegacyPersistedPosition(t *testing.T) {
 		fixedPaperPriceSource{"MUUSDT": 100},
 		st.Paper(),
 		"legacy-margin",
+		newPaperTradeRecorder(st, "paper"),
 	)
 	if err != nil {
 		t.Fatalf("NewPersistentPaperBroker: %v", err)
@@ -296,6 +297,7 @@ func TestPaperPerformanceReconstructsExactLegacyFillHistory(t *testing.T) {
 		fixedPaperPriceSource{"KORUUSDT": 22.69},
 		st.Paper(),
 		"legacy-performance",
+		newPaperTradeRecorder(st, "paper"),
 	)
 	if err != nil {
 		t.Fatalf("NewPersistentPaperBroker: %v", err)
@@ -429,7 +431,7 @@ func TestPaperPerformanceAndFillMetadataSurviveRestart(t *testing.T) {
 	}
 	prices := fixedPaperPriceSource{"MUUSDT": 100}
 	config := PaperBrokerConfig{InitialBalance: 2_000, TakerFeeBPS: 5}
-	first, err := NewPersistentPaperBroker(config, prices, st.Paper(), "paper-performance-restart")
+	first, err := NewPersistentPaperBroker(config, prices, st.Paper(), "paper-performance-restart", newPaperTradeRecorder(st, "paper"))
 	if err != nil {
 		t.Fatalf("NewPersistentPaperBroker first: %v", err)
 	}
@@ -444,7 +446,7 @@ func TestPaperPerformanceAndFillMetadataSurviveRestart(t *testing.T) {
 	}
 	want := first.Performance()
 
-	restored, err := NewPersistentPaperBroker(config, prices, st.Paper(), "paper-performance-restart")
+	restored, err := NewPersistentPaperBroker(config, prices, st.Paper(), "paper-performance-restart", newPaperTradeRecorder(st, "paper"))
 	if err != nil {
 		t.Fatalf("NewPersistentPaperBroker restored: %v", err)
 	}

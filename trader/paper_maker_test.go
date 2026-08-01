@@ -464,7 +464,7 @@ func TestPaperMakerPendingAndPartialFillSurviveRestart(t *testing.T) {
 		TakerFeeBPS: 5, MakerTimeout: 15 * time.Second,
 		Clock: func() time.Time { return now },
 	}
-	first, err := NewPersistentPaperBroker(config, source, st.Paper(), "maker-restart")
+	first, err := NewPersistentPaperBroker(config, source, st.Paper(), "maker-restart", newPaperTradeRecorder(st, "paper"))
 	if err != nil {
 		t.Fatalf("first broker: %v", err)
 	}
@@ -474,7 +474,7 @@ func TestPaperMakerPendingAndPartialFillSurviveRestart(t *testing.T) {
 		t.Fatalf("open_long: %v", err)
 	}
 
-	restored, err := NewPersistentPaperBroker(config, source, st.Paper(), "maker-restart")
+	restored, err := NewPersistentPaperBroker(config, source, st.Paper(), "maker-restart", newPaperTradeRecorder(st, "paper"))
 	if err != nil {
 		t.Fatalf("restored broker: %v", err)
 	}
@@ -486,7 +486,7 @@ func TestPaperMakerPendingAndPartialFillSurviveRestart(t *testing.T) {
 		t.Fatalf("partial fill after restart: %v", err)
 	}
 
-	again, err := NewPersistentPaperBroker(config, source, st.Paper(), "maker-restart")
+	again, err := NewPersistentPaperBroker(config, source, st.Paper(), "maker-restart", newPaperTradeRecorder(st, "paper"))
 	if err != nil {
 		t.Fatalf("second restore: %v", err)
 	}
@@ -656,7 +656,7 @@ func TestPaperMakerRestoreCreatesTakeProfitForLegacyOpenPosition(t *testing.T) {
 	}
 	legacy, err := NewPersistentPaperBroker(PaperBrokerConfig{
 		InitialBalance: 1_000, TakerFeeBPS: 5, Clock: func() time.Time { return now },
-	}, source, st.Paper(), "legacy-maker-migration")
+	}, source, st.Paper(), "legacy-maker-migration", newPaperTradeRecorder(st, "paper"))
 	if err != nil {
 		t.Fatalf("legacy broker: %v", err)
 	}
@@ -671,7 +671,7 @@ func TestPaperMakerRestoreCreatesTakeProfitForLegacyOpenPosition(t *testing.T) {
 		InitialBalance: 1_000, MakerFirst: true, MakerFeeBPS: 2,
 		TakerFeeBPS: 5, MakerTimeout: 15 * time.Second,
 		Clock: func() time.Time { return now.Add(time.Minute) },
-	}, source, st.Paper(), "legacy-maker-migration")
+	}, source, st.Paper(), "legacy-maker-migration", newPaperTradeRecorder(st, "paper"))
 	if err != nil {
 		t.Fatalf("restored broker: %v", err)
 	}
