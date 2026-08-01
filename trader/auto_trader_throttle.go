@@ -49,6 +49,19 @@ func openActionSide(action string) string {
 	}
 }
 
+// positionPricePnLPct converts the margin-based UnrealizedPnLPct reported for
+// a position into the underlying price-move percentage, so throttle gates are
+// comparable across different leverage levels.
+func positionPricePnLPct(pos *kernel.PositionInfo) float64 {
+	if pos == nil {
+		return 0
+	}
+	if pos.Leverage > 1 {
+		return pos.UnrealizedPnLPct / float64(pos.Leverage)
+	}
+	return pos.UnrealizedPnLPct
+}
+
 func normalizedDecisionSymbol(exchange, symbol string) string {
 	return market.NormalizeForExchange(exchange, strings.TrimSpace(symbol))
 }
@@ -121,7 +134,7 @@ func (at *AutoTrader) closeThrottleReason(decision kernel.Decision, ctx *kernel.
 	pnlPct := 0.0
 	entryTime := int64(0)
 	if pos != nil {
-		pnlPct = pos.UnrealizedPnLPct
+		pnlPct = positionPricePnLPct(pos)
 		entryTime = pos.UpdateTime
 	}
 
@@ -147,7 +160,7 @@ func (at *AutoTrader) closeThrottleReason(decision kernel.Decision, ctx *kernel.
 
 		remaining := noiseCloseHold - heldFor
 		return fmt.Sprintf(
-			"trade throttle: %s %s has been held for %s with PnL %.2f%%; it is still inside the noise band %.1f%% to %.1f%%, so wait about %s before a flat/small close",
+			"trade throttle: %s %s has been held for %s with price PnL %.2f%%; it is still inside the noise band %.1f%% to %.1f%%, so wait about %s before a flat/small close",
 			symbol,
 			side,
 			roundDuration(heldFor),
@@ -165,7 +178,7 @@ func (at *AutoTrader) closeThrottleReason(decision kernel.Decision, ctx *kernel.
 
 	remaining := minHold - heldFor
 	return fmt.Sprintf(
-		"trade throttle: %s %s has only been held for %s with PnL %.2f%%; min AI-managed hold is %s unless loss <= %.1f%% or profit >= %.1f%%",
+		"trade throttle: %s %s has only been held for %s with price PnL %.2f%%; min AI-managed hold is %s unless price loss <= %.1f%% or price profit >= %.1f%%",
 		symbol,
 		side,
 		roundDuration(heldFor),

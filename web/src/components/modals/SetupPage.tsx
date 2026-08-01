@@ -2,8 +2,6 @@ import React, { useState, useEffect } from 'react'
 import { Eye, EyeOff } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { invalidateSystemConfig } from '../../lib/config'
-import { OnboardingModeSelector } from '../auth/OnboardingModeSelector'
-import type { UserMode } from '../../lib/onboarding'
 import { useLanguage } from '../../contexts/LanguageContext'
 
 const labels = {
@@ -56,7 +54,7 @@ export function SetupPage() {
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-  const [mode, setMode] = useState<UserMode>('advanced')
+
 
   // Clean up any stale auth/onboarding state on setup page load
   useEffect(() => {
@@ -77,7 +75,7 @@ export function SetupPage() {
       return
     }
     setLoading(true)
-    const result = await register(email, password, undefined, mode)
+    const result = await register(email, password, undefined, 'beginner')
     setLoading(false)
     if (result.success) {
       invalidateSystemConfig()
@@ -198,12 +196,6 @@ export function SetupPage() {
                   </button>
                 </div>
               </div>
-
-              <OnboardingModeSelector
-                language={language}
-                mode={mode}
-                onChange={setMode}
-              />
 
               {/* Error */}
               {error && (

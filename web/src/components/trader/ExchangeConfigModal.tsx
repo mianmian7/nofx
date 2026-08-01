@@ -2,6 +2,9 @@ import React, { useState, useEffect } from 'react'
 import type { Exchange } from '../../types'
 import { t, type Language } from '../../i18n/translations'
 import { api } from '../../lib/api'
+import { useAuth } from '../../contexts/AuthContext'
+import { HyperliquidWalletConnect } from '../common/HyperliquidWalletConnect'
+import { HyperliquidFundsPanel } from '../common/HyperliquidFundsPanel'
 import { getExchangeIcon } from '../common/ExchangeIcons'
 import {
   TwoStageKeyModal,
@@ -152,6 +155,7 @@ export function ExchangeConfigModal({
   onClose,
   language,
 }: ExchangeConfigModalProps) {
+  const { user } = useAuth()
   // Step: 0 = select exchange, 1 = configure
   const [currentStep, setCurrentStep] = useState(
     editingExchangeId || initialExchangeType ? 1 : 0
@@ -680,6 +684,37 @@ export function ExchangeConfigModal({
                     <input type="password" value={asterPrivateKey} onChange={(e) => setAsterPrivateKey(e.target.value)} placeholder={t('enterAsterPrivateKey', language)} className="w-full px-4 py-3 rounded-xl" style={{ background: '#F1ECE2', border: '1px solid rgba(26,24,19,0.14)', color: '#1A1813' }} required />
                   </div>
                 </>
+              )}
+
+              {/* Hyperliquid Wallet Authorization */}
+              {currentExchangeType === 'hyperliquid' && (
+                <div className="space-y-4">
+                  <div className="p-4 rounded-xl" style={{ background: 'rgba(224, 72, 59, 0.1)', border: '1px solid rgba(224, 72, 59, 0.3)' }}>
+                    <div className="flex items-start gap-2">
+                      <span style={{ fontSize: '16px' }}>🔐</span>
+                      <div>
+                        <div className="text-sm font-semibold mb-1" style={{ color: '#E0483B' }}>
+                          {language === 'zh' ? 'Hyperliquid requires wallet authorization' : 'Hyperliquid requires wallet authorization'}
+                        </div>
+                        <div className="text-xs leading-5" style={{ color: '#8A8478' }}>
+                          {language === 'zh'
+                            ? 'Manual private-key/API-key entry is disabled. Use MetaMask, Rabby, OKX, Coinbase Wallet or another EVM wallet to connect, authorize the agent, and approve the builder fee.'
+                            : 'Manual private-key/API-key entry is disabled. Use MetaMask, Rabby, OKX, Coinbase Wallet or another EVM wallet to connect, authorize the agent, and approve the builder fee.'}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex justify-start">
+                    <HyperliquidWalletConnect language={language} isLoggedIn={Boolean(user)} variant="inline" />
+                  </div>
+                  {selectedExchange?.hyperliquidWalletAddr && (
+                    <HyperliquidFundsPanel
+                      language={language}
+                      walletAddress={selectedExchange.hyperliquidWalletAddr}
+                      unifiedAccount={selectedExchange.hyperliquidUnifiedAccount ?? true}
+                    />
+                  )}
+                </div>
               )}
 
               {/* Lighter Fields */}
