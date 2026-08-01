@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { CSSProperties } from 'react'
-import useSWR from 'swr'
+import useSWR, { mutate } from 'swr'
 import { api } from '../../lib/api'
+import { confirmToast, notify } from '../../lib/notify'
 import type {
   SystemStatus,
   AccountInfo,
@@ -451,8 +452,55 @@ export function TerminalDashboard({
   const tt = (key: string, params?: Record<string, string | number>) =>
     t(`terminalDashboard.${key}`, language, params)
   const traderId = selectedTrader?.trader_id || selectedTraderId
+  const [closing, setClosing] = useState<string | null>(null)
   useTick(1000)
   const clock = new Date().toLocaleTimeString('en-GB', { hour12: false })
+
+  async function closePositionRow(symbol: string, side: 'LONG' | 'SHORT') {
+    if (!traderId || closing) return
+    const ok = await confirmToast(`Market-close ${symbol} ${side}?`, {
+      title: 'Close position',
+      okText: 'Close',
+      cancelText: 'Cancel',
+    })
+    if (!ok) return
+    setClosing(symbol)
+    try {
+      await api.closePosition(traderId, symbol, side)
+      notify.success(`${symbol} ${side} closed`)
+      mutate(`positions-${traderId}`)
+      mutate(`account-${traderId}`)
+    } catch (err) {
+      notify.error(err instanceof Error ? err.message : 'Close failed')
+    } finally {
+      setClosing(null)
+    }
+  }
+
+  async function closeAllPositions(open: Position[]) {
+    if (!traderId || closing || open.length === 0) return
+    const ok = await confirmToast(
+      `Market-close ALL ${open.length} open positions?`,
+      { title: 'Flatten book', okText: 'Close all', cancelText: 'Cancel' }
+    )
+    if (!ok) return
+    setClosing('__all__')
+    let failed = 0
+    // Sequential: parallel closes race on exchange nonces / rate limits.
+    for (const p of open) {
+      const side = /long|buy/i.test(p.side) ? 'LONG' : 'SHORT'
+      try {
+        await api.closePosition(traderId, p.symbol, side)
+      } catch {
+        failed++
+      }
+    }
+    mutate(`positions-${traderId}`)
+    mutate(`account-${traderId}`)
+    if (failed === 0) notify.success('All positions closed')
+    else notify.error(`${failed}/${open.length} closes failed`)
+    setClosing(null)
+  }
 
   const { data: realFullStats } = useSWR(
     traderId ? ['full-stats', traderId] : null,
@@ -1059,6 +1107,26 @@ export function TerminalDashboard({
               <span className="tm-sc" style={{ marginLeft: 'auto' }}>
                 {positions?.length ?? 0} {tt('open')}
               </span>
+              {traderId && positions && positions.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => void closeAllPositions(positions)}
+                  disabled={closing !== null}
+                  className="tm-mono"
+                  style={{
+                    background: 'transparent',
+                    border: '1px solid var(--tm-dn)',
+                    color: 'var(--tm-dn)',
+                    borderRadius: 3,
+                    fontSize: 9,
+                    padding: '1px 6px',
+                    cursor: closing ? 'not-allowed' : 'pointer',
+                    opacity: closing ? 0.5 : 1,
+                  }}
+                >
+                  {closing === '__all__' ? 'closing…' : 'close all'}
+                </button>
+              )}
             </div>
             {positions && positions.length > 0 ? (
               <div className="terminal-table-scroll">
@@ -1088,6 +1156,7 @@ export function TerminalDashboard({
                       <td style={{ padding: '0 0 3px', textAlign: 'right' }}>
                         {tt('returnPct')}
                       </td>
+                      <td style={{ padding: '0 0 3px' }} />
                     </tr>
                   </thead>
                   <tbody>
@@ -1143,6 +1212,42 @@ export function TerminalDashboard({
                             className={win ? 'tm-up' : 'tm-dn'}
                           >
                             {(p.unrealized_pnl_pct ?? 0).toFixed(2)}%
+                          </td>
+                          <td
+                            style={{
+                              padding: '5px 0 5px 8px',
+                              textAlign: 'right',
+                              width: 1,
+                            }}
+                          >
+                            {traderId && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void closePositionRow(
+                                    p.symbol,
+                                    long ? 'LONG' : 'SHORT'
+                                  )
+                                }
+                                disabled={closing !== null}
+                                title={`Close ${p.symbol}`}
+                                className="tm-mono"
+                                style={{
+                                  background: 'transparent',
+                                  border: '1px solid var(--tm-dn)',
+                                  color: 'var(--tm-dn)',
+                                  borderRadius: 3,
+                                  fontSize: 9,
+                                  padding: '1px 5px',
+                                  cursor: closing
+                                    ? 'not-allowed'
+                                    : 'pointer',
+                                  opacity: closing ? 0.5 : 1,
+                                }}
+                              >
+                                {closing === p.symbol ? '…' : 'close'}
+                              </button>
+                            )}
                           </td>
                         </tr>
                       )

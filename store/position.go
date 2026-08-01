@@ -194,6 +194,16 @@ func (s *PositionStore) Create(pos *TraderPosition) error {
 	return s.db.Create(pos).Error
 }
 
+// RecordClosedTrade writes a fully closed position record directly. Used by the
+// paper broker so simulated closes appear in the AI's recent-trades context.
+func (s *PositionStore) RecordClosedTrade(pos *TraderPosition) error {
+	if pos.Status == "" {
+		pos.Status = "CLOSED"
+	}
+	pos.Source = "paper"
+	return s.db.Create(pos).Error
+}
+
 // ClosePosition closes position
 func (s *PositionStore) ClosePosition(id int64, exitPrice float64, exitOrderID string, realizedPnL float64, fee float64, closeReason string) error {
 	nowMs := time.Now().UTC().UnixMilli()

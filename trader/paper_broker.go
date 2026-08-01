@@ -13,6 +13,7 @@ import (
 
 	"nofx/kernel"
 	"nofx/market"
+	"nofx/store"
 	tradertypes "nofx/trader/types"
 )
 
@@ -236,11 +237,61 @@ type PaperBroker struct {
 	fundingPollMu           sync.Mutex
 	ledger                  PaperLedger
 	traderID                string
+	closeRecorder           PaperCloseRecorder
 }
 
 type PaperLedger interface {
 	LoadPaperState(traderID string) ([]byte, bool, error)
 	SavePaperState(traderID string, state []byte) error
+}
+
+// PaperCloseRecorder receives closed simulated positions so they can be
+// persisted as completed trades (e.g. into trader_positions) and shown to the
+// AI in its recent-trades context.
+type PaperCloseRecorder interface {
+	RecordPaperClose(close PaperClosedTrade, traderID string) error
+}
+
+// paperTradeRecorder persists simulated closes into the trader_positions table
+// so the AI's recent-trades context includes paper history.
+type paperTradeRecorder struct {
+	store    *store.Store
+	exchange string
+}
+
+func newPaperTradeRecorder(st *store.Store, exchange string) *paperTradeRecorder {
+	return &paperTradeRecorder{store: st, exchange: exchange}
+}
+
+func (r *paperTradeRecorder) RecordPaperClose(close PaperClosedTrade, traderID string) error {
+	if r.store == nil {
+		return nil
+	}
+	nowMs := close.ExitTime.UnixMilli()
+	pos := &store.TraderPosition{
+		TraderID:           traderID,
+		ExchangeID:         "paper",
+		ExchangeType:       r.exchange,
+		ExchangePositionID: fmt.Sprintf("paper_%s_%s_%d", close.Symbol, close.Side, close.ExitTime.UnixNano()),
+		Symbol:             close.Symbol,
+		Side:               close.Side,
+		Quantity:           close.Quantity,
+		EntryPrice:         close.EntryPrice,
+		EntryTime:          close.EntryTime.UnixMilli(),
+		ExitPrice:          close.ExitPrice,
+		ExitTime:           nowMs,
+		RealizedPnL:        close.RealizedPnL,
+		Fee:                close.Fee,
+		Leverage:           close.Leverage,
+		Status:             "CLOSED",
+		CloseReason:        close.CloseReason,
+		CreatedAt:          nowMs,
+		UpdatedAt:          nowMs,
+	}
+	if pos.EntryQuantity == 0 {
+		pos.EntryQuantity = close.Quantity
+	}
+	return r.store.Position().RecordClosedTrade(pos)
 }
 
 type paperBrokerState struct {
@@ -313,7 +364,7 @@ func NewPaperBroker(config PaperBrokerConfig, prices PaperPriceSource) (*PaperBr
 	}, nil
 }
 
-func NewPersistentPaperBroker(config PaperBrokerConfig, prices PaperPriceSource, ledger PaperLedger, traderID string) (*PaperBroker, error) {
+func NewPersistentPaperBroker(config PaperBrokerConfig, prices PaperPriceSource, ledger PaperLedger, traderID string, closeRecorder PaperCloseRecorder) (*PaperBroker, error) {
 	if ledger == nil || traderID == "" {
 		return nil, fmt.Errorf("paper ledger and trader ID are required")
 	}
@@ -323,6 +374,7 @@ func NewPersistentPaperBroker(config PaperBrokerConfig, prices PaperPriceSource,
 	}
 	broker.ledger = ledger
 	broker.traderID = traderID
+	broker.closeRecorder = closeRecorder
 	raw, found, err := ledger.LoadPaperState(traderID)
 	if err != nil {
 		return nil, fmt.Errorf("load paper state: %w", err)
@@ -1166,7 +1218,36 @@ func (b *PaperBroker) closePositionLocked(position PaperPosition, action string,
 	}
 	b.nextID++
 	b.fills = append(b.fills, fill)
+	b.recordCloseLocked(position, fillPrice, at, netTradePnL, exitFee)
 	return fill
+}
+
+// recordCloseLocked notifies the close recorder (if any) that a simulated
+// position was fully closed, so it can be persisted as a completed trade.
+func (b *PaperBroker) recordCloseLocked(position PaperPosition, exitPrice float64, at time.Time, realizedPnL, fee float64) {
+	if b.closeRecorder == nil {
+		return
+	}
+	rec := PaperClosedTrade{
+		Symbol:       position.Symbol,
+		Side:         position.Side,
+		Quantity:     position.Quantity,
+		EntryPrice:   position.EntryPrice,
+		ExitPrice:    exitPrice,
+		EntryTime:    position.EntryTime,
+		ExitTime:     at,
+		RealizedPnL:  realizedPnL,
+		Fee:          fee,
+		Leverage:     position.Leverage,
+		CloseReason:  "paper",
+	}
+	// Record outside the lock to avoid deadlocks if the recorder talks to a DB.
+	go func() {
+		if err := b.closeRecorder.RecordPaperClose(rec, b.traderID); err != nil {
+			// Best-effort: a failed history sync must never break trading.
+			fmt.Printf("paper close recorder failed for %s %s: %v\n", position.Symbol, position.Side, err)
+		}
+	}()
 }
 
 func (b *PaperBroker) Snapshot() PaperSnapshot {

@@ -294,6 +294,24 @@ func (at *AutoTrader) GetPositions() ([]map[string]interface{}, error) {
 	return result, nil
 }
 
+// ClosePosition closes an open position for this trader. When running in paper
+// mode, this operates on the in-memory PaperBroker instance, keeping the live
+// broker and its persisted ledger in sync.
+func (at *AutoTrader) ClosePosition(symbol, side string) error {
+	var err error
+	if side == "LONG" {
+		_, err = at.trader.CloseLong(symbol, 0)
+	} else if side == "SHORT" {
+		_, err = at.trader.CloseShort(symbol, 0)
+	} else {
+		return fmt.Errorf("side must be LONG or SHORT")
+	}
+	if err != nil {
+		return fmt.Errorf("close %s %s: %w", symbol, side, err)
+	}
+	return nil
+}
+
 // recordAndConfirmOrder polls order status for actual fill data and records position
 // action: open_long, open_short, close_long, close_short
 // entryPrice: entry price when closing (0 when opening)

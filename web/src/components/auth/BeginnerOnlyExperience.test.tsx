@@ -85,7 +85,7 @@ describe('beginner-only live trading experience', () => {
   it('keeps desktop navigation labels on one line', () => {
     render(
       <MemoryRouter initialEntries={['/traders']}>
-        <HeaderBar />
+        <HeaderBar language="en" />
       </MemoryRouter>
     )
 
@@ -97,7 +97,7 @@ describe('beginner-only live trading experience', () => {
   it('keeps the full navigation visible in the desktop header', () => {
     render(
       <MemoryRouter initialEntries={['/traders']}>
-        <HeaderBar />
+        <HeaderBar language="en" />
       </MemoryRouter>
     )
 

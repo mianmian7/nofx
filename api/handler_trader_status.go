@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"nofx/logger"
+	"nofx/market"
 	"nofx/store"
 	"nofx/trader"
 	"nofx/trader/aster"
@@ -147,6 +148,45 @@ func (s *Server) handleClosePosition(c *gin.Context) {
 
 	if exchangeCfg == nil || !exchangeCfg.Enabled {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Exchange not configured or not enabled"})
+		return
+	}
+
+	// Paper-mode traders keep their positions in the PaperBroker ledger, not on
+	// a real exchange. Rebuild the persisted broker and close against it so the
+	// manual close button works for simulation accounts too.
+	if fullConfig.Trader != nil && fullConfig.Trader.ExecutionMode == "paper" {
+		// Prefer the live in-memory AutoTrader so the running PaperBroker and its
+		// persisted ledger stay in sync.
+		if autoTrader, err := s.traderManager.GetTrader(traderID); err == nil && autoTrader != nil {
+			closeErr := autoTrader.ClosePosition(req.Symbol, req.Side)
+			if closeErr != nil {
+				logger.Infof("❌ Close paper position (live) failed: symbol=%s, side=%s, error=%v", req.Symbol, req.Side, closeErr)
+				SafeInternalError(c, "Close position", closeErr)
+				return
+			}
+			logger.Infof("✅ Paper position closed (live trader): symbol=%s, side=%s", req.Symbol, req.Side)
+			c.JSON(http.StatusOK, gin.H{
+				"message": "Paper position closed successfully",
+				"symbol":  req.Symbol,
+				"side":    req.Side,
+			})
+			return
+		}
+
+		// Trader not running: rebuild the persisted broker as a fallback so a
+		// manual close still works while the bot is stopped.
+		closeErr := s.closePaperPosition(traderID, req.Symbol, req.Side)
+		if closeErr != nil {
+			logger.Infof("❌ Close paper position failed: symbol=%s, side=%s, error=%v", req.Symbol, req.Side, closeErr)
+			SafeInternalError(c, "Close position", closeErr)
+			return
+		}
+		logger.Infof("✅ Paper position closed (persisted broker): symbol=%s, side=%s", req.Symbol, req.Side)
+		c.JSON(http.StatusOK, gin.H{
+			"message": "Paper position closed successfully",
+			"symbol":  req.Symbol,
+			"side":    req.Side,
+		})
 		return
 	}
 
@@ -323,6 +363,48 @@ func (s *Server) syncOrdersAfterManualClose(exchangeTrader trader.Trader, trader
 		return lastErr
 	}
 	return fmt.Errorf("manual close sync did not run")
+}
+
+// binancePaperPriceSource implements the trader.PaperPriceSource interface for
+// paper-mode manual closes. It reuses the shared Binance market client so the
+// simulated close fills at a live market price.
+type binancePaperPriceSource struct {
+	client *market.APIClient
+}
+
+func (s *binancePaperPriceSource) GetMarketPrice(symbol string) (float64, error) {
+	return s.client.GetCurrentPrice(market.NormalizeForExchange("binance", symbol))
+}
+
+// closePaperPosition closes an open simulated position by rebuilding the
+// persisted PaperBroker for the trader and executing the close against it.
+func (s *Server) closePaperPosition(traderID, symbol, side string) error {
+	if side != "LONG" && side != "SHORT" {
+		return fmt.Errorf("side must be LONG or SHORT")
+	}
+
+	priceSource := &binancePaperPriceSource{client: market.NewAPIClient()}
+	config := trader.PaperBrokerConfig{
+		InitialBalance:   10_000,
+		MakerFirst:       true,
+		MakerFeeBPS:      2,
+		TakerFeeBPS:      5,
+		SlippageBPS:      2,
+		MakerTimeout:     15 * time.Second,
+		MakerMaxReprices: 2,
+	}
+
+	broker, err := trader.NewPersistentPaperBroker(config, priceSource, s.store.Paper(), traderID, nil)
+	if err != nil {
+		return fmt.Errorf("rebuild paper broker: %w", err)
+	}
+
+	if side == "LONG" {
+		_, err = broker.CloseLong(symbol, 0)
+	} else {
+		_, err = broker.CloseShort(symbol, 0)
+	}
+	return err
 }
 
 // recordClosePositionOrder Record close position order to database (Lighter version - direct FILLED status)

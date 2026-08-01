@@ -386,7 +386,7 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 			FundingSource: priceSource,
 		}
 		if st != nil {
-			paperBroker, err = NewPersistentPaperBroker(paperConfig, priceSource, st.Paper(), config.ID)
+			paperBroker, err = NewPersistentPaperBroker(paperConfig, priceSource, st.Paper(), config.ID, newPaperTradeRecorder(st, config.Exchange))
 		} else {
 			paperBroker, err = NewPaperBroker(paperConfig, priceSource)
 		}
