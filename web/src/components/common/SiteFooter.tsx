@@ -45,32 +45,6 @@ export function SiteFooter({ language }: SiteFooterProps) {
             GitHub
           </a>
           <a
-            href={OFFICIAL_LINKS.twitter}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 px-3 py-2 rounded text-sm font-semibold transition-all hover:scale-105"
-            style={{
-              background: '#F1ECE2',
-              color: '#8A8478',
-              border: '1px solid rgba(26,24,19,0.14)',
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = '#E8E2D5'
-              e.currentTarget.style.color = '#1A1813'
-              e.currentTarget.style.borderColor = '#1DA1F2'
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = '#F1ECE2'
-              e.currentTarget.style.color = '#8A8478'
-              e.currentTarget.style.borderColor = 'rgba(26,24,19,0.14)'
-            }}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
-            </svg>
-            Twitter
-          </a>
-          <a
             href={OFFICIAL_LINKS.telegram}
             target="_blank"
             rel="noopener noreferrer"

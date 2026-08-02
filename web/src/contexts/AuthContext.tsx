@@ -3,7 +3,6 @@ import { flushSync } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { getSystemConfig, invalidateSystemConfig } from '../lib/config'
 import { reset401Flag, httpClient } from '../lib/httpClient'
-import { getPostAuthPath, setUserMode, type UserMode } from '../lib/onboarding'
 import { ROUTES } from '../router/paths'
 import { useLanguage } from './LanguageContext'
 
@@ -17,8 +16,7 @@ interface AuthContextType {
   token: string | null
   login: (
     email: string,
-    password: string,
-    mode?: UserMode
+    password: string
   ) => Promise<{
     success: boolean
     message?: string
@@ -30,8 +28,7 @@ interface AuthContextType {
   register: (
     email: string,
     password: string,
-    betaCode?: string,
-    mode?: UserMode
+    betaCode?: string
   ) => Promise<{ success: boolean; message?: string }>
   logout: () => void
   isLoading: boolean
@@ -96,14 +93,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const handlePostAuthSuccess = (
     authToken: string,
-    userInfo: User,
-    mode?: UserMode
+    userInfo: User
   ) => {
     reset401Flag()
-
-    if (mode) {
-      setUserMode(mode)
-    }
 
     localStorage.setItem('auth_token', authToken)
     localStorage.setItem('auth_user', JSON.stringify(userInfo))
@@ -114,7 +106,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     })
 
     const returnUrl = sessionStorage.getItem('returnUrl')
-    const nextPath = returnUrl || getPostAuthPath(mode)
+    const nextPath = returnUrl || ROUTES.traders
     if (returnUrl) {
       sessionStorage.removeItem('returnUrl')
     }
@@ -122,7 +114,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     navigate(nextPath)
   }
 
-  const login = async (email: string, password: string, mode?: UserMode) => {
+  const login = async (email: string, password: string) => {
     try {
       const response = await fetch('/api/login', {
         method: 'POST',
@@ -137,7 +129,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (response.ok) {
         if (data.token) {
           const userInfo = { id: data.user_id, email: data.email }
-          handlePostAuthSuccess(data.token, userInfo, mode)
+          handlePostAuthSuccess(data.token, userInfo)
 
           return { success: true, message: data.message }
         }
@@ -202,8 +194,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const register = async (
     email: string,
     password: string,
-    betaCode?: string,
-    mode?: UserMode
+    betaCode?: string
   ) => {
     const requestBody: {
       email: string
@@ -224,12 +215,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }>('/api/register', requestBody)
 
       if (result.success && result.data) {
-        // Clear stale onboarding state so new users always see the welcome flow
-        localStorage.removeItem('nofx_beginner_onboarding_completed')
-        localStorage.removeItem('nofx_beginner_wallet_address')
-
         const userInfo = { id: result.data.user_id, email: result.data.email }
-        handlePostAuthSuccess(result.data.token, userInfo, mode)
+        handlePostAuthSuccess(result.data.token, userInfo)
 
         return {
           success: true,

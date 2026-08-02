@@ -56,13 +56,11 @@ export function SetupPage() {
   const [loading, setLoading] = useState(false)
 
 
-  // Clean up any stale auth/onboarding state on setup page load
+  // Clear any stale authentication state before creating the first account.
   useEffect(() => {
     localStorage.removeItem('auth_token')
     localStorage.removeItem('auth_user')
     localStorage.removeItem('user_id')
-    localStorage.removeItem('nofx_beginner_onboarding_completed')
-    localStorage.removeItem('nofx_beginner_wallet_address')
   }, [])
 
   const l = labels[language as keyof typeof labels] || labels.en
@@ -75,7 +73,7 @@ export function SetupPage() {
       return
     }
     setLoading(true)
-    const result = await register(email, password, undefined, 'beginner')
+    const result = await register(email, password)
     setLoading(false)
     if (result.success) {
       invalidateSystemConfig()

@@ -21,8 +21,6 @@ import { AITradersPage } from '../components/trader/AITradersPage'
 import { TraderLaunchGuestPage } from '../components/trader/TraderLaunchGuestPage'
 import { FAQPage } from '../pages/FAQPage'
 import { LandingPage } from '../pages/LandingPage'
-import { BeginnerOnboardingPage } from '../pages/BeginnerOnboardingPage'
-import { DataPage } from '../pages/DataPage'
 import { SettingsPage } from '../pages/SettingsPage'
 import { StrategyStudioPage } from '../pages/StrategyStudioPage'
 import { TerminalDashboard } from '../components/terminal/TerminalDashboard'
@@ -188,11 +186,7 @@ function AppChrome({
   )
 }
 
-function TradersRoute({
-  showBeginnerOnboarding = false,
-}: {
-  showBeginnerOnboarding?: boolean
-}) {
+function TradersRoute() {
   const navigate = useNavigate()
   const { user, token } = useAuth()
   const { data: traders } = useSWR<TraderInfo[]>(
@@ -208,7 +202,6 @@ function TradersRoute({
     <AppChrome
       currentPage="traders"
       animateContent
-      extraContent={showBeginnerOnboarding ? <BeginnerOnboardingPage /> : null}
     >
       <AITradersPage
         onTraderSelect={(traderId) => {
@@ -406,7 +399,7 @@ export function AppRoutes() {
           path={ROUTES.setup}
           element={
             user ? (
-              <Navigate to={ROUTES.welcome} replace />
+              <Navigate to={ROUTES.traders} replace />
             ) : systemConfig?.initialized ? (
               <Navigate to={ROUTES.login} replace />
             ) : (
@@ -419,14 +412,6 @@ export function AppRoutes() {
           element={
             <AppChrome currentPage="faq" showFooter={false} wrapInMain={false}>
               <FAQPage />
-            </AppChrome>
-          }
-        />
-        <Route
-          path={ROUTES.data}
-          element={
-            <AppChrome currentPage="data" showFooter={false}>
-              <DataPage />
             </AppChrome>
           }
         />
@@ -445,11 +430,8 @@ export function AppRoutes() {
         <Route
           path={ROUTES.welcome}
           element={
-            // The welcome overlay is the AI-wallet deposit page (QR +
-            // auto-refreshing balance) — useful to every signed-in user, so
-            // no legacy "beginner mode" gate here.
             isAuthenticated ? (
-              <TradersRoute showBeginnerOnboarding />
+              <Navigate to={ROUTES.traders} replace />
             ) : (
               <Navigate to={ROUTES.login} replace />
             )
@@ -462,16 +444,6 @@ export function AppRoutes() {
               <AppChrome currentPage="competition" animateContent>
                 <CompetitionPage />
               </AppChrome>
-            ) : (
-              <LandingPage />
-            )
-          }
-        />
-        <Route
-          path={ROUTES.strategyMarket}
-          element={
-            isAuthenticated ? (
-              <Navigate to={ROUTES.strategy} replace />
             ) : (
               <LandingPage />
             )

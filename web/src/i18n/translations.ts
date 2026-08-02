@@ -395,10 +395,6 @@ export const translations = {
     noExchangesConfigured: 'No configured exchanges',
     signalSource: 'Signal Source',
     signalSourceConfig: 'Signal Source Configuration',
-    ai500Description:
-      'API endpoint for AI500 data provider, leave blank to disable this signal source',
-    oiTopDescription:
-      'API endpoint for open interest rankings, leave blank to disable this signal source',
     information: 'Information',
     signalSourceInfo1:
       '• Signal source configuration is per-user, each user can set their own URLs',
@@ -508,7 +504,7 @@ export const translations = {
     forgotPassword: 'Forgot password?',
     forgotAccount: 'Forgot account?',
     forgotAccountConfirm:
-      '⚠️ This will permanently delete EVERYTHING: users, traders, strategies, AI model API keys, exchange API keys, and your CLAW402 wallet. Export anything you need to keep (especially wallet private keys) BEFORE continuing. Re-registration will NOT restore them. Continue?',
+      '⚠️ This will permanently delete EVERYTHING: users, traders, strategies, AI model API keys, and exchange API keys. Export anything you need to keep BEFORE continuing. Re-registration will NOT restore them. Continue?',
     forgotAccountSuccess:
       'Account reset successful! You can now register a new account.',
     rememberMe: 'Remember me',
@@ -662,19 +658,13 @@ export const translations = {
     candidateCoins: 'Candidate Coins',
     candidateCoinsZeroWarning: 'Candidate Coins Count is 0',
     possibleReasons: 'Possible Reasons:',
-    ai500ApiNotConfigured:
-      'AI500 data provider API not configured or inaccessible (check signal source settings)',
     apiConnectionTimeout: 'API connection timeout or returned empty data',
     noCustomCoinsAndApiFailed:
       'No custom coins configured and API fetch failed',
     solutions: 'Solutions:',
     setCustomCoinsInConfig: 'Set custom coin list in trader configuration',
     orConfigureCorrectApiUrl: 'Or configure correct data provider API address',
-    orDisableAI500Options:
-      'Or disable "Use AI500 Data Provider" and "Use OI Top" options',
     signalSourceNotConfigured: 'Signal Source Not Configured',
-    signalSourceWarningMessage:
-      'You have traders that enabled "Use AI500 Data Provider" or "Use OI Top", but signal source API address is not configured yet. This will cause candidate coins count to be 0, and traders cannot work properly.',
     configureSignalSourceNow: 'Configure Signal Source Now',
 
     // FAQ Page
@@ -1024,8 +1014,6 @@ export const translations = {
       cycle: 'Cycle',
       aiWalletEmpty: 'AI fee wallet is out of USDC — decisions are failing.',
       aiWalletLow: 'AI fee wallet is low ({balance} USDC) — top up soon.',
-      aiWalletDeposit:
-        'Deposit Base USDC to the Claw402 wallet; the trader recovers automatically.',
       safeMode:
         'Safe mode: AI failed repeatedly, so no new positions are being opened.',
       aiLive: 'Your AI is live.',
@@ -1078,7 +1066,6 @@ export const translations = {
       closed: 'Closed',
       noClosedTrades: 'No closed trades yet.',
       marketNetInflow: 'Market net inflow',
-      marketNetInflowDesc: 'Market net inflow · {window} · Vergex',
       markets: 'Markets',
       bySymbol: 'By symbol',
       bySymbolDesc: 'By-symbol history · trades / win / P/L',
@@ -1093,8 +1080,6 @@ export const translations = {
       inverted: 'Inverted',
       noExecutionEvents: 'No execution events yet.',
       signalMatrix: 'Signal matrix',
-      signalMatrixDesc: 'Signal matrix · Vergex',
-      noSignalData: 'No signal data (Claw402).',
       riskRadar: 'Risk radar',
       riskRadarDesc: 'Live position-risk check',
       noRiskData: 'No live risk data.',
@@ -1107,7 +1092,6 @@ export const translations = {
       noCostLiqData:
         'No cost/liquidation heatmap for {symbol} (crypto and main-DEX markets do not provide one).',
       orderBook: 'Order book',
-      noNetFlowData: 'No net-flow data (Claw402 payment required).',
       noClosedTradeSample: 'No closed trades yet.',
       ok: 'OK',
       throttle: 'Throttled',
@@ -1222,8 +1206,6 @@ export const translations = {
       configureApi: 'Configure API',
       configureWallet: 'Configure Wallet',
       chooseProvider: 'Choose Your AI Provider',
-      claw402EntryDesc:
-        'Recommended default path. Use Base USDC pay-per-call instead of managing API keys.',
       otherApiEntry: 'Other API Providers',
       otherApiEntryDesc:
         'Use your own API key for OpenAI, Claude, Gemini, DeepSeek, and more.',
@@ -1231,10 +1213,7 @@ export const translations = {
       recommended: 'Best',
       allModelsClaw: 'Pay-as-you-go with USDC — supports all major AI models',
       selectAiModel: 'Choose AI Model',
-      allModelsUnified:
-        'All models unified via Claw402. Switch anytime after setup.',
       setupWallet: 'Setup Wallet',
-      walletInfo: 'Claw402 uses USDC on Base chain. You need an EVM wallet.',
       exportKey: 'Export private key from MetaMask, Rabby, etc.',
       dedicatedWallet:
         'Recommended: create a dedicated wallet with a small USDC balance',
@@ -1256,8 +1235,6 @@ export const translations = {
       validating: 'Validating...',
       walletAddress: 'Wallet Address',
       usdcBalance: 'Base USDC Balance',
-      claw402Connected: 'claw402 Connected',
-      claw402Unreachable: 'claw402 Unreachable',
       depositUsdc: 'Deposit USDC to this address on Base chain',
       invalidKeyPrefix: 'Please add 0x at the beginning',
       invalidKeyLength: 'Should be 66 characters, currently',
@@ -1744,8 +1721,6 @@ export const translations = {
     noExchangesConfigured: '暂无已配置的交易所',
     signalSource: '信号源',
     signalSourceConfig: '信号源配置',
-    ai500Description: '用于获取 AI500 数据源的 API 地址，留空则不使用此数据源',
-    oiTopDescription: '用于获取持仓量排行数据的API地址，留空则不使用此信号源',
     information: '说明',
     signalSourceInfo1:
       '• 信号源配置为用户级别，每个用户可以设置自己的信号源URL',
@@ -1841,7 +1816,7 @@ export const translations = {
     forgotPassword: '忘记密码？',
     forgotAccount: '忘记账户？',
     forgotAccountConfirm:
-      '⚠️ 这将永久删除全部数据：用户、Trader、策略、AI 模型 API Key、交易所 API Key，以及您的 CLAW402 钱包。请务必在继续前导出需要保留的内容（尤其是钱包私钥）。重新注册不会恢复任何数据。确定要继续吗？',
+      '⚠️ 这将永久删除全部数据：用户、Trader、策略、AI 模型 API Key、交易所 API Key，。请务必在继续前导出需要保留的内容。重新注册不会恢复任何数据。确定要继续吗？',
     forgotAccountSuccess: '账户已重置！现在可以注册新账户了。',
     rememberMe: '记住我',
     resetPassword: '重置密码',
@@ -1981,17 +1956,12 @@ export const translations = {
     candidateCoins: '候选币种',
     candidateCoinsZeroWarning: '候选币种数量为 0',
     possibleReasons: '可能原因：',
-    ai500ApiNotConfigured:
-      'AI500 数据源 API 未配置或无法访问（请检查信号源设置）',
     apiConnectionTimeout: 'API连接超时或返回数据为空',
     noCustomCoinsAndApiFailed: '未配置自定义币种且API获取失败',
     solutions: '解决方案：',
     setCustomCoinsInConfig: '在交易员配置中设置自定义币种列表',
     orConfigureCorrectApiUrl: '或者配置正确的数据源 API 地址',
-    orDisableAI500Options: '或者禁用"使用 AI500 数据源"和"使用 OI Top"选项',
     signalSourceNotConfigured: '信号源未配置',
-    signalSourceWarningMessage:
-      '您有交易员启用了"使用 AI500 数据源"或"使用 OI Top"，但尚未配置信号源 API 地址。这将导致候选币种数量为 0，交易员无法正常工作。',
     configureSignalSourceNow: '立即配置信号源',
 
     // FAQ Page
@@ -2327,8 +2297,6 @@ export const translations = {
       cycle: '轮次',
       aiWalletEmpty: 'AI 费用钱包的 USDC 已用尽，决策当前无法执行。',
       aiWalletLow: 'AI 费用钱包余额较低（{balance} USDC），请尽快充值。',
-      aiWalletDeposit:
-        '请向 Claw402 钱包充值 Base USDC，交易智能体会自动恢复。',
       safeMode: '安全模式：AI 连续失败，系统已停止开立新仓位。',
       aiLive: '交易智能体已启动。',
       aiLiveDesc:
@@ -2379,7 +2347,6 @@ export const translations = {
       closed: '平仓时间',
       noClosedTrades: '暂无已平仓交易。',
       marketNetInflow: '市场净流入',
-      marketNetInflowDesc: '市场净流入 · {window} · Vergex',
       markets: '个市场',
       bySymbol: '按标的统计',
       bySymbolDesc: '标的历史 · 交易数 / 胜率 / 盈亏',
@@ -2394,8 +2361,6 @@ export const translations = {
       inverted: '反向',
       noExecutionEvents: '暂无执行事件。',
       signalMatrix: '信号矩阵',
-      signalMatrixDesc: '信号矩阵 · Vergex',
-      noSignalData: '暂无信号数据（Claw402）。',
       riskRadar: '风险雷达',
       riskRadarDesc: '实时仓位风险检查',
       noRiskData: '暂无实时风险数据。',
@@ -2408,7 +2373,6 @@ export const translations = {
       noCostLiqData:
         '{symbol} 暂无成本/强平热力图（加密货币主 DEX 市场不提供此数据）。',
       orderBook: '订单簿',
-      noNetFlowData: '暂无净流入数据（需要 Claw402 付费数据）。',
       noClosedTradeSample: '暂无已平仓交易。',
       ok: '正常',
       throttle: '受限',
@@ -2519,8 +2483,6 @@ export const translations = {
       configureApi: '配置 API',
       configureWallet: '配置钱包',
       chooseProvider: '选择 AI 模型提供商',
-      claw402EntryDesc:
-        '默认推荐走这条路。直接用 Base USDC 按次付费，不需要自己管理 API Key。',
       otherApiEntry: '其他 API 模型',
       otherApiEntryDesc:
         '如果你已经有自己的 OpenAI、Claude、Gemini、DeepSeek 等 API Key，再从这里进入。',
@@ -2528,9 +2490,7 @@ export const translations = {
       recommended: '推荐',
       allModelsClaw: '用 USDC 按量付费，支持所有主流 AI 模型',
       selectAiModel: '① 选择 AI 模型',
-      allModelsUnified: '所有模型通过 Claw402 统一调用，创建后可随时切换',
       setupWallet: '② 设置钱包',
-      walletInfo: '💡 Claw402 使用 Base 链上的 USDC 付费，你需要一个 EVM 钱包',
       exportKey: '可以用 MetaMask、Rabby 等钱包导出私钥',
       dedicatedWallet: '建议新建一个专用钱包，充入少量 USDC 即可',
       walletPrivateKey: '钱包私钥（Base 链 EVM）',
@@ -2550,8 +2510,6 @@ export const translations = {
       validating: '验证中...',
       walletAddress: '钱包地址',
       usdcBalance: 'Base USDC 余额',
-      claw402Connected: 'claw402 已连接',
-      claw402Unreachable: 'claw402 不可达',
       depositUsdc: '请往此地址充值 Base 链 USDC',
       invalidKeyPrefix: '请在开头加 0x',
       invalidKeyLength: '应为 66 个字符，当前',
@@ -3042,10 +3000,6 @@ export const translations = {
     noExchangesConfigured: 'Belum ada bursa yang dikonfigurasi',
     signalSource: 'Sumber Sinyal',
     signalSourceConfig: 'Konfigurasi Sumber Sinyal',
-    ai500Description:
-      'Endpoint API untuk penyedia data AI500, kosongkan untuk menonaktifkan sumber sinyal ini',
-    oiTopDescription:
-      'Endpoint API untuk peringkat open interest, kosongkan untuk menonaktifkan sumber sinyal ini',
     information: 'Informasi',
     signalSourceInfo1:
       '• Konfigurasi sumber sinyal per-pengguna, setiap pengguna dapat mengatur URL sendiri',
@@ -3154,7 +3108,7 @@ export const translations = {
     forgotPassword: 'Lupa kata sandi?',
     forgotAccount: 'Lupa akun?',
     forgotAccountConfirm:
-      '⚠️ Ini akan MENGHAPUS PERMANEN semua data: pengguna, trader, strategi, kunci API model AI, kunci API bursa, dan dompet CLAW402 Anda. Ekspor apa pun yang ingin Anda simpan (terutama kunci privat dompet) SEBELUM melanjutkan. Pendaftaran ulang TIDAK akan memulihkannya. Lanjutkan?',
+      '⚠️ Ini akan MENGHAPUS PERMANEN semua data: pengguna, trader, strategi, kunci API model AI, kunci API bursa, Ekspor apa pun yang ingin Anda simpan SEBELUM melanjutkan. Pendaftaran ulang TIDAK akan memulihkannya. Lanjutkan?',
     forgotAccountSuccess:
       'Akun berhasil direset! Anda sekarang dapat mendaftar akun baru.',
     rememberMe: 'Ingat saya',
@@ -3289,8 +3243,6 @@ export const translations = {
     candidateCoins: 'Koin Kandidat',
     candidateCoinsZeroWarning: 'Jumlah Koin Kandidat adalah 0',
     possibleReasons: 'Kemungkinan Penyebab:',
-    ai500ApiNotConfigured:
-      'API penyedia data AI500 tidak dikonfigurasi atau tidak dapat diakses (periksa pengaturan sumber sinyal)',
     apiConnectionTimeout: 'Koneksi API timeout atau mengembalikan data kosong',
     noCustomCoinsAndApiFailed:
       'Tidak ada koin kustom yang dikonfigurasi dan pengambilan API gagal',
@@ -3298,11 +3250,7 @@ export const translations = {
     setCustomCoinsInConfig: 'Atur daftar koin kustom di konfigurasi trader',
     orConfigureCorrectApiUrl:
       'Atau konfigurasi alamat API penyedia data yang benar',
-    orDisableAI500Options:
-      'Atau nonaktifkan opsi "Gunakan Penyedia Data AI500" dan "Gunakan OI Top"',
     signalSourceNotConfigured: 'Sumber Sinyal Belum Dikonfigurasi',
-    signalSourceWarningMessage:
-      'Anda memiliki trader yang mengaktifkan "Gunakan Penyedia Data AI500" atau "Gunakan OI Top", tetapi alamat API sumber sinyal belum dikonfigurasi. Ini akan menyebabkan jumlah koin kandidat menjadi 0, dan trader tidak dapat bekerja dengan baik.',
     configureSignalSourceNow: 'Konfigurasi Sumber Sinyal Sekarang',
 
     // FAQ Page
@@ -3617,8 +3565,6 @@ export const translations = {
       aiWalletEmpty: 'USDC dompet biaya AI habis — keputusan gagal.',
       aiWalletLow:
         'Saldo dompet biaya AI rendah ({balance} USDC) — segera isi ulang.',
-      aiWalletDeposit:
-        'Setor Base USDC ke dompet Claw402; trader akan pulih otomatis.',
       safeMode:
         'Mode aman: AI gagal berulang kali sehingga posisi baru tidak dibuka.',
       aiLive: 'AI Anda aktif.',
@@ -3671,7 +3617,6 @@ export const translations = {
       closed: 'Ditutup',
       noClosedTrades: 'Belum ada trade ditutup.',
       marketNetInflow: 'Arus masuk bersih pasar',
-      marketNetInflowDesc: 'Arus masuk bersih pasar · {window} · Vergex',
       markets: 'Pasar',
       bySymbol: 'Per simbol',
       bySymbolDesc: 'Riwayat simbol · trade / menang / P/L',
@@ -3686,8 +3631,6 @@ export const translations = {
       inverted: 'Dibalik',
       noExecutionEvents: 'Belum ada peristiwa eksekusi.',
       signalMatrix: 'Matriks sinyal',
-      signalMatrixDesc: 'Matriks sinyal · Vergex',
-      noSignalData: 'Tidak ada data sinyal (Claw402).',
       riskRadar: 'Radar risiko',
       riskRadarDesc: 'Pemeriksaan risiko posisi live',
       noRiskData: 'Tidak ada data risiko live.',
@@ -3699,8 +3642,6 @@ export const translations = {
       costLine: 'Garis biaya',
       noCostLiqData: 'Tidak ada peta biaya/likuidasi untuk {symbol}.',
       orderBook: 'Buku order',
-      noNetFlowData:
-        'Tidak ada data arus bersih (pembayaran Claw402 diperlukan).',
       noClosedTradeSample: 'Belum ada trade ditutup.',
       ok: 'OK',
       throttle: 'Dibatasi',
@@ -3813,8 +3754,6 @@ export const translations = {
       configureApi: 'Konfigurasi API',
       configureWallet: 'Konfigurasi Wallet',
       chooseProvider: 'Pilih Penyedia AI Anda',
-      claw402EntryDesc:
-        'Jalur default yang direkomendasikan. Gunakan Base USDC bayar per panggilan tanpa mengelola API key.',
       otherApiEntry: 'Penyedia API Lain',
       otherApiEntryDesc:
         'Gunakan API key Anda sendiri untuk OpenAI, Claude, Gemini, DeepSeek, dan lainnya.',
@@ -3823,11 +3762,7 @@ export const translations = {
       allModelsClaw:
         'Bayar per panggilan dengan USDC — mendukung semua model AI utama',
       selectAiModel: 'Pilih Model AI',
-      allModelsUnified:
-        'Semua model terpadu via Claw402. Ganti kapan saja setelah setup.',
       setupWallet: 'Setup Wallet',
-      walletInfo:
-        'Claw402 menggunakan USDC di Base chain. Anda memerlukan wallet EVM.',
       exportKey: 'Ekspor private key dari MetaMask, Rabby, dll.',
       dedicatedWallet: 'Disarankan: buat wallet khusus dengan saldo USDC kecil',
       walletPrivateKey: 'Private Key Wallet (Base Chain EVM)',
@@ -3848,8 +3783,6 @@ export const translations = {
       validating: 'Memvalidasi...',
       walletAddress: 'Alamat Wallet',
       usdcBalance: 'Saldo Base USDC',
-      claw402Connected: 'claw402 Terhubung',
-      claw402Unreachable: 'claw402 Tidak Dapat Dijangkau',
       depositUsdc: 'Deposit USDC ke alamat ini di Base chain',
       invalidKeyPrefix: 'Tambahkan 0x di awal',
       invalidKeyLength: 'Harus 66 karakter, saat ini',

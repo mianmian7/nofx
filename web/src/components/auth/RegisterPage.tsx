@@ -146,8 +146,8 @@ export function RegisterPage() {
             <span className="text-nofx-gold">CREATE</span> YOUR ACCOUNT
           </h1>
           <p className="text-nofx-text-muted text-sm">
-            This account owns your NOFX instance. Next step: a guided launch —
-            about $13 and five minutes to your first AI trade.
+            This account owns your NOFX instance. Next step: configure a model,
+            connect an exchange, and review your first strategy.
           </p>
         </div>
 
