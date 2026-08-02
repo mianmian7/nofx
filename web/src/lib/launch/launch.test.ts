@@ -1,9 +1,8 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   describeLaunchFailures,
   failedLaunchChecks,
-  primarySetupTarget,
-  setupTargetForCheck,
+  launchWarnings,
 } from './preflight'
 import { pickTradingExchange, pickTradingModel } from './resolve'
 import type { LaunchCheck, LaunchPreflightResult } from './types'
@@ -19,93 +18,36 @@ function preflightResult(checks: LaunchCheck[]): LaunchPreflightResult {
   return {
     ready: checks.every((check) => check.status !== 'failed'),
     checks,
-    min_ai_fee_usdc: 1,
     min_trading_usdc: 12,
     checked_at: new Date().toISOString(),
   }
 }
 
-describe('setupTargetForCheck', () => {
-  it('routes generic model problems separately from claw402 wallet problems', () => {
-    expect(setupTargetForCheck({ id: 'ai_model', status: 'failed' })).toBe(
-      'model'
-    )
-    expect(setupTargetForCheck({ id: 'ai_wallet', status: 'failed' })).toBe(
-      'claw402'
-    )
-    expect(
-      setupTargetForCheck({ id: 'ai_wallet_funds', status: 'failed' })
-    ).toBe('claw402')
-  })
-
-  it('routes exchange config/account problems to generic exchange setup', () => {
-    expect(
-      setupTargetForCheck({ id: 'exchange_config', status: 'failed' })
-    ).toBe('exchange')
-    expect(
-      setupTargetForCheck({ id: 'exchange_account', status: 'failed' })
-    ).toBe('exchange')
-  })
-
-  it('routes funding shortfalls to generic exchange setup', () => {
-    expect(
-      setupTargetForCheck({ id: 'exchange_funds', status: 'failed' })
-    ).toBe('exchange')
-  })
-
-  it('has no anchor for strategy problems', () => {
-    expect(setupTargetForCheck({ id: 'strategy', status: 'failed' })).toBeNull()
-  })
-})
-
-describe('primarySetupTarget', () => {
-  it('returns the anchor for the first failing check', () => {
+describe('launch preflight helpers', () => {
+  it('collects failed and warning checks separately', () => {
     const result = preflightResult([
-      { id: 'ai_model', status: 'ok' },
-      { id: 'ai_wallet_funds', status: 'failed', message: 'AI wallet empty.' },
-      { id: 'exchange_funds', status: 'failed', message: 'Low margin.' },
-    ])
-    expect(primarySetupTarget(result)).toBe('claw402')
-  })
-
-  it('returns null when everything passes', () => {
-    const result = preflightResult([
-      { id: 'ai_model', status: 'ok' },
-      { id: 'exchange_funds', status: 'warning' },
-    ])
-    expect(primarySetupTarget(result)).toBeNull()
-  })
-})
-
-describe('describeLaunchFailures / failedLaunchChecks', () => {
-  it('collects only failed checks and joins their messages', () => {
-    const result = preflightResult([
-      { id: 'ai_wallet_funds', status: 'failed', message: 'AI wallet empty.' },
+      { id: 'ai_model', status: 'failed', message: 'Model is not configured.' },
       { id: 'exchange_funds', status: 'warning', message: 'Testnet funds.' },
       { id: 'exchange_account', status: 'failed', message: 'Bad key.' },
       { id: 'strategy', status: 'skipped' },
     ])
+
     expect(failedLaunchChecks(result)).toHaveLength(2)
-    expect(describeLaunchFailures(result)).toBe('AI wallet empty. Bad key.')
+    expect(launchWarnings(result)).toHaveLength(1)
+    expect(describeLaunchFailures(result)).toBe(
+      'Model is not configured. Bad key.'
+    )
   })
 })
 
 describe('pickTradingModel', () => {
   const base: Partial<AIModel> = { enabled: true }
 
-  it('prefers a user-owned direct model over claw402', () => {
+  it('selects the first enabled model with credentials', () => {
     const models = [
       { ...base, id: 'openai', provider: 'openai', has_api_key: true },
-      { ...base, id: 'c402', provider: 'claw402', has_api_key: true },
     ] as AIModel[]
     expect(pickTradingModel(models)?.id).toBe('openai')
-  })
-
-  it('accepts a claw402 model with only a wallet address', () => {
-    const models = [
-      { ...base, id: 'c402', provider: 'claw402', walletAddress: '0xabc' },
-    ] as AIModel[]
-    expect(pickTradingModel(models)?.id).toBe('c402')
   })
 
   it('returns null when nothing usable exists', () => {
@@ -120,7 +62,7 @@ describe('pickTradingModel', () => {
 describe('pickTradingExchange', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('does not select Hyperliquid after migration to Binance execution', () => {
+  it('accepts a native Hyperliquid account with wallet credentials', () => {
     const ready = {
       id: 'hl',
       exchange_type: 'hyperliquid',
@@ -129,7 +71,7 @@ describe('pickTradingExchange', () => {
       hyperliquidBuilderApproved: true,
       hyperliquidWalletAddr: '0x1',
     } as unknown as Exchange
-    expect(pickTradingExchange([ready])).toBeNull()
+    expect(pickTradingExchange([ready])?.id).toBe('hl')
   })
 
   it('accepts an enabled Binance account without Hyperliquid setup', () => {

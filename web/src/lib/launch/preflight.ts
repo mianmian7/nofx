@@ -1,5 +1,5 @@
 import { API_BASE, httpClient } from '../api/helpers'
-import type { LaunchCheck, LaunchPreflightResult, SetupTarget } from './types'
+import type { LaunchCheck, LaunchPreflightResult } from './types'
 
 export interface LaunchPreflightRequest {
   ai_model_id: string
@@ -52,36 +52,4 @@ export function describeLaunchFailures(result: LaunchPreflightResult): string {
     .map((check) => check.message)
     .filter(Boolean)
     .join(' ')
-}
-
-/**
- * Maps a failing check to the guided-setup anchor that fixes it. The traders
- * page opens the matching modal/section from the `?setup=` query param.
- */
-export function setupTargetForCheck(check: LaunchCheck): SetupTarget | null {
-  switch (check.id) {
-    case 'ai_model':
-      return 'model'
-    case 'ai_wallet':
-    case 'ai_wallet_funds':
-      return 'claw402'
-    case 'exchange_config':
-    case 'exchange_account':
-      return 'exchange'
-    case 'exchange_funds':
-      return 'exchange'
-    default:
-      return null
-  }
-}
-
-/** The setup anchor for the first (highest-priority) failing check. */
-export function primarySetupTarget(
-  result: LaunchPreflightResult
-): SetupTarget | null {
-  for (const check of failedLaunchChecks(result)) {
-    const target = setupTargetForCheck(check)
-    if (target) return target
-  }
-  return null
 }

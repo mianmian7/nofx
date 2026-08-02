@@ -23,7 +23,7 @@ const setupSteps: Array<{
   {
     title: 'Create your NOFX account',
     detail:
-      'Your account keeps the Autopilot configuration, wallet authorization state, and trading dashboard in one place.',
+      'Your account keeps the Autopilot configuration and trading dashboard in one place.',
     icon: KeyRound,
     action: 'Create account',
     to: ROUTES.register,
@@ -35,7 +35,7 @@ const setupSteps: Array<{
     icon: Zap,
     action: 'Configure model',
     to: ROUTES.login,
-    returnUrl: `${ROUTES.traders}?setup=model`,
+    returnUrl: ROUTES.traders,
   },
   {
     title: 'Connect an exchange',
@@ -44,7 +44,7 @@ const setupSteps: Array<{
     icon: Wallet,
     action: 'Connect exchange',
     to: ROUTES.login,
-    returnUrl: `${ROUTES.traders}?setup=exchange`,
+    returnUrl: ROUTES.traders,
   },
   {
     title: 'Review and launch',
@@ -83,10 +83,7 @@ export function TraderLaunchGuestPage() {
               <Link
                 to={ROUTES.login}
                 onClick={() =>
-                  sessionStorage.setItem(
-                    'returnUrl',
-                    `${ROUTES.traders}?setup=model`
-                  )
+                  sessionStorage.setItem('returnUrl', ROUTES.traders)
                 }
                 className="inline-flex items-center justify-center gap-2 rounded-xl bg-nofx-gold px-5 py-3 text-sm font-bold text-white transition hover:bg-nofx-gold/90"
               >

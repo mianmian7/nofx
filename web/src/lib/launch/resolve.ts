@@ -2,34 +2,20 @@ import { api } from '../api'
 import type { AIModel, Exchange } from '../../types'
 
 export function modelHasCredential(model: AIModel) {
-  return Boolean(
-    model.has_api_key ||
-    model.apiKey ||
-    (model.provider === 'claw402' && model.walletAddress)
-  )
+  return Boolean(model.has_api_key || model.apiKey)
 }
 
 export function exchangeHasKey(exchange: Exchange) {
-  return Boolean(exchange.has_api_key || exchange.apiKey)
-}
-
-export function isHyperliquidExchange(exchange: Exchange) {
-  return exchange.exchange_type === 'hyperliquid'
-}
-
-/** Prefer a user-owned direct model. Claw402 remains available only when it is
- * the sole explicitly enabled model; no wallet or model is auto-provisioned. */
-export function pickTradingModel(models: AIModel[]) {
-  return (
-    models.find(
-      (model) =>
-        model.provider !== 'claw402' &&
-        model.enabled &&
-        modelHasCredential(model)
-    ) ||
-    models.find((model) => model.enabled && modelHasCredential(model)) ||
-    null
+  return Boolean(
+    exchange.has_api_key ||
+      exchange.apiKey ||
+      (exchange.exchange_type === 'hyperliquid' &&
+        exchange.hyperliquidWalletAddr)
   )
+}
+
+export function pickTradingModel(models: AIModel[]) {
+  return models.find((model) => model.enabled && modelHasCredential(model)) || null
 }
 
 export function pickTradingExchange(exchanges: Exchange[]) {
@@ -40,12 +26,7 @@ export function pickTradingExchange(exchanges: Exchange[]) {
         exchange.enabled &&
         exchangeHasKey(exchange)
     ) ||
-    exchanges.find(
-      (exchange) =>
-        !isHyperliquidExchange(exchange) &&
-        exchange.enabled &&
-        exchangeHasKey(exchange)
-    ) ||
+    exchanges.find((exchange) => exchange.enabled && exchangeHasKey(exchange)) ||
     null
   )
 }
@@ -68,6 +49,6 @@ export async function resolveLaunchExchange(): Promise<
 
   return {
     exchange: null,
-    reason: 'No enabled non-Hyperliquid exchange with API credentials is available. Configure Binance or another supported exchange first.',
+    reason: 'No enabled exchange with usable credentials is available. Configure a supported exchange first.',
   }
 }

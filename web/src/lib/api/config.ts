@@ -5,11 +5,24 @@ import type {
   UpdateModelConfigRequest,
   UpdateExchangeConfigRequest,
   CreateExchangeRequest,
-  BeginnerOnboardingResponse,
-  CurrentBeginnerWalletResponse,
 } from '../../types'
 import { API_BASE, httpClient, CryptoService } from './helpers'
 import { diagnoseWebCryptoEnvironment } from '../crypto'
+
+const RETAINED_MODEL_PROVIDERS = new Set([
+  'deepseek',
+  'openai',
+  'claude',
+  'qwen',
+  'gemini',
+  'grok',
+  'kimi',
+  'minimax',
+])
+
+function keepDirectModelProvider(model: AIModel): boolean {
+  return RETAINED_MODEL_PROVIDERS.has(model.provider.toLowerCase())
+}
 
 async function encryptSensitivePayload(request: unknown): Promise<unknown> {
   const config = await CryptoService.fetchCryptoConfig()
@@ -45,7 +58,9 @@ export const configApi = {
   async getModelConfigs(): Promise<AIModel[]> {
     const result = await httpClient.get<AIModel[]>(`${API_BASE}/models`)
     if (!result.success) throw new Error('Failed to fetch model configs')
-    return Array.isArray(result.data) ? result.data : []
+    return Array.isArray(result.data)
+      ? result.data.filter(keepDirectModelProvider)
+      : []
   },
 
   async getSupportedModels(): Promise<AIModel[]> {
@@ -53,7 +68,7 @@ export const configApi = {
       `${API_BASE}/supported-models`
     )
     if (!result.success) throw new Error('Failed to fetch supported models')
-    return result.data!
+    return (result.data || []).filter(keepDirectModelProvider)
   },
 
   async discoverAIModels(request: {
@@ -165,25 +180,4 @@ export const configApi = {
     return result.data!
   },
 
-  async prepareBeginnerOnboarding(): Promise<BeginnerOnboardingResponse> {
-    const result = await httpClient.post<BeginnerOnboardingResponse>(
-      `${API_BASE}/onboarding/beginner`
-    )
-    if (!result.success || !result.data) {
-      throw new Error(result.message || 'Failed to prepare beginner onboarding')
-    }
-    return result.data
-  },
-
-  async getCurrentBeginnerWallet(): Promise<CurrentBeginnerWalletResponse> {
-    const result = await httpClient.get<CurrentBeginnerWalletResponse>(
-      `${API_BASE}/onboarding/beginner/current`
-    )
-    if (!result.success || !result.data) {
-      throw new Error(
-        result.message || 'Failed to fetch current beginner wallet'
-      )
-    }
-    return result.data
-  },
 }

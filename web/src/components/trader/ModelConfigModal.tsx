@@ -1,19 +1,13 @@
-import React, { useState, useEffect } from 'react'
-import { QRCodeSVG } from 'qrcode.react'
-import { Trash2, Brain, ExternalLink } from 'lucide-react'
+import React, { useEffect, useState } from 'react'
+import { ExternalLink, Trash2 } from 'lucide-react'
 import type { AIModel } from '../../types'
 import type { Language } from '../../i18n/translations'
 import { t } from '../../i18n/translations'
-import { getModelIcon } from '../common/ModelIcons'
 import { api } from '../../lib/api'
-import { ModelStepIndicator } from './ModelStepIndicator'
+import { getModelIcon } from '../common/ModelIcons'
 import { ModelCard } from './ModelCard'
-import {
-  BLOCKRUN_MODELS,
-  CLAW402_MODELS,
-  AI_PROVIDER_CONFIG,
-  getShortName,
-} from './model-constants'
+import { ModelStepIndicator } from './ModelStepIndicator'
+import { AI_PROVIDER_CONFIG, getShortName } from './model-constants'
 
 interface ModelConfigModalProps {
   allModels: AIModel[]
@@ -62,20 +56,17 @@ export function ModelConfigModal({
   const supportedModel = allModels?.find(
     (model) => model.id === selectedModelId
   )
-  // Editing must use the persisted object because the supported-model template
-  // does not contain the saved key status, URL, primary model, or catalog.
   const selectedModel = editingModelId
     ? configuredModel || supportedModel
     : supportedModel || configuredModel
 
   useEffect(() => {
-    if (editingModelId && selectedModel) {
-      setApiKey(selectedModel.apiKey || '')
-      setBaseUrl(selectedModel.customApiUrl || '')
-      setModelName(selectedModel.customModelName || '')
-      setModelNames(selectedModel.modelNames || [])
-      setAvailableModelNames(selectedModel.modelNames || [])
-    }
+    if (!editingModelId || !selectedModel) return
+    setApiKey(selectedModel.apiKey || '')
+    setBaseUrl(selectedModel.customApiUrl || '')
+    setModelName(selectedModel.customModelName || '')
+    setModelNames(selectedModel.modelNames || [])
+    setAvailableModelNames(selectedModel.modelNames || [])
   }, [editingModelId, selectedModel])
 
   const handleSelectModel = (modelId: string) => {
@@ -86,14 +77,14 @@ export function ModelConfigModal({
   const handleBack = () => {
     if (editingModelId) {
       onClose()
-    } else {
-      setCurrentStep(0)
-      setSelectedModelId('')
+      return
     }
+    setCurrentStep(0)
+    setSelectedModelId('')
   }
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault()
+  const handleSubmit = (event: React.FormEvent) => {
+    event.preventDefault()
     const hasSavedKey = Boolean(editingModelId && selectedModel?.has_api_key)
     if (!selectedModelId || (!apiKey.trim() && !hasSavedKey)) return
     onSave(
@@ -110,22 +101,28 @@ export function ModelConfigModal({
     setIsDiscoveringModels(true)
     setModelDiscoveryError('')
     try {
-      const discovered = await api.discoverAIModels({
+      const discoveredModelNames = await api.discoverAIModels({
         model_id: selectedModelId,
         provider: selectedModel.provider,
         api_key: apiKey.trim(),
         custom_api_url: baseUrl.trim(),
       })
-      setAvailableModelNames(discovered)
-      const retained = modelNames.filter((name) => discovered.includes(name))
-      const initialPrimary = discovered.includes(modelName)
+      setAvailableModelNames(discoveredModelNames)
+      const retainedModelNames = modelNames.filter((name) =>
+        discoveredModelNames.includes(name)
+      )
+      const initialPrimaryModel = discoveredModelNames.includes(modelName)
         ? modelName
-        : discovered[0]
-      const nextSelected =
-        retained.length > 0 ? retained : initialPrimary ? [initialPrimary] : []
-      setModelNames(nextSelected)
-      if (!nextSelected.includes(modelName)) {
-        setModelName(nextSelected[0] || '')
+        : discoveredModelNames[0]
+      const nextSelectedModelNames =
+        retainedModelNames.length > 0
+          ? retainedModelNames
+          : initialPrimaryModel
+            ? [initialPrimaryModel]
+            : []
+      setModelNames(nextSelectedModelNames)
+      if (!nextSelectedModelNames.includes(modelName)) {
+        setModelName(nextSelectedModelNames[0] || '')
       }
     } catch {
       setModelDiscoveryError(
@@ -139,43 +136,28 @@ export function ModelConfigModal({
   }
 
   const availableModels = allModels || []
-  const configuredIds = new Set(configuredModels?.map((m) => m.id) || [])
+  const configuredIds = new Set(configuredModels?.map((model) => model.id) || [])
   const stepLabels = [
     t('modelConfig.selectModel', language),
     t('modelConfig.configureApi', language),
   ]
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4 overflow-y-auto backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-4 backdrop-blur-sm">
       <div
-        className="rounded-2xl w-full max-w-[52rem] relative my-8 shadow-2xl bg-nofx-bg-lighter"
-        style={{
-          maxHeight: 'calc(100vh - 4rem)',
-        }}
+        className="relative my-8 w-full max-w-[52rem] rounded-2xl bg-nofx-bg-lighter shadow-2xl"
+        style={{ maxHeight: 'calc(100vh - 4rem)' }}
       >
-        {/* Header */}
         <div className="flex items-center justify-between p-6 pb-2">
           <div className="flex items-center gap-3">
             {currentStep > 0 && !editingModelId && (
               <button
                 type="button"
                 onClick={handleBack}
-                className="p-2 rounded-lg hover:bg-nofx-bg-deeper transition-colors"
+                className="rounded-lg p-2 transition-colors hover:bg-nofx-bg-deeper"
+                aria-label="Back"
               >
-                <svg
-                  className="w-5 h-5"
-                  style={{ color: '#8A8478' }}
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M15 19l-7-7 7-7"
-                  />
-                </svg>
+                <span aria-hidden="true">←</span>
               </button>
             )}
             <h3 className="text-xl font-bold" style={{ color: '#1A1813' }}>
@@ -189,36 +171,35 @@ export function ModelConfigModal({
               <button
                 type="button"
                 onClick={() => onDelete(editingModelId)}
-                className="p-2 rounded-lg hover:bg-nofx-danger/20 transition-colors"
+                className="rounded-lg p-2 transition-colors hover:bg-nofx-danger/20"
                 style={{ color: '#D6433A' }}
+                aria-label="Delete model"
               >
-                <Trash2 className="w-4 h-4" />
+                <Trash2 className="h-4 w-4" />
               </button>
             )}
             <button
               type="button"
               onClick={onClose}
-              className="p-2 rounded-lg hover:bg-nofx-bg-deeper transition-colors"
+              className="rounded-lg p-2 transition-colors hover:bg-nofx-bg-deeper"
               style={{ color: '#8A8478' }}
+              aria-label="Close"
             >
-              ✕
+              ×
             </button>
           </div>
         </div>
 
-        {/* Step Indicator */}
         {!editingModelId && (
           <div className="px-6">
             <ModelStepIndicator currentStep={currentStep} labels={stepLabels} />
           </div>
         )}
 
-        {/* Content */}
         <div
-          className="px-6 pb-6 overflow-y-auto"
+          className="overflow-y-auto px-6 pb-6"
           style={{ maxHeight: 'calc(100vh - 16rem)' }}
         >
-          {/* Step 0: Select Model */}
           {currentStep === 0 && !editingModelId && (
             <ModelSelectionStep
               availableModels={availableModels}
@@ -229,57 +210,32 @@ export function ModelConfigModal({
             />
           )}
 
-          {/* Step 1: Configure — Claw402 Dedicated UI */}
-          {(currentStep === 1 || editingModelId) &&
-            selectedModel &&
-            (selectedModel.provider === 'claw402' ||
-              selectedModel.id === 'claw402') && (
-              <Claw402ConfigForm
-                apiKey={apiKey}
-                modelName={modelName}
-                editingModelId={editingModelId}
-                initialWalletAddress={selectedModel.walletAddress}
-                initialBalanceUsdc={selectedModel.balanceUsdc}
-                onApiKeyChange={setApiKey}
-                onModelNameChange={setModelName}
-                onBack={handleBack}
-                onSubmit={handleSubmit}
-                language={language}
-              />
-            )}
-
-          {/* Step 1: Configure — Standard Providers (non-claw402) */}
-          {(currentStep === 1 || editingModelId) &&
-            selectedModel &&
-            selectedModel.provider !== 'claw402' &&
-            selectedModel.id !== 'claw402' && (
-              <StandardProviderConfigForm
-                selectedModel={selectedModel}
-                apiKey={apiKey}
-                baseUrl={baseUrl}
-                modelName={modelName}
-                modelNames={modelNames}
-                availableModelNames={availableModelNames}
-                isDiscoveringModels={isDiscoveringModels}
-                modelDiscoveryError={modelDiscoveryError}
-                editingModelId={editingModelId}
-                onApiKeyChange={setApiKey}
-                onBaseUrlChange={setBaseUrl}
-                onModelNameChange={setModelName}
-                onModelNamesChange={setModelNames}
-                onDiscoverModels={handleDiscoverModels}
-                onBack={handleBack}
-                onSubmit={handleSubmit}
-                language={language}
-              />
-            )}
+          {(currentStep === 1 || editingModelId) && selectedModel && (
+            <StandardProviderConfigForm
+              selectedModel={selectedModel}
+              apiKey={apiKey}
+              baseUrl={baseUrl}
+              modelName={modelName}
+              modelNames={modelNames}
+              availableModelNames={availableModelNames}
+              isDiscoveringModels={isDiscoveringModels}
+              modelDiscoveryError={modelDiscoveryError}
+              editingModelId={editingModelId}
+              onApiKeyChange={setApiKey}
+              onBaseUrlChange={setBaseUrl}
+              onModelNameChange={setModelName}
+              onModelNamesChange={setModelNames}
+              onDiscoverModels={handleDiscoverModels}
+              onBack={handleBack}
+              onSubmit={handleSubmit}
+              language={language}
+            />
+          )}
         </div>
       </div>
     </div>
   )
 }
-
-// --- Sub-components for ModelConfigModal ---
 
 function ModelSelectionStep({
   availableModels,
@@ -299,907 +255,21 @@ function ModelSelectionStep({
       <div className="text-sm font-semibold" style={{ color: '#1A1813' }}>
         {t('modelConfig.chooseProvider', language)}
       </div>
-
-      {/* Claw402 Featured Card */}
-      {availableModels.some((m) => m.provider === 'claw402') && (
-        <button
-          type="button"
-          onClick={() => {
-            const claw = availableModels.find((m) => m.provider === 'claw402')
-            if (claw) onSelectModel(claw.id)
-          }}
-          className="w-full p-5 rounded-xl text-left transition-all hover:scale-[1.01]"
-          style={{
-            background: 'rgba(224, 72, 59, 0.10)',
-            border: '1.5px solid rgba(224, 72, 59, 0.4)',
-          }}
-        >
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl flex items-center justify-center overflow-hidden">
-                <img
-                  src="/icons/claw402.png"
-                  alt="Claw402"
-                  width={40}
-                  height={40}
-                />
-              </div>
-              <div>
-                <div
-                  className="font-bold text-base"
-                  style={{ color: '#1A1813' }}
-                >
-                  Claw402
-                  <a
-                    href="https://claw402.ai"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={(e) => e.stopPropagation()}
-                    className="ml-1.5 text-[10px] font-normal px-1.5 py-0.5 rounded"
-                    style={{
-                      color: '#E0483B',
-                      background: 'rgba(224, 72, 59, 0.1)',
-                    }}
-                  >
-                    ↗ claw402.ai
-                  </a>
-                </div>
-                <div className="text-xs mt-0.5" style={{ color: '#8A8478' }}>
-                  {t('modelConfig.payPerCall', language)}
-                </div>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              {configuredIds.has(
-                availableModels.find((m) => m.provider === 'claw402')?.id || ''
-              ) && (
-                <div
-                  className="w-2 h-2 rounded-full"
-                  style={{ background: '#2E8B57' }}
-                />
-              )}
-              <div
-                className="px-3 py-1.5 rounded-full text-xs font-bold"
-                style={{
-                  background: '#E0483B',
-                  color: '#fff',
-                }}
-              >
-                {'🔥 ' + t('modelConfig.recommended', language)}
-              </div>
-            </div>
-          </div>
-          <div className="flex items-center gap-3 mt-3 ml-[52px]">
-            <span
-              className="text-[11px] px-2 py-0.5 rounded-full"
-              style={{
-                background: 'rgba(46, 139, 87, 0.1)',
-                color: '#2E8B57',
-                border: '1px solid rgba(46, 139, 87, 0.2)',
-              }}
-            >
-              GPT · Claude · DeepSeek · Gemini · Grok · Qwen · Kimi
-            </span>
-          </div>
-        </button>
-      )}
-
-      <div className="grid grid-cols-3 sm:grid-cols-4 gap-3">
-        {availableModels
-          .filter(
-            (m) =>
-              !m.provider?.startsWith('blockrun') && m.provider !== 'claw402'
-          )
-          .map((model) => (
-            <ModelCard
-              key={model.id}
-              model={model}
-              selected={selectedModelId === model.id}
-              onClick={() => onSelectModel(model.id)}
-              configured={configuredIds.has(model.id)}
-            />
-          ))}
+      <div className="grid grid-cols-3 gap-3 sm:grid-cols-4">
+        {availableModels.map((model) => (
+          <ModelCard
+            key={model.id}
+            model={model}
+            selected={selectedModelId === model.id}
+            onClick={() => onSelectModel(model.id)}
+            configured={configuredIds.has(model.id)}
+          />
+        ))}
       </div>
-      {availableModels.some((m) => m.provider?.startsWith('blockrun')) && (
-        <>
-          <div className="flex items-center gap-3 pt-2">
-            <div
-              className="flex-1 h-px"
-              style={{ background: 'rgba(26,24,19,0.14)' }}
-            />
-            <span
-              className="text-xs font-medium px-2"
-              style={{ color: '#8A8478' }}
-            >
-              {t('modelConfig.viaBlockrunWallet', language)}
-            </span>
-            <div
-              className="flex-1 h-px"
-              style={{ background: 'rgba(26,24,19,0.14)' }}
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            {availableModels
-              .filter((m) => m.provider?.startsWith('blockrun'))
-              .map((model) => (
-                <ModelCard
-                  key={model.id}
-                  model={model}
-                  selected={selectedModelId === model.id}
-                  onClick={() => onSelectModel(model.id)}
-                  configured={configuredIds.has(model.id)}
-                />
-              ))}
-          </div>
-        </>
-      )}
-      <div className="text-xs text-center pt-2" style={{ color: '#8A8478' }}>
+      <div className="pt-2 text-center text-xs" style={{ color: '#8A8478' }}>
         {t('modelConfig.modelsConfigured', language)}
       </div>
     </div>
-  )
-}
-
-function Claw402ConfigForm({
-  apiKey,
-  modelName,
-  editingModelId,
-  initialWalletAddress,
-  initialBalanceUsdc,
-  onApiKeyChange,
-  onModelNameChange,
-  onBack,
-  onSubmit,
-  language,
-}: {
-  apiKey: string
-  modelName: string
-  editingModelId: string | null
-  initialWalletAddress?: string
-  initialBalanceUsdc?: string
-  onApiKeyChange: (value: string) => void
-  onModelNameChange: (value: string) => void
-  onBack: () => void
-  onSubmit: (e: React.FormEvent) => void
-  language: Language
-}) {
-  const [walletAddress, setWalletAddress] = useState(initialWalletAddress || '')
-  const [copiedAddr, setCopiedAddr] = useState(false)
-  const [showDeposit, setShowDeposit] = useState(Boolean(initialWalletAddress))
-  const [showNewWalletBackup, setShowNewWalletBackup] = useState(false)
-  const [newWalletKey, setNewWalletKey] = useState('')
-  const [usdcBalance, setUsdcBalance] = useState<string | null>(
-    initialBalanceUsdc || null
-  )
-  const [keyError, setKeyError] = useState('')
-  const [validating, setValidating] = useState(false)
-  const [claw402Status, setClaw402Status] = useState<string | null>(null)
-  const [testResult, setTestResult] = useState<{
-    status: string
-    message: string
-  } | null>(null)
-  const [testing, setTesting] = useState(false)
-
-  // Client-side validation helper
-  const getClientError = (key: string): string => {
-    if (!key) return ''
-    if (!key.startsWith('0x'))
-      return t('modelConfig.invalidKeyPrefix', language)
-    if (key.length !== 66)
-      return `${t('modelConfig.invalidKeyLength', language)} ${key.length}`
-    if (!/^0x[0-9a-fA-F]{64}$/.test(key))
-      return t('modelConfig.invalidKeyChars', language)
-    return ''
-  }
-
-  const isKeyValid =
-    apiKey.length === 66 &&
-    apiKey.startsWith('0x') &&
-    /^0x[0-9a-fA-F]{64}$/.test(apiKey)
-
-  // Truncate address for display
-
-  // Debounced validation when apiKey changes
-  useEffect(() => {
-    setClaw402Status(null)
-    setTestResult(null)
-
-    const clientErr = getClientError(apiKey)
-    setKeyError(clientErr)
-
-    if (!apiKey) {
-      setWalletAddress(initialWalletAddress || '')
-      setUsdcBalance(initialBalanceUsdc || null)
-      setShowDeposit(Boolean(initialWalletAddress))
-      setValidating(false)
-      return
-    }
-
-    setWalletAddress('')
-    setUsdcBalance(null)
-
-    if (clientErr || !apiKey) {
-      setValidating(false)
-      return
-    }
-
-    setValidating(true)
-    const timer = setTimeout(async () => {
-      try {
-        const res = await fetch('/api/wallet/validate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ private_key: apiKey }),
-        })
-        const data = await res.json()
-        if (data.valid) {
-          setWalletAddress(data.address || '')
-          setUsdcBalance(data.balance_usdc || '0.00')
-          setClaw402Status(data.claw402_status || 'unknown')
-          setKeyError('')
-        } else {
-          setKeyError(data.error || 'Invalid key')
-        }
-      } catch {
-        setKeyError('Validation request failed')
-      } finally {
-        setValidating(false)
-      }
-    }, 500)
-
-    return () => clearTimeout(timer)
-  }, [apiKey, initialBalanceUsdc, initialWalletAddress, language])
-
-  const handleTestConnection = async () => {
-    setTesting(true)
-    setTestResult(null)
-    try {
-      const res = await fetch('/api/wallet/validate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ private_key: apiKey }),
-      })
-      const data = await res.json()
-      if (data.valid) {
-        setWalletAddress(data.address || '')
-        setUsdcBalance(data.balance_usdc || '0.00')
-        setClaw402Status(data.claw402_status || 'unknown')
-        if (parseFloat(data.balance_usdc || '0') === 0) setShowDeposit(true)
-        setTestResult({
-          status: data.claw402_status === 'ok' ? 'ok' : 'error',
-          message:
-            data.claw402_status === 'ok'
-              ? t('modelConfig.claw402Connected', language)
-              : t('modelConfig.claw402Unreachable', language),
-        })
-      } else {
-        setTestResult({ status: 'error', message: data.error || 'Invalid key' })
-      }
-    } catch {
-      setTestResult({
-        status: 'error',
-        message: t('modelConfig.claw402Unreachable', language),
-      })
-    } finally {
-      setTesting(false)
-    }
-  }
-
-  const balanceNum = usdcBalance ? parseFloat(usdcBalance) : 0
-
-  return (
-    <form onSubmit={onSubmit} className="space-y-5">
-      {/* Claw402 Hero Header */}
-      <div
-        className="p-5 rounded-xl text-center"
-        style={{
-          background: 'rgba(224, 72, 59, 0.08)',
-          border: '1px solid rgba(224, 72, 59, 0.3)',
-        }}
-      >
-        <div className="w-14 h-14 mx-auto rounded-2xl flex items-center justify-center mb-3 overflow-hidden">
-          <img src="/icons/claw402.png" alt="Claw402" width={56} height={56} />
-        </div>
-        <a
-          href="https://claw402.ai"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-lg font-bold inline-flex items-center gap-1.5 hover:underline"
-          style={{ color: '#1A1813' }}
-        >
-          Claw402{' '}
-          <span className="text-xs font-normal" style={{ color: '#E0483B' }}>
-            ↗
-          </span>
-        </a>
-        <div className="text-sm mt-1" style={{ color: '#8A8478' }}>
-          {t('modelConfig.allModelsClaw', language)}
-        </div>
-        <div className="flex items-center justify-center gap-3 mt-3 flex-wrap">
-          {['GPT', 'Claude', 'DeepSeek', 'Gemini', 'Grok', 'Qwen', 'Kimi'].map(
-            (name) => (
-              <span
-                key={name}
-                className="text-[11px] px-2 py-0.5 rounded-full"
-                style={{
-                  background: 'rgba(26,24,19,0.06)',
-                  color: '#8A8478',
-                }}
-              >
-                {name}
-              </span>
-            )
-          )}
-        </div>
-      </div>
-
-      {/* Step 1: Select AI Model */}
-      <div className="space-y-3">
-        <label
-          className="flex items-center gap-2 text-sm font-semibold"
-          style={{ color: '#1A1813' }}
-        >
-          <Brain className="w-4 h-4" style={{ color: '#E0483B' }} />
-          {t('modelConfig.selectAiModel', language)}
-        </label>
-        <div className="text-xs mb-2" style={{ color: '#8A8478' }}>
-          {t('modelConfig.allModelsUnified', language)}
-        </div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-          {CLAW402_MODELS.map((m) => {
-            const isSelected = (modelName || 'deepseek') === m.id
-            return (
-              <button
-                key={m.id}
-                type="button"
-                onClick={() => onModelNameChange(m.id)}
-                className="flex items-start gap-2 px-3 py-2.5 rounded-xl text-left transition-all hover:scale-[1.02]"
-                style={{
-                  background: isSelected
-                    ? 'rgba(224, 72, 59, 0.12)'
-                    : '#F1ECE2',
-                  border: isSelected
-                    ? '1.5px solid #E0483B'
-                    : '1px solid rgba(26,24,19,0.14)',
-                }}
-              >
-                <span className="text-base mt-0.5">{m.icon}</span>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    <div
-                      className="text-xs font-semibold truncate"
-                      style={{ color: isSelected ? '#E0483B' : '#1A1813' }}
-                    >
-                      {m.name}
-                    </div>
-                    {m.isNew ? (
-                      <span
-                        className="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.08em]"
-                        style={{
-                          color: '#2E8B57',
-                          background: 'rgba(46, 139, 87, 0.12)',
-                          border: '1px solid rgba(46, 139, 87, 0.22)',
-                        }}
-                      >
-                        NEW
-                      </span>
-                    ) : null}
-                  </div>
-                  <div
-                    className="text-[10px] truncate"
-                    style={{ color: '#8A8478' }}
-                  >
-                    {m.provider} · {m.desc}
-                  </div>
-                  <div className="text-[10px]" style={{ color: '#2E8B57' }}>
-                    ~${m.price}/call
-                  </div>
-                </div>
-                {isSelected && (
-                  <span
-                    className="text-[10px] mt-1"
-                    style={{ color: '#E0483B' }}
-                  >
-                    ✓
-                  </span>
-                )}
-              </button>
-            )
-          })}
-        </div>
-      </div>
-
-      {/* Step 2: Wallet Setup */}
-      <div className="space-y-3">
-        <label
-          className="flex items-center gap-2 text-sm font-semibold"
-          style={{ color: '#1A1813' }}
-        >
-          <svg
-            className="w-4 h-4"
-            style={{ color: '#E0483B' }}
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"
-            />
-          </svg>
-          {t('modelConfig.setupWallet', language)}
-        </label>
-
-        <div
-          className="p-3 rounded-xl"
-          style={{
-            background: 'rgba(224, 72, 59, 0.06)',
-            border: '1px solid rgba(224, 72, 59, 0.15)',
-          }}
-        >
-          <div className="text-xs mb-2" style={{ color: '#8A8478' }}>
-            {t('modelConfig.walletInfo', language)}
-          </div>
-          <div className="text-xs space-y-1" style={{ color: '#8A8478' }}>
-            <div className="flex items-center gap-1.5">
-              <span style={{ color: '#2E8B57' }}>•</span>
-              {t('modelConfig.exportKey', language)}
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span style={{ color: '#2E8B57' }}>•</span>
-              {t('modelConfig.dedicatedWallet', language)}
-            </div>
-          </div>
-        </div>
-
-        <div className="space-y-1.5">
-          <div className="text-xs font-medium" style={{ color: '#8A8478' }}>
-            {t('modelConfig.walletPrivateKey', language)}
-          </div>
-          <div className="flex gap-2">
-            <input
-              type="password"
-              value={apiKey}
-              onChange={(e) => onApiKeyChange(e.target.value)}
-              placeholder="0x..."
-              className="flex-1 px-4 py-3 rounded-xl font-mono text-sm"
-              style={{
-                background: '#F1ECE2',
-                border: keyError
-                  ? '1px solid #D6433A'
-                  : walletAddress
-                    ? '1px solid #2E8B57'
-                    : '1px solid rgba(26,24,19,0.14)',
-                color: '#1A1813',
-              }}
-              required={!walletAddress}
-            />
-            {!apiKey && !walletAddress && (
-              <button
-                type="button"
-                onClick={async () => {
-                  try {
-                    const res = await fetch('/api/wallet/generate', {
-                      method: 'POST',
-                    })
-                    const data = await res.json()
-                    if (data.private_key) {
-                      onApiKeyChange(data.private_key)
-                      setShowNewWalletBackup(true)
-                      setNewWalletKey(data.private_key)
-                    }
-                  } catch {
-                    /* ignore */
-                  }
-                }}
-                className="shrink-0 px-3 py-3 rounded-xl text-xs font-semibold transition-all hover:scale-[1.02]"
-                style={{
-                  background: '#E0483B',
-                  color: '#fff',
-                  border: 'none',
-                  cursor: 'pointer',
-                }}
-              >
-                {language === 'zh' ? '🔑 Create Wallet' : '🔑 Create Wallet'}
-              </button>
-            )}
-          </div>
-
-          {/* New wallet backup warning */}
-          {showNewWalletBackup && newWalletKey && (
-            <div
-              className="p-3 rounded-xl"
-              style={{
-                background: 'rgba(214, 67, 58, 0.08)',
-                border: '1px solid rgba(214, 67, 58, 0.3)',
-              }}
-            >
-              <div
-                className="text-xs font-bold mb-2"
-                style={{ color: '#D6433A' }}
-              >
-                🚨{' '}
-                {language === 'zh'
-                  ? 'Important: Backup your private key NOW!'
-                  : 'Important: Backup your private key NOW!'}
-              </div>
-              <div className="text-[11px] mb-2" style={{ color: '#D6433A' }}>
-                {language === 'zh'
-                  ? 'This is your wallet private key. If lost, it cannot be recovered and all assets will be permanently lost. Copy and save it securely.'
-                  : 'This is your wallet private key. If lost, it cannot be recovered and all assets will be permanently lost. Copy and save it securely.'}
-              </div>
-              <div className="flex items-center gap-2 mb-2">
-                <code
-                  className="text-[10px] font-mono break-all select-all flex-1 p-2 rounded"
-                  style={{ background: '#F1ECE2', color: '#D6433A' }}
-                >
-                  {newWalletKey}
-                </code>
-                <button
-                  type="button"
-                  onClick={() => {
-                    navigator.clipboard.writeText(newWalletKey)
-                    setCopiedAddr(true)
-                    setTimeout(() => setCopiedAddr(false), 2000)
-                  }}
-                  className="shrink-0 text-[10px] px-2 py-1 rounded"
-                  style={{
-                    background: 'rgba(214,67,58,0.15)',
-                    color: '#D6433A',
-                    border: 'none',
-                    cursor: 'pointer',
-                  }}
-                >
-                  {copiedAddr ? '✅ Copied' : '📋 Copy Key'}
-                </button>
-              </div>
-              <div
-                className="text-[10px] space-y-1"
-                style={{ color: '#8A8478' }}
-              >
-                <div>
-                  ✅{' '}
-                  {language === 'zh'
-                    ? 'Save to a password manager (1Password / Bitwarden)'
-                    : 'Save to a password manager (1Password / Bitwarden)'}
-                </div>
-                <div>
-                  ✅{' '}
-                  {language === 'zh'
-                    ? 'Or write it down and store it safely'
-                    : 'Or write it down and store it safely'}
-                </div>
-                <div>
-                  ❌{' '}
-                  {language === 'zh'
-                    ? 'Do NOT screenshot or share with anyone'
-                    : 'Do NOT screenshot or share with anyone'}
-                </div>
-              </div>
-            </div>
-          )}
-
-          <div
-            className="flex items-start gap-1.5 text-[11px]"
-            style={{ color: '#8A8478' }}
-          >
-            <span className="mt-px">🔒</span>
-            <span>{t('modelConfig.privateKeyNote', language)}</span>
-          </div>
-        </div>
-
-        {/* Wallet Validation Results */}
-        {(apiKey || walletAddress) && (
-          <div className="space-y-2 pl-1">
-            {/* Validating spinner */}
-            {validating && (
-              <div
-                className="flex items-center gap-2 text-xs"
-                style={{ color: '#E0483B' }}
-              >
-                <span className="animate-spin">⏳</span>
-                {t('modelConfig.validating', language)}
-              </div>
-            )}
-
-            {/* Error message */}
-            {keyError && !validating && (
-              <div
-                className="flex items-center gap-2 text-xs"
-                style={{ color: '#D6433A' }}
-              >
-                <span>❌</span>
-                {keyError}
-              </div>
-            )}
-
-            {/* Success: address + balance + status */}
-            {walletAddress && !validating && !keyError && (
-              <>
-                <div
-                  className="p-2.5 rounded-lg"
-                  style={{
-                    background: 'rgba(224,72,59,0.06)',
-                    border: '1px solid rgba(224,72,59,0.15)',
-                  }}
-                >
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-[11px]" style={{ color: '#8A8478' }}>
-                      {t('modelConfig.walletAddress', language)}:
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        navigator.clipboard.writeText(walletAddress)
-                        setCopiedAddr(true)
-                        setTimeout(() => setCopiedAddr(false), 2000)
-                      }}
-                      className="text-[10px] px-1.5 py-0.5 rounded"
-                      style={{
-                        background: 'rgba(224,72,59,0.1)',
-                        color: '#E0483B',
-                        border: 'none',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      {copiedAddr ? '✅' : '📋'}
-                    </button>
-                  </div>
-                  <code
-                    className="text-[11px] font-mono block select-all"
-                    style={{ color: '#E0483B' }}
-                  >
-                    {walletAddress}
-                  </code>
-                  <div
-                    className="text-[10px] mt-1.5"
-                    style={{ color: '#E0483B' }}
-                  >
-                    ⚠️{' '}
-                    {language === 'zh'
-                      ? 'Please confirm this is your wallet address (verify in MetaMask)'
-                      : 'Please confirm this is your wallet address (verify in MetaMask)'}
-                  </div>
-                </div>
-                {usdcBalance !== null && (
-                  <div className="flex items-center gap-2 text-xs">
-                    <span>💰</span>
-                    <span
-                      style={{ color: balanceNum > 0 ? '#2E8B57' : '#E0483B' }}
-                    >
-                      {t('modelConfig.usdcBalance', language)}: ${usdcBalance}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setShowDeposit(!showDeposit)}
-                      className="text-[10px] px-2 py-0.5 rounded transition-all"
-                      style={{
-                        background: 'rgba(46,139,87,0.1)',
-                        color: '#2E8B57',
-                        border: 'none',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      {showDeposit
-                        ? language === 'zh'
-                          ? 'Hide'
-                          : 'Hide'
-                        : language === 'zh'
-                          ? '💳 Deposit'
-                          : '💳 Deposit'}
-                    </button>
-                  </div>
-                )}
-                {showDeposit && (
-                  <div
-                    className="p-3 rounded-xl mt-1"
-                    style={{
-                      background: 'rgba(46, 139, 87, 0.04)',
-                      border: '1px solid rgba(46, 139, 87, 0.15)',
-                    }}
-                  >
-                    <div
-                      className="text-xs font-semibold mb-2"
-                      style={{ color: '#2E8B57' }}
-                    >
-                      💳{' '}
-                      {language === 'zh'
-                        ? 'Deposit USDC (Base Chain)'
-                        : 'Deposit USDC (Base Chain)'}
-                    </div>
-                    <div className="flex gap-3 items-start mb-3">
-                      <div
-                        className="shrink-0 p-1.5 rounded-lg"
-                        style={{ background: '#fff' }}
-                      >
-                        <QRCodeSVG value={walletAddress} size={80} level="M" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div
-                          className="text-[11px] mb-1"
-                          style={{ color: '#8A8478' }}
-                        >
-                          {language === 'zh'
-                            ? 'Scan QR or copy address to transfer'
-                            : 'Scan QR or copy address to transfer'}
-                        </div>
-                        <code
-                          className="text-[10px] font-mono break-all select-all block mb-1.5"
-                          style={{ color: '#E0483B' }}
-                        >
-                          {walletAddress}
-                        </code>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            navigator.clipboard.writeText(walletAddress)
-                            setCopiedAddr(true)
-                            setTimeout(() => setCopiedAddr(false), 2000)
-                          }}
-                          className="text-[10px] px-2 py-0.5 rounded"
-                          style={{
-                            background: 'rgba(224,72,59,0.1)',
-                            color: '#E0483B',
-                            border: 'none',
-                            cursor: 'pointer',
-                          }}
-                        >
-                          {copiedAddr ? '✅ Copied' : '📋 Copy Address'}
-                        </button>
-                      </div>
-                    </div>
-                    <div
-                      className="text-[10px] space-y-1"
-                      style={{ color: '#8A8478' }}
-                    >
-                      <div>
-                        📱{' '}
-                        {language === 'zh'
-                          ? 'Scan QR with exchange app to transfer'
-                          : 'Scan QR with exchange app to transfer'}
-                      </div>
-                      <div>
-                        •{' '}
-                        {language === 'zh'
-                          ? 'Choose Base network when withdrawing'
-                          : 'Choose Base network when withdrawing'}
-                      </div>
-                      <div>
-                        • {language === 'zh' ? 'Or bridge: ' : 'Or bridge: '}
-                        <a
-                          href="https://bridge.base.org"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="underline"
-                          style={{ color: '#E0483B' }}
-                        >
-                          bridge.base.org
-                        </a>
-                      </div>
-                      <div>
-                        •{' '}
-                        {language === 'zh'
-                          ? 'Min $1 USDC to start'
-                          : 'Min $1 USDC to start'}
-                      </div>
-                    </div>
-                  </div>
-                )}
-                {claw402Status && (
-                  <div
-                    className="flex items-center gap-2 text-xs"
-                    style={{
-                      color: claw402Status === 'ok' ? '#2E8B57' : '#D6433A',
-                    }}
-                  >
-                    <span>{claw402Status === 'ok' ? '🟢' : '🔴'}</span>
-                    {claw402Status === 'ok'
-                      ? t('modelConfig.claw402Connected', language)
-                      : t('modelConfig.claw402Unreachable', language)}
-                  </div>
-                )}
-              </>
-            )}
-
-            {/* Test Connection button */}
-            {isKeyValid && !validating && (
-              <button
-                type="button"
-                onClick={handleTestConnection}
-                disabled={testing}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all hover:scale-[1.02] disabled:opacity-50"
-                style={{
-                  background: 'rgba(224, 72, 59, 0.12)',
-                  border: '1px solid rgba(224, 72, 59, 0.3)',
-                  color: '#E0483B',
-                }}
-              >
-                <span>🔗</span>
-                {testing
-                  ? t('modelConfig.testingConnection', language)
-                  : t('modelConfig.testConnection', language)}
-              </button>
-            )}
-
-            {/* Test result */}
-            {testResult && !testing && (
-              <div
-                className="flex items-center gap-2 text-xs"
-                style={{
-                  color: testResult.status === 'ok' ? '#2E8B57' : '#D6433A',
-                }}
-              >
-                <span>{testResult.status === 'ok' ? '✅' : '❌'}</span>
-                {testResult.message}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* USDC Recharge Guide */}
-      <div
-        className="p-4 rounded-xl"
-        style={{
-          background: 'rgba(46, 139, 87, 0.05)',
-          border: '1px solid rgba(46, 139, 87, 0.15)',
-        }}
-      >
-        <div
-          className="text-sm font-semibold mb-2 flex items-center gap-2"
-          style={{ color: '#2E8B57' }}
-        >
-          {'💰 ' + t('modelConfig.howToFundUsdc', language)}
-        </div>
-        <div className="text-xs space-y-1.5" style={{ color: '#8A8478' }}>
-          <div className="flex items-start gap-2">
-            <span className="font-bold" style={{ color: '#8A8478' }}>
-              1.
-            </span>
-            <span>{t('modelConfig.fundStep1', language)}</span>
-          </div>
-          <div className="flex items-start gap-2">
-            <span className="font-bold" style={{ color: '#8A8478' }}>
-              2.
-            </span>
-            <span>{t('modelConfig.fundStep2', language)}</span>
-          </div>
-          <div className="flex items-start gap-2">
-            <span className="font-bold" style={{ color: '#8A8478' }}>
-              3.
-            </span>
-            <span>{t('modelConfig.fundStep3', language)}</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Buttons */}
-      <div className="flex gap-3 pt-2">
-        <button
-          type="button"
-          onClick={onBack}
-          className="flex-1 px-4 py-3 rounded-xl text-sm font-semibold transition-all hover:bg-nofx-bg-deeper"
-          style={{ background: '#E8E2D5', color: '#8A8478' }}
-        >
-          {editingModelId
-            ? t('cancel', language)
-            : t('modelConfig.back', language)}
-        </button>
-        <button
-          type="submit"
-          disabled={!isKeyValid}
-          className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm font-bold transition-all hover:scale-[1.02] disabled:opacity-50 disabled:cursor-not-allowed"
-          style={{
-            background: isKeyValid ? '#E0483B' : '#E8E2D5',
-            color: isKeyValid ? '#fff' : '#8A8478',
-          }}
-        >
-          {'🚀 ' + t('modelConfig.startTrading', language)}
-        </button>
-      </div>
-    </form>
   )
 }
 
@@ -1237,20 +307,18 @@ function StandardProviderConfigForm({
   onModelNamesChange: (value: string[]) => void
   onDiscoverModels: () => void
   onBack: () => void
-  onSubmit: (e: React.FormEvent) => void
+  onSubmit: (event: React.FormEvent) => void
   language: Language
 }) {
+  const hasSavedKey = Boolean(editingModelId && selectedModel.has_api_key)
+  const providerConfig = AI_PROVIDER_CONFIG[selectedModel.provider]
+  const displayedPrimaryModelName =
+    modelName || selectedModel.customModelName || ''
+
   return (
     <form onSubmit={onSubmit} className="space-y-5">
-      {/* Selected Model Header */}
-      <div
-        className="p-4 rounded-xl flex items-center gap-4"
-        style={{
-          background: '#F1ECE2',
-          border: '1px solid rgba(26,24,19,0.14)',
-        }}
-      >
-        <div className="w-12 h-12 rounded-xl flex items-center justify-center bg-nofx-bg-deeper border border-nofx-gold/20">
+      <div className="flex items-center gap-4 rounded-xl border border-black/10 bg-[#F1ECE2] p-4">
+        <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-nofx-gold/20 bg-nofx-bg-deeper">
           {getModelIcon(selectedModel.provider || selectedModel.id, {
             width: 32,
             height: 32,
@@ -1260,433 +328,217 @@ function StandardProviderConfigForm({
             </span>
           )}
         </div>
-        <div className="flex-1">
-          <div className="font-semibold text-lg" style={{ color: '#1A1813' }}>
+        <div className="min-w-0 flex-1">
+          <div className="text-lg font-semibold" style={{ color: '#1A1813' }}>
             {getShortName(selectedModel.name)}
           </div>
           <div className="text-xs" style={{ color: '#8A8478' }}>
-            {selectedModel.provider} •{' '}
-            {AI_PROVIDER_CONFIG[selectedModel.provider]?.defaultModel ||
-              selectedModel.id}
+            {selectedModel.provider} · {providerConfig?.defaultModel || selectedModel.id}
           </div>
         </div>
-        {AI_PROVIDER_CONFIG[selectedModel.provider] && (
+        {providerConfig?.apiUrl && (
           <a
-            href={AI_PROVIDER_CONFIG[selectedModel.provider].apiUrl}
+            href={providerConfig.apiUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="flex items-center gap-2 px-4 py-2 rounded-lg transition-all hover:scale-105"
-            style={{
-              background: 'rgba(224, 72, 59, 0.1)',
-              border: '1px solid rgba(224, 72, 59, 0.3)',
-            }}
+            className="flex items-center gap-2 rounded-lg border border-nofx-gold/30 bg-nofx-gold/10 px-3 py-2 text-sm font-medium text-nofx-gold"
           >
-            <ExternalLink className="w-4 h-4" style={{ color: '#E0483B' }} />
-            <span className="text-sm font-medium" style={{ color: '#E0483B' }}>
-              {selectedModel.provider?.startsWith('blockrun')
-                ? t('modelConfig.getStarted', language)
-                : t('modelConfig.getApiKey', language)}
-            </span>
+            <ExternalLink className="h-4 w-4" />
+            {t('modelConfig.getApiKey', language)}
           </a>
         )}
       </div>
 
-      {/* Kimi Warning */}
-      {selectedModel.provider === 'kimi' && (
-        <div
-          className="p-4 rounded-xl"
-          style={{
-            background: 'rgba(214, 67, 58, 0.1)',
-            border: '1px solid rgba(214, 67, 58, 0.3)',
-          }}
-        >
-          <div className="flex items-start gap-2">
-            <span style={{ fontSize: '16px' }}>⚠️</span>
-            <div className="text-sm" style={{ color: '#D6433A' }}>
-              {t('kimiApiNote', language)}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* API Key / Wallet Private Key */}
-      {editingModelId && selectedModel && 'has_api_key' in selectedModel && (
-        <div
-          className="p-3 rounded-xl text-xs"
-          style={{
-            background: 'rgba(46, 139, 87, 0.08)',
-            border: '1px solid rgba(46, 139, 87, 0.2)',
-            color: '#2E8B57',
-          }}
-        >
+      {editingModelId && (
+        <div className="rounded-xl border border-nofx-success/20 bg-nofx-success/10 p-3 text-xs text-nofx-success">
           Current model key status:{' '}
-          {selectedModel.has_api_key
-            ? 'API Key configured'
-            : 'API Key not configured'}
+          {hasSavedKey ? 'API Key configured' : 'API Key not configured'}
         </div>
       )}
 
       <div className="space-y-2">
-        <label
-          className="flex items-center gap-2 text-sm font-semibold"
-          style={{ color: '#1A1813' }}
-        >
-          <svg
-            className="w-4 h-4"
-            style={{ color: '#E0483B' }}
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"
-            />
-          </svg>
-          {selectedModel.provider?.startsWith('blockrun')
-            ? t('modelConfig.walletPrivateKeyLabel', language)
-            : 'API Key *'}
+        <label className="text-sm font-semibold" style={{ color: '#1A1813' }}>
+          API Key
         </label>
         <input
           type="password"
           value={apiKey}
-          onChange={(e) => onApiKeyChange(e.target.value)}
-          placeholder={
-            editingModelId && selectedModel.has_api_key
-              ? 'Saved. Re-enter to replace.'
-              : selectedModel.provider === 'blockrun-base'
-                ? '0x... (EVM private key)'
-                : selectedModel.provider === 'blockrun-sol'
-                  ? 'bs58 encoded key (Solana)'
-                  : t('enterAPIKey', language)
-          }
-          className="w-full px-4 py-3 rounded-xl"
+          onChange={(event) => onApiKeyChange(event.target.value)}
+          placeholder={hasSavedKey ? 'Saved. Re-enter to replace.' : t('enterAPIKey', language)}
+          className="w-full rounded-xl px-4 py-3"
           style={{
             background: '#F1ECE2',
             border: '1px solid rgba(26,24,19,0.14)',
             color: '#1A1813',
           }}
-          required={!editingModelId || !selectedModel.has_api_key}
+          required={!editingModelId || !hasSavedKey}
         />
       </div>
 
-      {/* Custom Base URL (hidden for BlockRun) */}
-      {!selectedModel.provider?.startsWith('blockrun') && (
-        <div className="space-y-2">
-          <label
-            className="flex items-center gap-2 text-sm font-semibold"
-            style={{ color: '#1A1813' }}
-          >
-            <svg
-              className="w-4 h-4"
-              style={{ color: '#E0483B' }}
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"
-              />
-            </svg>
-            {t('customBaseURL', language)}
-          </label>
-          <input
-            type="url"
-            value={baseUrl}
-            onChange={(e) => onBaseUrlChange(e.target.value)}
-            placeholder={t('customBaseURLPlaceholder', language)}
-            className="w-full px-4 py-3 rounded-xl"
-            style={{
-              background: '#F1ECE2',
-              border: '1px solid rgba(26,24,19,0.14)',
-              color: '#1A1813',
-            }}
-          />
-          <div className="text-xs" style={{ color: '#8A8478' }}>
-            {t('leaveBlankForDefault', language)}
-          </div>
-        </div>
-      )}
-
-      {/* Verified model catalog (hidden for BlockRun) */}
-      {!selectedModel.provider?.startsWith('blockrun') && (
-        <div className="space-y-2">
-          <div className="flex items-center justify-between gap-3">
-            <label
-              className="text-sm font-semibold"
-              style={{ color: '#1A1813' }}
-            >
-              {language === 'zh' ? 'API 模型列表' : 'API model catalog'}
-            </label>
-            <button
-              type="button"
-              onClick={onDiscoverModels}
-              disabled={
-                isDiscoveringModels ||
-                (!apiKey.trim() &&
-                  !(editingModelId && selectedModel.has_api_key))
-              }
-              className="px-3 py-1.5 rounded-lg text-xs font-semibold disabled:opacity-50"
-              style={{ background: '#E8E2D5', color: '#1A1813' }}
-            >
-              {isDiscoveringModels
-                ? language === 'zh'
-                  ? '读取中…'
-                  : 'Loading…'
-                : language === 'zh'
-                  ? '读取模型列表'
-                  : 'Load models'}
-            </button>
-          </div>
-          {modelDiscoveryError && (
-            <p className="text-xs text-red-600">{modelDiscoveryError}</p>
-          )}
-          {availableModelNames.length > 0 ? (
-            <div className="space-y-2">
-              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-nofx-bg px-3 py-2">
-                <span className="text-xs text-nofx-text-muted">
-                  {language === 'zh'
-                    ? `已选择 ${modelNames.length}/${availableModelNames.length}`
-                    : `${modelNames.length}/${availableModelNames.length} selected`}
-                </span>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onModelNamesChange(availableModelNames)
-                      if (!availableModelNames.includes(modelName)) {
-                        onModelNameChange(availableModelNames[0] || '')
-                      }
-                    }}
-                    className="rounded px-2 py-1 text-xs font-semibold text-nofx-gold hover:bg-nofx-gold/10"
-                  >
-                    {language === 'zh' ? '全选' : 'Select all'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const next = availableModelNames.filter(
-                        (name) => !modelNames.includes(name)
-                      )
-                      onModelNamesChange(next)
-                      if (!next.includes(modelName)) {
-                        onModelNameChange(next[0] || '')
-                      }
-                    }}
-                    className="rounded px-2 py-1 text-xs font-semibold text-nofx-gold hover:bg-nofx-gold/10"
-                  >
-                    {language === 'zh' ? '反选' : 'Invert selection'}
-                  </button>
-                </div>
-              </div>
-              <div className="max-h-64 space-y-2 overflow-y-auto rounded-xl border border-nofx-gold/20 p-2">
-                {availableModelNames.map((name) => {
-                  const selected = modelNames.includes(name)
-                  const isPrimary = modelName === name
-                  return (
-                    <div
-                      key={name}
-                      className="flex items-center justify-between gap-3 rounded-lg bg-nofx-bg px-3 py-2"
-                    >
-                      <label className="flex min-w-0 items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={selected}
-                          onChange={() => {
-                            const next = selected
-                              ? modelNames.filter((item) => item !== name)
-                              : [...modelNames, name]
-                            onModelNamesChange(next)
-                            if (name === modelName && !next.includes(name)) {
-                              onModelNameChange(next[0] || '')
-                            } else if (!modelName && next.length > 0) {
-                              onModelNameChange(next[0])
-                            }
-                          }}
-                        />
-                        <span className="truncate text-sm">{name}</span>
-                        {selected && (
-                          <span
-                            className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${
-                              isPrimary
-                                ? 'bg-nofx-gold/15 text-nofx-gold'
-                                : 'bg-blue-500/10 text-blue-600'
-                            }`}
-                          >
-                            {isPrimary
-                              ? language === 'zh'
-                                ? '主'
-                                : 'Primary'
-                              : language === 'zh'
-                                ? '备用'
-                                : 'Fallback'}
-                          </span>
-                        )}
-                      </label>
-                      <label className="flex items-center gap-1 text-xs text-nofx-text-muted">
-                        <input
-                          type="radio"
-                          name="primary-model"
-                          checked={isPrimary}
-                          disabled={!selected}
-                          onChange={() => onModelNameChange(name)}
-                        />
-                        {language === 'zh' ? '设为主模型' : 'Set primary'}
-                      </label>
-                    </div>
-                  )
-                })}
-              </div>
-              <p className="text-xs text-amber-700">
-                {language === 'zh'
-                  ? '当前选择尚未保存。点击下方“保存配置”后，备用模型才会出现在 Trader 配置中。'
-                  : 'These selections are not saved yet. Click “Save Configuration” below before they appear in Trader settings.'}
-              </p>
-            </div>
-          ) : (
-            <div className="text-xs" style={{ color: '#8A8478' }}>
-              {language === 'zh'
-                ? '填写凭证后读取模型列表，再选择一个或多个模型并指定主模型。'
-                : 'Enter credentials, load the catalog, then select models and choose a primary.'}
-            </div>
-          )}
-          <input type="hidden" value={modelName} required readOnly />
-          <div
-            className="rounded-lg px-3 py-2 text-xs"
-            style={{
-              background: '#F1ECE2',
-              border: '1px solid rgba(26,24,19,0.14)',
-              color: '#1A1813',
-            }}
-          >
-            {language === 'zh' ? '当前主模型' : 'Current primary'}:{' '}
-            <strong>{modelName || '—'}</strong>
-          </div>
-        </div>
-      )}
-
-      {/* BlockRun Model Selector */}
-      {selectedModel.provider?.startsWith('blockrun') && (
-        <div className="space-y-2">
-          <label
-            className="flex items-center gap-2 text-sm font-semibold"
-            style={{ color: '#1A1813' }}
-          >
-            <svg
-              className="w-4 h-4"
-              style={{ color: '#E0483B' }}
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"
-              />
-            </svg>
-            {t('modelConfig.selectModelLabel', language)}
-          </label>
-          <div className="grid grid-cols-2 gap-2">
-            {BLOCKRUN_MODELS.map((m) => {
-              const isSelected = (modelName || BLOCKRUN_MODELS[0].id) === m.id
-              return (
-                <button
-                  key={m.id}
-                  type="button"
-                  onClick={() => onModelNameChange(m.id)}
-                  className="flex flex-col items-start px-3 py-2 rounded-xl text-left transition-all"
-                  style={{
-                    background: isSelected
-                      ? 'rgba(224, 72, 59, 0.12)'
-                      : '#F1ECE2',
-                    border: isSelected
-                      ? '1px solid #E0483B'
-                      : '1px solid rgba(26,24,19,0.14)',
-                  }}
-                >
-                  <span
-                    className="text-xs font-semibold"
-                    style={{ color: isSelected ? '#E0483B' : '#1A1813' }}
-                  >
-                    {m.name}
-                  </span>
-                  <span className="text-[10px]" style={{ color: '#8A8478' }}>
-                    {m.desc}
-                  </span>
-                </button>
-              )
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Info Box */}
-      <div
-        className="p-4 rounded-xl"
-        style={{
-          background: 'rgba(224, 72, 59, 0.08)',
-          border: '1px solid rgba(224, 72, 59, 0.2)',
-        }}
-      >
-        <div
-          className="text-sm font-semibold mb-2 flex items-center gap-2"
-          style={{ color: '#E0483B' }}
-        >
-          <Brain className="w-4 h-4" />
-          {t('information', language)}
-        </div>
-        <div className="text-xs space-y-1" style={{ color: '#8A8478' }}>
-          <div>• {t('modelConfigInfo1', language)}</div>
-          <div>• {t('modelConfigInfo2', language)}</div>
-          <div>• {t('modelConfigInfo3', language)}</div>
+      <div className="space-y-2">
+        <label className="text-sm font-semibold" style={{ color: '#1A1813' }}>
+          {t('customBaseURL', language)}
+        </label>
+        <input
+          type="url"
+          value={baseUrl}
+          onChange={(event) => onBaseUrlChange(event.target.value)}
+          placeholder={t('customBaseURLPlaceholder', language)}
+          className="w-full rounded-xl px-4 py-3"
+          style={{
+            background: '#F1ECE2',
+            border: '1px solid rgba(26,24,19,0.14)',
+            color: '#1A1813',
+          }}
+        />
+        <div className="text-xs" style={{ color: '#8A8478' }}>
+          {t('leaveBlankForDefault', language)}
         </div>
       </div>
 
-      {/* Buttons */}
-      <div className="sticky bottom-0 z-10 -mx-1 flex gap-3 border-t border-nofx-gold/15 bg-nofx-bg-lighter px-1 pt-4 pb-1">
+      <div className="space-y-2">
+        <label className="text-sm font-semibold" style={{ color: '#1A1813' }}>
+          {language === 'zh' ? '默认模型名称' : 'Primary model name'}
+        </label>
+        <input
+          type="text"
+          value={modelName}
+          onChange={(event) => onModelNameChange(event.target.value)}
+          placeholder={providerConfig?.defaultModel || selectedModel.id}
+          className="w-full rounded-xl px-4 py-3"
+          style={{
+            background: '#F1ECE2',
+            border: '1px solid rgba(26,24,19,0.14)',
+            color: '#1A1813',
+          }}
+        />
+      </div>
+
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-3">
+          <label className="text-sm font-semibold" style={{ color: '#1A1813' }}>
+            {language === 'zh' ? 'API 模型列表' : 'API model catalog'}
+          </label>
+          <button
+            type="button"
+            onClick={onDiscoverModels}
+            disabled={isDiscoveringModels || (!apiKey.trim() && !hasSavedKey)}
+            className="rounded-lg bg-[#E8E2D5] px-3 py-1.5 text-xs font-semibold disabled:opacity-50"
+          >
+            {isDiscoveringModels
+              ? language === 'zh'
+                ? '读取中…'
+                : 'Loading…'
+              : language === 'zh'
+                ? '读取模型列表'
+                : 'Load models'}
+          </button>
+        </div>
+        {modelDiscoveryError && (
+          <p className="text-xs text-red-600">{modelDiscoveryError}</p>
+        )}
+        {availableModelNames.length > 0 && (
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-nofx-bg px-3 py-2">
+              <span className="text-xs text-nofx-text-muted">
+                {language === 'zh'
+                  ? `已选择 ${modelNames.length}/${availableModelNames.length}`
+                  : `${modelNames.length}/${availableModelNames.length} selected`}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onModelNamesChange(availableModelNames)
+                    if (!availableModelNames.includes(modelName)) {
+                      onModelNameChange(availableModelNames[0] || '')
+                    }
+                  }}
+                  className="rounded px-2 py-1 text-xs font-semibold text-nofx-gold hover:bg-nofx-gold/10"
+                >
+                  {language === 'zh' ? '全选' : 'Select all'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nextModelNames = availableModelNames.filter(
+                      (name) => !modelNames.includes(name)
+                    )
+                    onModelNamesChange(nextModelNames)
+                    if (!nextModelNames.includes(modelName)) {
+                      onModelNameChange(nextModelNames[0] || '')
+                    }
+                  }}
+                  className="rounded px-2 py-1 text-xs font-semibold text-nofx-gold hover:bg-nofx-gold/10"
+                >
+                  {language === 'zh' ? '反选' : 'Invert selection'}
+                </button>
+              </div>
+            </div>
+            <div className="max-h-64 space-y-2 overflow-y-auto rounded-xl border border-nofx-gold/20 p-2">
+              {availableModelNames.map((name) => {
+                const selected = modelNames.includes(name)
+                const isPrimary = displayedPrimaryModelName === name
+                return (
+                  <div
+                    key={name}
+                    className="flex items-center justify-between gap-3 rounded-lg bg-nofx-bg px-3 py-2"
+                  >
+                    <label className="flex min-w-0 items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        onChange={() => {
+                          const nextModelNames = selected
+                            ? modelNames.filter((item) => item !== name)
+                            : [...modelNames, name]
+                          onModelNamesChange(nextModelNames)
+                          if (name === modelName && !nextModelNames.includes(name)) {
+                            onModelNameChange(nextModelNames[0] || '')
+                          } else if (!modelName && nextModelNames.length > 0) {
+                            onModelNameChange(nextModelNames[0])
+                          }
+                        }}
+                      />
+                      <span className="truncate text-sm">{name}</span>
+                    </label>
+                    <label className="flex shrink-0 items-center gap-1 text-xs text-nofx-text-muted">
+                      <input
+                        type="radio"
+                        name="primary-model"
+                        checked={isPrimary}
+                        onChange={() => onModelNameChange(name)}
+                      />
+                      {language === 'zh' ? '主模型' : 'Primary'}
+                    </label>
+                  </div>
+                )
+              })}
+            </div>
+            {displayedPrimaryModelName && (
+              <div className="text-xs text-nofx-text-muted">
+                {language === 'zh'
+                  ? `当前主模型：${displayedPrimaryModelName}`
+                  : `Current primary: ${displayedPrimaryModelName}`}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-center justify-between gap-3 pt-2">
         <button
           type="button"
           onClick={onBack}
-          className="flex-1 px-4 py-3 rounded-xl text-sm font-semibold transition-all hover:bg-nofx-bg-deeper"
-          style={{ background: '#E8E2D5', color: '#8A8478' }}
+          className="rounded-xl border border-black/10 px-5 py-3 text-sm font-semibold text-nofx-text-muted"
         >
-          {editingModelId
-            ? t('cancel', language)
-            : t('modelConfig.back', language)}
+          {t('back', language)}
         </button>
         <button
           type="submit"
-          disabled={
-            !selectedModel ||
-            (!apiKey.trim() &&
-              !(editingModelId && selectedModel.has_api_key)) ||
-            (!selectedModel.provider?.startsWith('blockrun') &&
-              (!modelName || modelNames.length === 0))
-          }
-          className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm font-bold transition-all hover:scale-[1.02] disabled:opacity-50 disabled:cursor-not-allowed"
-          style={{ background: '#E0483B', color: '#fff' }}
+          className="rounded-xl bg-nofx-gold px-5 py-3 text-sm font-bold text-white"
         >
-          {t('saveConfig', language)}
-          <svg
-            className="w-4 h-4"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M14 5l7 7m0 0l-7 7m7-7H3"
-            />
-          </svg>
+          {t('saveConfiguration', language)}
         </button>
       </div>
     </form>

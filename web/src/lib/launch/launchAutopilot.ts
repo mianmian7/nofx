@@ -1,6 +1,6 @@
 import { api } from '../api'
 import { ApiError } from '../httpClient'
-import { describeLaunchFailures, primarySetupTarget } from './preflight'
+import { describeLaunchFailures } from './preflight'
 import { resolveLaunchExchange, resolveLaunchModel } from './resolve'
 import type { LaunchOutcome } from './types'
 
@@ -33,7 +33,6 @@ export async function launchAutopilot(
         ok: false,
         kind: 'setup',
         message: 'No enabled AI model with valid credentials is ready.',
-        setupTarget: 'model',
       }
     }
 
@@ -43,7 +42,6 @@ export async function launchAutopilot(
         ok: false,
         kind: 'setup',
         message: exchangeResult.reason,
-        setupTarget: 'exchange',
       }
     }
     const exchange = exchangeResult.exchange
@@ -65,8 +63,8 @@ export async function launchAutopilot(
     }
 
     // Re-fetch the live trader list before deciding create vs update. Stale
-    // props/snapshots would create a duplicate "NOFX Autopilot" — paying the
-    // slow first-create cost again and orphaning dashboards onto a deleted id.
+    // props/snapshots would create a duplicate and orphan dashboards onto a
+    // deleted id.
     const existingTraders = await api.getTraders(true)
     const existing =
       existingTraders.find(
@@ -109,7 +107,6 @@ export async function launchAutopilot(
           kind: 'preflight',
           message: describeLaunchFailures(preflight) || err.message,
           preflight,
-          setupTarget: primarySetupTarget(preflight),
         }
       }
     }

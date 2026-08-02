@@ -572,35 +572,21 @@ export function TraderConfigModal({
                                   ? '固定交易对'
                                   : 'Fixed symbols'
                                 : aiConfig.coin_source.source_type ===
-                                    'vergex_signal'
+                                    'hyper_rank'
                                   ? language === 'zh'
-                                    ? 'Vergex signal board'
-                                    : 'Vergex signal board'
+                                    ? 'Hyperliquid ranking'
+                                    : 'Hyperliquid ranking'
                                   : aiConfig.coin_source.source_type ===
-                                      'hyper_rank'
+                                      'hyper_all'
                                     ? language === 'zh'
-                                      ? 'Claw402 board'
-                                      : 'Claw402 board'
+                                      ? 'Hyperliquid all markets'
+                                      : 'Hyperliquid all markets'
                                     : aiConfig.coin_source.source_type ===
-                                        'hyper_all'
+                                        'hyper_main'
                                       ? language === 'zh'
-                                        ? 'Hyperliquid all markets'
-                                        : 'Hyperliquid all markets'
-                                      : aiConfig.coin_source.source_type ===
-                                          'hyper_main'
-                                        ? language === 'zh'
-                                          ? 'Hyperliquid main markets'
-                                          : 'Hyperliquid main markets'
-                                        : aiConfig.coin_source.source_type ===
-                                            'ai500'
-                                          ? 'AI500'
-                                          : aiConfig.coin_source.source_type ===
-                                              'oi_top'
-                                            ? 'OI Top'
-                                            : aiConfig.coin_source
-                                                  .source_type === 'oi_low'
-                                              ? 'OI Low'
-                                              : '-'}
+                                        ? 'Hyperliquid main markets'
+                                        : 'Hyperliquid main markets'
+                                      : '-'}
                           </div>
                           <div>
                             {t('marginLimit', language)}:{' '}

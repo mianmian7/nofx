@@ -1,9 +1,8 @@
 import { useState, useEffect } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import useSWR from 'swr'
 import { api } from '../../lib/api'
 import { ApiError } from '../../lib/httpClient'
-import { ROUTES } from '../../router/paths'
 import type {
   TraderInfo,
   CreateTraderRequest,
@@ -35,7 +34,6 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
   const { language } = useLanguage()
   const { user, token } = useAuth()
   const navigate = useNavigate()
-  const [searchParams, setSearchParams] = useSearchParams()
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [showEditModal, setShowEditModal] = useState(false)
   const [showModelModal, setShowModelModal] = useState(false)
@@ -43,10 +41,6 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
   const [showTelegramModal, setShowTelegramModal] = useState(false)
   const [editingModel, setEditingModel] = useState<string | null>(null)
   const [editingExchange, setEditingExchange] = useState<string | null>(null)
-  const [initialModelId, setInitialModelId] = useState<string | null>(null)
-  const [initialExchangeType, setInitialExchangeType] = useState<string | null>(
-    null
-  )
   const [editingTrader, setEditingTrader] = useState<any>(null)
   const [allModels, setAllModels] = useState<AIModel[]>([])
   const [allExchanges, setAllExchanges] = useState<Exchange[]>([])
@@ -147,10 +141,10 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
 
   const configuredExchanges =
     allExchanges?.filter((e) => {
-      if (e.id === 'aster') {
+      if (e.exchange_type === 'aster') {
         return e.asterUser && e.asterUser.trim() !== ''
       }
-      if (e.id === 'hyperliquid') {
+      if (e.exchange_type === 'hyperliquid') {
         return e.hyperliquidWalletAddr && e.hyperliquidWalletAddr.trim() !== ''
       }
       return e.enabled
@@ -160,7 +154,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
   const enabledExchanges =
     allExchanges?.filter((e) => {
       if (!e.enabled) return false
-      if (e.id === 'aster') {
+      if (e.exchange_type === 'aster') {
         return (
           e.asterUser &&
           e.asterUser.trim() !== '' &&
@@ -168,7 +162,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
           e.asterSigner.trim() !== ''
         )
       }
-      if (e.id === 'hyperliquid') {
+      if (e.exchange_type === 'hyperliquid') {
         return e.hyperliquidWalletAddr && e.hyperliquidWalletAddr.trim() !== ''
       }
       return true
@@ -300,8 +294,8 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
 
       await mutateTraders()
     } catch (error) {
-      // Launch preflight rejections carry an actionable reason (e.g. "AI fee
-      // wallet is empty") — show it instead of a generic failure toast.
+      // Launch preflight rejections carry an actionable reason — show it
+      // instead of a generic failure toast.
       if (
         error instanceof ApiError &&
         error.errorKey === 'trader.start.preflight_failed'
@@ -334,13 +328,11 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
   }
 
   const handleModelClick = (modelId: string) => {
-    setInitialModelId(null)
     setEditingModel(modelId)
     setShowModelModal(true)
   }
 
   const handleExchangeClick = (exchangeId: string) => {
-    setInitialExchangeType(null)
     setEditingExchange(exchangeId)
     setShowExchangeModal(true)
   }
@@ -621,84 +613,14 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
   }
 
   const handleAddModel = () => {
-    setInitialModelId(null)
     setEditingModel(null)
     setShowModelModal(true)
   }
 
   const handleAddExchange = () => {
-    setInitialExchangeType(null)
     setEditingExchange(null)
     setShowExchangeModal(true)
   }
-
-  const handleOpenClaw402Config = () => {
-    const configuredClaw402 = allModels?.find(
-      (model) => model.provider === 'claw402'
-    )
-    const supportedClaw402 = supportedModels?.find(
-      (model) => model.provider === 'claw402'
-    )
-    const modelId = configuredClaw402?.id || supportedClaw402?.id || 'claw402'
-
-    setEditingModel(configuredClaw402?.id || null)
-    setInitialModelId(modelId)
-    setShowModelModal(true)
-  }
-
-  const handleOpenHyperliquidConfig = () => {
-    const existingHyperliquid = allExchanges?.find(
-      (exchange) =>
-        exchange.exchange_type === 'hyperliquid' ||
-        exchange.id === 'hyperliquid'
-    )
-
-    setEditingExchange(existingHyperliquid?.id || null)
-    setInitialExchangeType(existingHyperliquid ? null : 'hyperliquid')
-    setShowExchangeModal(true)
-  }
-
-  useEffect(() => {
-    if (!user || !token) return
-
-    const setupTarget = searchParams.get('setup')
-    if (!setupTarget) return
-
-    if (setupTarget === 'claw402') {
-      // The welcome page shows the deposit QR, auto-creates the wallet if
-      // needed, and polls the balance — friendlier than the key-config modal.
-      navigate(ROUTES.welcome)
-    } else if (setupTarget === 'hyperliquid') {
-      handleOpenHyperliquidConfig()
-    } else if (setupTarget === 'hyperliquid-funds') {
-      // Funding shortfall: bring the guided launch panel (with the trading
-      // balance step and live preflight polling) into view.
-      document
-        .getElementById('autopilot-launch-panel')
-        ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      toast.info(
-        'Deposit USDC to your Hyperliquid account, the balance check updates automatically.'
-      )
-    } else if (setupTarget === 'model') {
-      handleAddModel()
-    } else if (setupTarget === 'exchange') {
-      handleAddExchange()
-    } else {
-      return
-    }
-
-    const nextParams = new URLSearchParams(searchParams)
-    nextParams.delete('setup')
-    setSearchParams(nextParams, { replace: true })
-  }, [
-    allExchanges,
-    allModels,
-    searchParams,
-    setSearchParams,
-    supportedModels,
-    token,
-    user,
-  ])
 
   const refreshLaunchState = async () => {
     await Promise.all([loadConfigs(), mutateTraders()])
@@ -714,8 +636,8 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
       isLoggedIn={Boolean(user && token)}
       language={language}
       onRefresh={refreshLaunchState}
-      onOpenClaw402Config={handleOpenClaw402Config}
-      onOpenHyperliquidConfig={handleOpenHyperliquidConfig}
+      onOpenModelConfig={handleAddModel}
+      onOpenExchangeConfig={handleAddExchange}
     />
   )
 
@@ -870,13 +792,11 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
             allModels={supportedModels}
             configuredModels={allModels}
             editingModelId={editingModel}
-            initialModelId={initialModelId}
             onSave={handleSaveModelConfig}
             onDelete={handleDeleteModelConfig}
             onClose={() => {
               setShowModelModal(false)
               setEditingModel(null)
-              setInitialModelId(null)
             }}
             language={language}
           />
@@ -887,13 +807,11 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
           <ExchangeConfigModal
             allExchanges={allExchanges}
             editingExchangeId={editingExchange}
-            initialExchangeType={initialExchangeType}
             onSave={handleSaveExchangeConfig}
             onDelete={handleDeleteExchangeConfig}
             onClose={() => {
               setShowExchangeModal(false)
               setEditingExchange(null)
-              setInitialExchangeType(null)
             }}
             language={language}
           />

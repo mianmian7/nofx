@@ -1,10 +1,5 @@
 import { API_BASE, handleJSONResponse } from './helpers'
 
-export interface GeneratedWallet {
-  address: string
-  private_key: string
-}
-
 export interface HyperliquidConnectConfig {
   builderAddress: string
   builderMaxFee: string
@@ -43,12 +38,12 @@ export interface HyperliquidAgentResponse {
   agents: HyperliquidAgentInfo[] // every approved agent for the wallet
 }
 
-export const walletApi = {
-  async generateWallet(): Promise<GeneratedWallet> {
-    const res = await fetch(`${API_BASE}/wallet/generate`, { method: 'POST' })
-    return handleJSONResponse<GeneratedWallet>(res)
-  },
+export interface GeneratedHyperliquidAgentKey {
+  address: string
+  private_key: string
+}
 
+export const walletApi = {
   async getHyperliquidConnectConfig(): Promise<HyperliquidConnectConfig> {
     const res = await fetch(`${API_BASE}/hyperliquid/connect-config`)
     return handleJSONResponse<HyperliquidConnectConfig>(res)
@@ -70,6 +65,13 @@ export const walletApi = {
       `${API_BASE}/hyperliquid/agent?address=${encodeURIComponent(address)}`
     )
     return handleJSONResponse<HyperliquidAgentResponse>(res)
+  },
+
+  async generateWallet(): Promise<GeneratedHyperliquidAgentKey> {
+    const res = await fetch(`${API_BASE}/hyperliquid/agent/generate`, {
+      method: 'POST',
+    })
+    return handleJSONResponse<GeneratedHyperliquidAgentKey>(res)
   },
 
   async submitHyperliquidApproval(

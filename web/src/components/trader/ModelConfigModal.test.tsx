@@ -108,7 +108,7 @@ describe('ModelConfigModal model catalog', () => {
     expect(screen.getByDisplayValue('https://example.com/v1')).toBeVisible()
     expect(screen.getByText('gpt-5.6-terra')).toBeVisible()
     expect(screen.getByText('gpt-5.6-luna')).toBeVisible()
-    expect(screen.getByText('Current primary:')).toHaveTextContent(
+    expect(screen.getByText(/Current primary: gpt-5\.6-sol/)).toHaveTextContent(
       'Current primary: gpt-5.6-sol'
     )
   })

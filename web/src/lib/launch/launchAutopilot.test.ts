@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { launchAutopilot } from './launchAutopilot'
 import { ApiError } from '../httpClient'
-import type { LaunchPreflightResult } from './types'
 
 const mocks = vi.hoisted(() => ({
   api: {
@@ -10,47 +9,15 @@ const mocks = vi.hoisted(() => ({
     updateTrader: vi.fn(),
     startTrader: vi.fn(),
   },
-  runLaunchPreflight: vi.fn(),
   resolveLaunchModel: vi.fn(),
   resolveLaunchExchange: vi.fn(),
 }))
 
 vi.mock('../api', () => ({ api: mocks.api }))
-vi.mock('./preflight', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./preflight')>()),
-  runLaunchPreflight: mocks.runLaunchPreflight,
-}))
 vi.mock('./resolve', () => ({
   resolveLaunchModel: mocks.resolveLaunchModel,
   resolveLaunchExchange: mocks.resolveLaunchExchange,
 }))
-
-function readyPreflight(): LaunchPreflightResult {
-  return {
-    ready: true,
-    checks: [],
-    min_ai_fee_usdc: 1,
-    min_trading_usdc: 12,
-    checked_at: new Date().toISOString(),
-  }
-}
-
-function failedPreflight(): LaunchPreflightResult {
-  return {
-    ready: false,
-    checks: [
-      {
-        id: 'ai_wallet_funds',
-        status: 'failed',
-        code: 'AI_WALLET_INSUFFICIENT_FUNDS',
-        message: 'AI wallet needs 1 USDC.',
-      },
-    ],
-    min_ai_fee_usdc: 1,
-    min_trading_usdc: 12,
-    checked_at: new Date().toISOString(),
-  }
-}
 
 describe('launchAutopilot', () => {
   beforeEach(() => {
@@ -67,22 +34,7 @@ describe('launchAutopilot', () => {
     mocks.api.startTrader.mockResolvedValue(undefined)
   })
 
-  it('Paper launch skips exchange balance preflight and declares paper mode', async () => {
-    mocks.runLaunchPreflight.mockResolvedValue(failedPreflight())
-    const ensureStrategy = vi.fn().mockResolvedValue('strat-paper')
-
-    const outcome = await launchAutopilot({ ensureStrategy })
-
-    expect(mocks.runLaunchPreflight).not.toHaveBeenCalled()
-    expect(ensureStrategy).toHaveBeenCalledTimes(1)
-    expect(mocks.api.createTrader).toHaveBeenCalledWith(
-      expect.objectContaining({ execution_mode: 'paper', strategy_id: 'strat-paper' })
-    )
-    expect(outcome.ok).toBe(true)
-  })
-
-  it('creates and starts the trader after preflight passes', async () => {
-    mocks.runLaunchPreflight.mockResolvedValue(readyPreflight())
+  it('creates and starts the trader after prerequisites resolve', async () => {
     const ensureStrategy = vi.fn().mockResolvedValue('strat-1')
 
     const outcome = await launchAutopilot({
@@ -106,7 +58,6 @@ describe('launchAutopilot', () => {
   })
 
   it('updates the existing autopilot instead of creating a duplicate', async () => {
-    mocks.runLaunchPreflight.mockResolvedValue(readyPreflight())
     mocks.api.getTraders.mockResolvedValue([
       { trader_id: 't-old', trader_name: 'NOFX Autopilot', is_running: false },
     ])
@@ -128,7 +79,6 @@ describe('launchAutopilot', () => {
   })
 
   it('treats a racing already-running rejection as success', async () => {
-    mocks.runLaunchPreflight.mockResolvedValue(readyPreflight())
     mocks.api.getTraders.mockResolvedValue([
       { trader_id: 't-1', trader_name: 'NOFX Autopilot', is_running: false },
     ])
@@ -154,33 +104,10 @@ describe('launchAutopilot', () => {
     )
   })
 
-  it('surfaces the server-side preflight result when start is rejected', async () => {
-    mocks.runLaunchPreflight.mockResolvedValue(readyPreflight())
-    mocks.api.startTrader.mockRejectedValue(
-      new ApiError(
-        'preflight failed',
-        'trader.start.preflight_failed',
-        undefined,
-        400,
-        { preflight: failedPreflight() }
-      )
-    )
-
-    const outcome = await launchAutopilot({
-      ensureStrategy: vi.fn().mockResolvedValue('strat-1'),
-    })
-
-    expect(outcome.ok).toBe(false)
-    if (outcome.ok || outcome.kind !== 'preflight') {
-      throw new Error('expected a preflight failure outcome')
-    }
-    expect(outcome.setupTarget).toBe('claw402')
-  })
-
-  it('routes missing exchange setup to the generic exchange anchor', async () => {
+  it('returns a setup error when no exchange is ready', async () => {
     mocks.resolveLaunchExchange.mockResolvedValue({
       exchange: null,
-      reason: 'No Hyperliquid account is connected.',
+      reason: 'No enabled exchange with usable credentials is available.',
     })
 
     const outcome = await launchAutopilot({ ensureStrategy: vi.fn() })
@@ -189,9 +116,8 @@ describe('launchAutopilot', () => {
       expect.objectContaining({
         ok: false,
         kind: 'setup',
-        setupTarget: 'exchange',
+        message: 'No enabled exchange with usable credentials is available.',
       })
     )
-    expect(mocks.runLaunchPreflight).not.toHaveBeenCalled()
   })
 })
