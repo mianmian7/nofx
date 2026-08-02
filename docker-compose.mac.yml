@@ -15,6 +15,12 @@ services:
     environment:
       TZ: ${TZ:-Asia/Shanghai}
       AI_MAX_TOKENS: "8000"
+    healthcheck:
+      test: ["CMD", "wget", "-Y", "off", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     networks:
       - nofx-network
 
@@ -25,7 +31,8 @@ services:
     ports:
       - "${NOFX_BIND_ADDRESS:-127.0.0.1}:${NOFX_FRONTEND_PORT:-3100}:80"
     depends_on:
-      - nofx
+      nofx:
+        condition: service_healthy
     healthcheck:
       test:
         - CMD

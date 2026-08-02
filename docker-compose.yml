@@ -12,11 +12,10 @@ services:
       # pprof profiling is bound to host loopback only; uncomment for local debug.
       # - "127.0.0.1:6060:6060"
     volumes:
-      # NOTE: .env is bind-mounted so the beginner-onboarding flow
-      # (persistBeginnerWalletEnv) can write CLAW402_WALLET_* back to the host
-      # file. Without this mount the wallet is regenerated on every container
-      # restart. For threat models where the .env file should not be reachable
-      # via container RCE, deploy via env vars only and remove this mount.
+      # NOTE: .env is bind-mounted so runtime configuration remains available
+      # inside the container. For threat models where the .env file should not
+      # be reachable via container RCE, deploy via environment variables only
+      # and remove this mount.
       - ./.env:/app/.env
       - ./data:/app/data
       - /etc/localtime:/etc/localtime:ro
@@ -28,7 +27,7 @@ services:
     networks:
       - nofx-network
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/health"]
+      test: ["CMD", "wget", "-Y", "off", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
