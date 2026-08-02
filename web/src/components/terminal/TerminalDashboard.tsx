@@ -87,9 +87,11 @@ function fmtUsd(n: number | undefined, signed = false): string {
 export function PaperTradingBanner({
   paper,
   performance,
+  exchange = 'binance',
 }: {
   paper: NonNullable<SystemStatus['paper']>
   performance?: PaperPerformance
+  exchange?: string
 }) {
   const closedNet = performance?.total_pnl ?? paper.realized_pnl
   const allFees = performance?.total_fees ?? paper.fees
@@ -113,7 +115,8 @@ export function PaperTradingBanner({
     >
       <strong style={{ color: '#b56f00' }}>PAPER TRADING · 模拟交易</strong>
       <span>
-        使用实时 Binance 行情与真实 AI 决策，但不会向交易所发送真实订单。
+        使用实时 {exchange.toUpperCase()} 行情与真实 AI
+        决策，但不会向交易所发送真实订单。
       </span>
       <span>
         钱包 {fmtUsd(paper.balance)} · 可用 {fmtUsd(paper.available_balance)} ·
@@ -380,9 +383,14 @@ function baseLabel(raw?: string): string {
     .replace(/[-_]/g, '')
     .replace(/(USDT|USDC|USD)$/, '')
 }
-function binanceSymbol(raw?: string): string {
-  const normalized = (raw || '').toUpperCase().trim()
-  return /^[A-Z0-9]+USDT$/.test(normalized) ? normalized : ''
+function marketSymbol(raw?: string): string {
+  const normalized = (raw || '')
+    .toUpperCase()
+    .trim()
+    .replace(/[-_]/g, '')
+    .replace(/(SWAP|PERP)$/, '')
+  if (normalized.endsWith('USDT')) return normalized
+  return normalized ? `${normalized}USDT` : ''
 }
 function parseScanMinutes(scan?: string): number {
   if (!scan) return 15
@@ -528,6 +536,11 @@ export function TerminalDashboard({
   const fullStats = dashboardPerformance.fullStats
   const history = dashboardPerformance.history
   const config = realConfig
+  const marketExchange = (
+    selectedTrader?.exchange_type ||
+    config?.exchange_type ||
+    'binance'
+  ).toLowerCase()
 
   const latest = decisions && decisions.length > 0 ? decisions[0] : undefined
   const candidateCoins = latest?.candidate_coins ?? []
@@ -536,7 +549,7 @@ export function TerminalDashboard({
       ...(positions ?? []).map((p) => p.symbol),
       ...candidateCoins,
     ]
-    return symbols.map(binanceSymbol).find(Boolean) || 'BTCUSDT'
+    return symbols.map(marketSymbol).find(Boolean) || 'BTCUSDT'
   }, [positions, candidateCoins])
 
   const pnl = account?.total_pnl ?? 0
@@ -683,6 +696,7 @@ export function TerminalDashboard({
             <PaperTradingBanner
               paper={status.paper}
               performance={status.paper_performance}
+              exchange={marketExchange}
             />
             <PaperMakerPanel
               pendingOrders={status.paper_pending_orders}
@@ -704,12 +718,8 @@ export function TerminalDashboard({
             />
           </>
         )}
-        {/* runtime health banner — AI fee wallet dry / safe mode would otherwise
-            only be visible in server logs while the bot silently idles */}
-        {status &&
-          (status.safe_mode ||
-            status.ai_wallet_status === 'empty' ||
-            status.ai_wallet_status === 'low') && (
+        {/* Runtime health warnings should remain visible while the bot is paused. */}
+        {status?.safe_mode && (
             <div
               className="tm-mono"
               style={{
@@ -726,21 +736,10 @@ export function TerminalDashboard({
               }}
             >
               <span style={{ fontWeight: 600 }}>
-                {status.ai_wallet_status === 'empty'
-                  ? tt('aiWalletEmpty')
-                  : status.ai_wallet_status === 'low'
-                    ? tt('aiWalletLow', {
-                        balance: (status.ai_wallet_balance_usdc ?? 0).toFixed(
-                          2
-                        ),
-                      })
-                    : tt('safeMode')}
+                {tt('safeMode')}
               </span>
               <span style={{ color: 'var(--tm-ink-2)' }}>
-                {status.ai_wallet_status === 'empty' ||
-                status.ai_wallet_status === 'low'
-                  ? tt('aiWalletDeposit')
-                  : status.safe_mode_reason || ''}
+                {status.safe_mode_reason || ''}
               </span>
             </div>
           )}
@@ -792,7 +791,6 @@ export function TerminalDashboard({
             {(() => {
               const raw = config?.ai_model || status?.ai_model || ''
               if (!raw) return '—'
-              if (/claw402/i.test(raw)) return 'CLAW402'
               return raw.length > 16
                 ? raw.slice(0, 16).toUpperCase()
                 : raw.toUpperCase()
@@ -968,7 +966,7 @@ export function TerminalDashboard({
           </>
         )}
 
-        {/* Binance USDⓈ-M public market data. */}
+        {/* Exchange-specific public market data. */}
         <div
           className="terminal-market-grid"
           style={{
@@ -986,8 +984,9 @@ export function TerminalDashboard({
           >
             <OrderBook
               symbol={activeSym}
+              exchange={marketExchange}
               markPrice={
-                positions?.find((p) => binanceSymbol(p.symbol) === activeSym)
+                positions?.find((p) => marketSymbol(p.symbol) === activeSym)
                   ?.entry_price
               }
             />
@@ -1002,7 +1001,7 @@ export function TerminalDashboard({
             }}
           >
             <div style={{ flex: 1, minHeight: 0 }}>
-              <KlineChart symbol={activeSym} fill />
+              <KlineChart symbol={activeSym} exchange={marketExchange} fill />
             </div>
           </div>
         </div>
@@ -1030,7 +1029,7 @@ export function TerminalDashboard({
                 title: tt('universe').toUpperCase(),
                 zh: tt('universe'),
                 items: candidateCoins
-                  .filter((symbol) => binanceSymbol(symbol))
+                  .filter((symbol) => marketSymbol(symbol))
                   .map((symbol) => ({ symbol, dir: dirFor(symbol) })),
               },
               {
@@ -1038,7 +1037,7 @@ export function TerminalDashboard({
                 title: tt('decision').toUpperCase(),
                 zh: tt('decision'),
                 items: (latest?.decisions ?? [])
-                  .filter((d) => binanceSymbol(d.symbol))
+                  .filter((d) => marketSymbol(d.symbol))
                   .map((d) => ({ symbol: d.symbol, dir: dirFor(d.symbol) })),
               },
               {
@@ -1239,9 +1238,7 @@ export function TerminalDashboard({
                                   borderRadius: 3,
                                   fontSize: 9,
                                   padding: '1px 5px',
-                                  cursor: closing
-                                    ? 'not-allowed'
-                                    : 'pointer',
+                                  cursor: closing ? 'not-allowed' : 'pointer',
                                   opacity: closing ? 0.5 : 1,
                                 }}
                               >

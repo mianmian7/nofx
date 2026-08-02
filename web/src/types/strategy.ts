@@ -108,13 +108,9 @@ export interface CoinSourceConfig {
   source_type:
     | 'binance_dynamic'
     | 'static'
-    | 'ai500'
-    | 'oi_top'
-    | 'oi_low'
     | 'hyper_all'
     | 'hyper_main'
     | 'hyper_rank'
-    | 'vergex_signal'
   binance_dynamic_limit?: number
   static_coins?: string[]
   /** User-selected Binance USDⓈ-M TradFi symbols. */
@@ -122,12 +118,6 @@ export interface CoinSourceConfig {
   /** When true, watchlist symbols are the AI candidate pool. */
   use_watchlist?: boolean
   excluded_coins?: string[] // List of excluded coins
-  use_ai500: boolean
-  ai500_limit?: number
-  use_oi_top: boolean
-  oi_top_limit?: number
-  use_oi_low: boolean
-  oi_low_limit?: number
   use_hyper_all?: boolean
   use_hyper_main?: boolean
   hyper_main_limit?: number
@@ -141,11 +131,6 @@ export interface CoinSourceConfig {
     | 'all'
   hyper_rank_direction?: 'gainers' | 'losers' | 'volume'
   hyper_rank_limit?: number
-  vergex_limit?: number
-  vergex_market_type?: string
-  vergex_chain?: string
-  vergex_liq_band?: string
-  // Note: API URLs are now built automatically using nofxos_api_key from IndicatorConfig
 }
 
 export interface IndicatorConfig {
@@ -167,29 +152,6 @@ export interface IndicatorConfig {
   boll_periods?: number[]
   external_data_sources?: ExternalDataSource[]
 
-  // ========== Unified NofxOS data source configuration ==========
-  // Unified NofxOS API Key - used for all NofxOS data sources
-  nofxos_api_key?: string
-
-  // Quant data sources (fund flow, open interest changes, price changes)
-  enable_quant_data?: boolean
-  enable_quant_oi?: boolean
-  enable_quant_netflow?: boolean
-
-  // OI ranking data (market open interest increase/decrease ranking)
-  enable_oi_ranking?: boolean
-  oi_ranking_duration?: string // "1h", "4h", "24h"
-  oi_ranking_limit?: number
-
-  // NetFlow ranking data (institutional/retail fund flow ranking)
-  enable_netflow_ranking?: boolean
-  netflow_ranking_duration?: string // "1h", "4h", "24h"
-  netflow_ranking_limit?: number
-
-  // Price ranking data (gainers/losers ranking)
-  enable_price_ranking?: boolean
-  price_ranking_duration?: string // "1h", "4h", "24h" or "1h,4h,24h"
-  price_ranking_limit?: number
 }
 
 export interface KlineConfig {

@@ -21,7 +21,7 @@ export interface Kline {
   closeTime: number
 }
 
-export interface BinanceDepthSnapshot {
+export interface DepthSnapshot {
   lastUpdateId: number
   E?: number
   T?: number
@@ -29,39 +29,7 @@ export interface BinanceDepthSnapshot {
   asks: [string, string][]
 }
 
-// Vergex net-flow market ranking (GET /api/vergex/flow-markets). Numeric fields
-// arrive as strings from the upstream API.
-export interface FlowMarketItem {
-  key: string
-  marketType: string
-  symbol: string
-  netFlow: string
-  buyNotional: string
-  sellNotional: string
-  trades: number
-  latestPrice: string
-}
-export interface FlowMarketsResponse {
-  data?: {
-    by?: string
-    window?: string
-    inflow?: FlowMarketItem[]
-    outflow?: FlowMarketItem[]
-  }
-}
-
-// Vergex signal ranking item (GET /api/vergex/signal-ranking).
-export interface SignalRankItem {
-  rank: number
-  symbol: string
-  market_type: string
-  bias: string // "bullish" | "bearish" | "neutral"
-  score: number
-  category?: string
-}
-export interface SignalRankingResponse {
-  items?: SignalRankItem[]
-}
+export type BinanceDepthSnapshot = DepthSnapshot
 
 export interface MarketSymbol {
   symbol: string
@@ -83,146 +51,6 @@ export interface SymbolListResponse {
   count: number
 }
 
-export interface VergexSignalItem {
-  rank?: number
-  symbol: string
-  market_type?: string
-  bias?: string
-  confidence?: number
-  score?: number
-  category?: string
-}
-
-export interface VergexSignalRankingResponse {
-  items: VergexSignalItem[]
-  raw?: unknown
-}
-
-export interface VergexDetailRequest {
-  marketType: string
-  symbol: string
-  chain?: string
-  liqBand?: string
-}
-
-export interface VergexSignalDimension {
-  key?: string
-  family?: string
-  label?: string
-  what?: string
-  kind?: string
-  direction?: string
-  strength?: string
-  percentile?: number
-  detail?: string
-}
-
-export interface VergexSignalLevels {
-  markPrice?: number
-  poc?: number
-  pocDistPct?: number
-  magnet?: number
-  magnetDistPct?: number
-  resistance?: number
-  resistanceDistPct?: number
-  support?: number
-  supportDistPct?: number
-  valueAreaHigh?: number
-  valueAreaLow?: number
-}
-
-export interface VergexSignalMetrics {
-  shortLiqAbove?: number
-  longLiqBelow?: number
-  longOverhangPnl?: number
-  shortOverhangPnl?: number
-  gLong?: number
-  gShort?: number
-  cascadeVulnPct?: number
-  top10Pct?: number
-  convexity?: number
-  includedPositions?: number
-  state?: string
-}
-
-export interface VergexSignalLabData {
-  market?: {
-    chain?: string
-    marketType?: string
-    marketId?: string
-    symbol?: string
-    displayName?: string
-    isActive?: boolean
-  }
-  band?: string
-  bias?: string
-  structureRead?: string
-  confidence?: string
-  dimensions?: VergexSignalDimension[]
-  levels?: VergexSignalLevels
-  metrics?: VergexSignalMetrics
-  compositeZ?: number
-  rank?: number
-  universeSize?: number
-}
-
-export interface VergexSignalLabResponse {
-  data?: VergexSignalLabData
-  meta?: unknown
-}
-
-export interface VergexHeatmapBin {
-  px?: number
-  bucketStartPrice?: number
-  bucketEndPrice?: number
-  longCost?: number
-  shortCost?: number
-  longLiq?: number
-  shortLiq?: number
-}
-
-export interface VergexHeatmapData {
-  market?: {
-    chain?: string
-    marketType?: string
-    marketId?: string
-    symbol?: string
-    displayName?: string
-    isActive?: boolean
-  }
-  markPrice?: number
-  binStep?: number
-  costAddrs?: number
-  liqAddrs?: number
-  bins?: VergexHeatmapBin[]
-  cost?: {
-    state?: string
-    reason?: string
-    totalPositions?: number
-    includedPositions?: number
-    excludedPositions?: number
-    weightSource?: string
-  }
-  liquidation?: {
-    state?: string
-    reason?: string
-  }
-}
-
-export interface VergexHeatmapResponse {
-  data?: VergexHeatmapData
-  meta?: unknown
-}
-
-function vergexDetailQuery(params: VergexDetailRequest) {
-  const query = new URLSearchParams()
-  query.set('marketType', params.marketType)
-  query.set('symbol', params.symbol)
-  query.set('chain', params.chain || 'mainnet')
-  query.set('liqBand', params.liqBand || '15')
-  return query.toString()
-}
-
 export const dataApi = {
   async getSymbols(exchange = 'binance'): Promise<SymbolListResponse> {
     const result = await httpClient.request<SymbolListResponse>(
@@ -231,43 +59,6 @@ export const dataApi = {
     )
     if (!result.success) throw new Error('Failed to fetch symbol list')
     return result.data || { exchange, symbols: [], count: 0 }
-  },
-
-  async getVergexSignalRanking(
-    limit = 30
-  ): Promise<VergexSignalRankingResponse> {
-    const result = await httpClient.get<VergexSignalRankingResponse>(
-      `${API_BASE}/vergex/signal-ranking?marketType=all&limit=${limit}`
-    )
-    if (!result.success)
-      throw new Error('Failed to fetch Claw402/Vergex signal ranking')
-    return result.data || { items: [] }
-  },
-
-  async getVergexSignalLab(
-    params: VergexDetailRequest
-  ): Promise<VergexSignalLabResponse> {
-    const result = await httpClient.request<VergexSignalLabResponse>(
-      `${API_BASE}/vergex/signal-lab?${vergexDetailQuery(params)}`,
-      { timeout: 90000 }
-    )
-    if (!result.success)
-      throw new Error(result.message || 'Failed to fetch Signal Lab')
-    return result.data || {}
-  },
-
-  async getVergexCostLiquidationHeatmap(
-    params: VergexDetailRequest
-  ): Promise<VergexHeatmapResponse> {
-    const result = await httpClient.request<VergexHeatmapResponse>(
-      `${API_BASE}/vergex/cost-liquidation-heatmap?${vergexDetailQuery(params)}`,
-      { timeout: 90000 }
-    )
-    if (!result.success)
-      throw new Error(
-        result.message || 'Failed to fetch cost/liquidation heatmap'
-      )
-    return result.data || {}
   },
 
   async getStatus(traderId?: string, silent?: boolean): Promise<SystemStatus> {
@@ -373,52 +164,23 @@ export const dataApi = {
   async getDepth(
     symbol: string,
     limit: 5 | 10 | 20 = 20,
+    exchangeOrSilent: string | boolean = 'binance',
     silent?: boolean
-  ): Promise<BinanceDepthSnapshot> {
-    const params = new URLSearchParams({ symbol, limit: String(limit) })
-    const result = await httpClient.request<BinanceDepthSnapshot>(
-      `${API_BASE}/depth?${params}`,
-      { silent }
-    )
-    if (!result.success) throw new Error('Failed to fetch Binance depth')
-    return result.data!
-  },
-
-  async getFlowMarkets(
-    aiModelId?: string,
-    chain = 'mainnet',
-    window = '1h',
-    limit = 25,
-    silent?: boolean
-  ): Promise<FlowMarketsResponse> {
-    const params = new URLSearchParams({ chain, window, limit: String(limit) })
-    if (aiModelId) params.set('ai_model_id', aiModelId)
-    const result = await httpClient.request<FlowMarketsResponse>(
-      `${API_BASE}/vergex/flow-markets?${params}`,
-      { silent }
-    )
-    if (!result.success) throw new Error('Failed to fetch flow markets')
-    return result.data!
-  },
-
-  async getSignalRanking(
-    aiModelId?: string,
-    chain = 'mainnet',
-    marketType = 'all',
-    limit = 25,
-    silent?: boolean
-  ): Promise<SignalRankingResponse> {
+  ): Promise<DepthSnapshot> {
+    const exchange =
+      typeof exchangeOrSilent === 'string' ? exchangeOrSilent : 'binance'
+    const requestSilent =
+      typeof exchangeOrSilent === 'boolean' ? exchangeOrSilent : silent
     const params = new URLSearchParams({
-      chain,
-      marketType,
+      symbol,
       limit: String(limit),
+      exchange,
     })
-    if (aiModelId) params.set('ai_model_id', aiModelId)
-    const result = await httpClient.request<SignalRankingResponse>(
-      `${API_BASE}/vergex/signal-ranking?${params}`,
-      { silent }
+    const result = await httpClient.request<DepthSnapshot>(
+      `${API_BASE}/depth?${params}`,
+      { silent: requestSilent }
     )
-    if (!result.success) throw new Error('Failed to fetch signal ranking')
+    if (!result.success) throw new Error(`Failed to fetch ${exchange} depth`)
     return result.data!
   },
 

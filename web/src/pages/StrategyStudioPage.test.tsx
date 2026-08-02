@@ -7,9 +7,9 @@ import { StrategyStudioPage } from './StrategyStudioPage'
 const apiMocks = vi.hoisted(() => ({
   getStrategies: vi.fn(),
   getSymbols: vi.fn(),
-  getVergexSignalRanking: vi.fn(),
   getModelConfigs: vi.fn(),
   createStrategy: vi.fn(),
+  updateStrategy: vi.fn(),
   startStrategyBacktest: vi.fn(),
   getStrategyBacktest: vi.fn(),
 }))
@@ -82,12 +82,10 @@ describe('StrategyStudioPage initial data policy', () => {
       updated_at: '',
       config: {},
     })
-    apiMocks.getVergexSignalRanking.mockRejectedValue(
-      new Error('paid upstream should not load on mount')
-    )
+    apiMocks.updateStrategy.mockResolvedValue({})
   })
 
-  it('loads the local Binance pool without calling the paid signal board', async () => {
+  it('loads the local Binance pool without calling a removed remote source', async () => {
     render(
       <MemoryRouter>
         <StrategyStudioPage />
@@ -98,7 +96,6 @@ describe('StrategyStudioPage initial data policy', () => {
     await waitFor(() =>
       expect(apiMocks.getSymbols).toHaveBeenCalledWith('binance')
     )
-    expect(apiMocks.getVergexSignalRanking).not.toHaveBeenCalled()
     expect(apiMocks.getModelConfigs).toHaveBeenCalledOnce()
     expect(
       await screen.findByRole('button', { name: 'Binance 动态候选' })
@@ -106,8 +103,8 @@ describe('StrategyStudioPage initial data policy', () => {
     expect(screen.getByRole('button', { name: '保存' })).toBeVisible()
     expect(screen.getByText('历史 AI 回放')).toBeVisible()
     expect(
-      screen.getByRole('button', { name: 'Claw402/Vergex（可选付费）' })
-    ).toBeVisible()
+      screen.queryByRole('button', { name: /remote signal source/i })
+    ).not.toBeInTheDocument()
   })
 
   it('exposes a new strategy button and keeps the local dynamic defaults', async () => {
@@ -380,9 +377,6 @@ describe('StrategyStudioPage initial data policy', () => {
   })
 
   it('persists the watchlist as the selected Binance AI candidate pool', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true })
-    vi.stubGlobal('fetch', fetchMock)
-
     render(
       <MemoryRouter>
         <StrategyStudioPage />
@@ -397,9 +391,8 @@ describe('StrategyStudioPage initial data policy', () => {
     fireEvent.click(screen.getByRole('button', { name: '启用为 AI 候选池' }))
     fireEvent.click(screen.getByRole('button', { name: '保存自选' }))
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce())
-    const init = fetchMock.mock.calls[0][1] as RequestInit
-    const body = JSON.parse(String(init.body))
+    await waitFor(() => expect(apiMocks.updateStrategy).toHaveBeenCalledOnce())
+    const body = apiMocks.updateStrategy.mock.calls[0][1]
     expect(body.config.ai_config.coin_source.watchlist).toEqual([
       'SKHYNIX',
       'QQQ',

@@ -187,6 +187,22 @@ describe('OrderBook', () => {
     expect(screen.getByText(/○ 同步中/)).toBeInTheDocument()
   })
 
+  it('polls the selected native venue without opening a Binance socket', async () => {
+    render(
+      <LanguageProvider>
+        <OrderBook symbol="BTC-USDT-SWAP" exchange="okx" />
+      </LanguageProvider>
+    )
+
+    await waitFor(() =>
+      expect(screen.getByText('4,119.06')).toBeInTheDocument()
+    )
+
+    expect(getDepthMock).toHaveBeenCalledWith('BTCUSDT', 20, 'okx', true)
+    expect(FakeWebSocket.instances).toHaveLength(0)
+    expect(screen.getByText(/OKX USDⓈ-M/)).toBeInTheDocument()
+  })
+
   it('ignores a stale WebSocket frame after the symbol changes', () => {
     const { rerender } = render(
       <LanguageProvider>

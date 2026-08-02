@@ -4,8 +4,9 @@ import { t } from '../../i18n/translations'
 import { api } from '../../lib/api'
 
 /**
- * OrderBook renders a live L2 depth ladder for a single instrument, streamed
- * directly from Binance USDⓈ-M Futures' public partial-depth stream.
+ * OrderBook renders an L2 depth ladder for a single instrument. Binance keeps
+ * its public partial-depth stream; OKX and Bitget use REST polling in the
+ * first unified-market-data phase.
  */
 
 const BINANCE_WS = 'wss://fstream.binance.com/ws'
@@ -25,9 +26,25 @@ interface BookState {
   asks: Level[]
 }
 
-function binanceSymbol(raw: string): string {
-  const normalized = raw.toUpperCase().trim()
-  return /^[A-Z0-9]+USDT$/.test(normalized) ? normalized : 'BTCUSDT'
+function canonicalSymbol(raw: string): string {
+  const normalized = raw
+    .toUpperCase()
+    .trim()
+    .replace(/[-_]/g, '')
+    .replace(/(SWAP|PERP)$/, '')
+  if (normalized.endsWith('USDT')) return normalized
+  return normalized ? `${normalized}USDT` : 'BTCUSDT'
+}
+
+function exchangeLabel(exchange: string): string {
+  switch (exchange) {
+    case 'okx':
+      return 'OKX'
+    case 'bitget':
+      return 'Bitget'
+    default:
+      return 'Binance'
+  }
 }
 
 function fmtPx(px: number, decimals?: number): string {
@@ -69,14 +86,20 @@ function fmtSz(sz: number): string {
 interface OrderBookProps {
   /** raw business symbol (e.g. position symbol or candidate coin) */
   symbol: string
+  exchange?: string
   /** optional entry price to mark the user's position level on the ladder */
   markPrice?: number
 }
 
-export function OrderBook({ symbol, markPrice }: OrderBookProps) {
+export function OrderBook({
+  symbol,
+  exchange = 'binance',
+  markPrice,
+}: OrderBookProps) {
   const { language } = useLanguage()
   const tt = (key: string) => t(`terminalDashboard.${key}`, language)
-  const coin = useMemo(() => binanceSymbol(symbol || ''), [symbol])
+  const venue = exchange.toLowerCase().trim() || 'binance'
+  const coin = useMemo(() => canonicalSymbol(symbol || ''), [symbol])
   const [book, setBook] = useState<BookState | null>(null)
   const [status, setStatus] = useState<'connecting' | 'live' | 'down'>(
     'connecting'
@@ -98,28 +121,43 @@ export function OrderBook({ symbol, markPrice }: OrderBookProps) {
     let active = true
     setBook(null)
     setStatus('connecting')
-    api
-      .getDepth(coin, 20, true)
-      .then((snapshot) => {
-        if (!active) return
-        setBook({
-          coin,
-          bids: toLevels(snapshot.bids),
-          asks: toLevels(snapshot.asks),
+    const refresh = () => {
+      const depthRequest =
+        venue === 'binance'
+          ? api.getDepth(coin, 20, true)
+          : api.getDepth(coin, 20, venue, true)
+      depthRequest
+        .then((snapshot) => {
+          if (!active) return
+          setBook({
+            coin,
+            bids: toLevels(snapshot.bids),
+            asks: toLevels(snapshot.asks),
+          })
+          if (venue !== 'binance') setStatus('live')
         })
-      })
-      .catch(() => {
-        // WebSocket remains the primary live source; REST is a seed/fallback.
-      })
+        .catch(() => {
+          // Keep the last successful snapshot visible during transient outages.
+          if (active && !book) setStatus('down')
+        })
+    }
+    refresh()
+    if (venue !== 'binance') {
+      const intervalId = setInterval(refresh, 5000)
+      return () => {
+        active = false
+        clearInterval(intervalId)
+      }
+    }
     return () => {
       active = false
     }
-  }, [coin])
+  }, [coin, venue])
 
   // live L2 stream
   const pending = useRef<BookState | null>(null)
   useEffect(() => {
-    if (!coin) return
+    if (!coin || venue !== 'binance') return
     pending.current = null
     let ws: WebSocket | null = null
     let raf: number | null = null
@@ -179,7 +217,7 @@ export function OrderBook({ symbol, markPrice }: OrderBookProps) {
       if (retry) clearTimeout(retry)
       ws?.close()
     }
-  }, [coin])
+  }, [coin, venue])
 
   const view = useMemo(() => {
     if (!book) return null
@@ -245,7 +283,9 @@ export function OrderBook({ symbol, markPrice }: OrderBookProps) {
         <span className="tm-px" style={{ fontSize: 11 }}>
           {tt('orderBook')}
         </span>
-        <span className="tm-sc">Binance USDⓈ-M · {coin}</span>
+        <span className="tm-sc">
+          {exchangeLabel(venue)} USDⓈ-M · {coin}
+        </span>
         <span
           role="group"
           aria-label={tt('updateMode')}
@@ -294,8 +334,8 @@ export function OrderBook({ symbol, markPrice }: OrderBookProps) {
       {!view ? (
         <div className="tm-sc" style={{ padding: '16px 0' }}>
           {language === 'zh'
-            ? '正在连接 Binance 行情…'
-            : 'Connecting to Binance market data…'}
+            ? `正在连接 ${exchangeLabel(venue)} 行情…`
+            : `Connecting to ${exchangeLabel(venue)} market data…`}
         </div>
       ) : (
         <div style={{ fontSize: 11 }}>
