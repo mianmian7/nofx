@@ -9,11 +9,8 @@ import (
 	"nofx/logger"
 	"nofx/market"
 	"nofx/provider/hyperliquid"
-	"nofx/provider/nofxos"
-	"nofx/provider/vergex"
 	"nofx/security"
 	"nofx/store"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -57,15 +54,7 @@ type AccountInfo struct {
 // CandidateCoin candidate coin (from coin pool)
 type CandidateCoin struct {
 	Symbol  string   `json:"symbol"`
-	Sources []string `json:"sources"` // Sources: "ai500" and/or "oi_top"
-}
-
-// OITopData open interest growth top data (for AI decision reference)
-type OITopData struct {
-	Rank              int     // OI Top ranking
-	OIDeltaPercent    float64 // Open interest change percentage (1 hour)
-	OIDeltaValue      float64 // Open interest change value
-	PriceDeltaPercent float64 // Price change percentage
+	Sources []string `json:"sources"`
 }
 
 // TradingStats trading statistics (for AI input)
@@ -106,18 +95,12 @@ type Context struct {
 	RecentOrders   []RecentOrder                      `json:"recent_orders,omitempty"`
 	MarketDataMap  map[string]*market.Data            `json:"-"`
 	MultiTFMarket  map[string]map[string]*market.Data `json:"-"`
-	// RequireFreshMarketData is set by live Binance traders. When enabled, the
-	// strategy fetcher fails closed instead of using a public K-line snapshot
-	// that was retained through an upstream outage.
-	RequireFreshMarketData bool                              `json:"-"`
-	MarketDataFetchedFresh bool                              `json:"-"`
-	OITopDataMap           map[string]*OITopData             `json:"-"`
-	QuantDataMap           map[string]*QuantData             `json:"-"`
-	VergexDataMap          map[string]*vergex.MarketAnalysis `json:"-"`
-	OIRankingData          *nofxos.OIRankingData             `json:"-"` // Market-wide OI ranking data
-	NetFlowRankingData     *nofxos.NetFlowRankingData        `json:"-"` // Market-wide fund flow ranking data
-	PriceRankingData       *nofxos.PriceRankingData          `json:"-"` // Market-wide price gainers/losers
-	Timeframes             []string                          `json:"-"`
+	// RequireFreshMarketData is set by live traders. When enabled, the strategy
+	// fetcher fails closed instead of using a public K-line snapshot that was
+	// retained through an upstream outage.
+	RequireFreshMarketData bool     `json:"-"`
+	MarketDataFetchedFresh bool     `json:"-"`
+	Timeframes             []string `json:"-"`
 }
 
 // Decision AI trading decision
@@ -157,36 +140,6 @@ type FullDecision struct {
 	AIRequestDurationMs int64      `json:"ai_request_duration_ms,omitempty"`
 }
 
-// QuantData quantitative data structure (fund flow, position changes, price changes)
-type QuantData struct {
-	Symbol      string             `json:"symbol"`
-	Price       float64            `json:"price"`
-	Netflow     *NetflowData       `json:"netflow,omitempty"`
-	OI          map[string]*OIData `json:"oi,omitempty"`
-	PriceChange map[string]float64 `json:"price_change,omitempty"`
-}
-
-type NetflowData struct {
-	Institution *FlowTypeData `json:"institution,omitempty"`
-	Personal    *FlowTypeData `json:"personal,omitempty"`
-}
-
-type FlowTypeData struct {
-	Future map[string]float64 `json:"future,omitempty"`
-	Spot   map[string]float64 `json:"spot,omitempty"`
-}
-
-type OIData struct {
-	CurrentOI float64                 `json:"current_oi"`
-	Delta     map[string]*OIDeltaData `json:"delta,omitempty"`
-}
-
-type OIDeltaData struct {
-	OIDelta        float64 `json:"oi_delta"`
-	OIDeltaValue   float64 `json:"oi_delta_value"`
-	OIDeltaPercent float64 `json:"oi_delta_percent"`
-}
-
 // ============================================================================
 // StrategyEngine - Core Strategy Execution Engine
 // ============================================================================
@@ -194,103 +147,47 @@ type OIDeltaData struct {
 // StrategyEngine strategy execution engine
 type StrategyEngine struct {
 	config             *store.StrategyConfig
-	nofxosClient       *nofxos.Client
-	vergexClient       *vergex.Client
-	vergexRankingCache map[string]*vergex.SignalRankItem
 	binanceCandidates  func(limit int) ([]string, error)
+	marketDataProvider market.MarketDataProvider
+	exchange           string
+	contractCacheMu    sync.Mutex
+	contractCache      map[string]*market.ContractSpec
+	contractCacheAt    map[string]time.Time
 }
 
-// NewStrategyEngine creates strategy execution engine.
-// claw402WalletKey is optional — if provided, nofxos data requests are routed through claw402.
-func NewStrategyEngine(config *store.StrategyConfig, claw402WalletKey ...string) *StrategyEngine {
-	binanceClient := market.NewAPIClient()
-	binanceCandidates := binanceClient.GetBinanceDynamicSymbols
-	// External ranking data is opt-in. A direct NofxOS client is created only
-	// when the strategy contains a user-provided key; otherwise an explicitly
-	// selected paid source may use a Claw402 wallet below.
-	apiKey := strings.TrimSpace(config.Indicators.NofxOSAPIKey)
-	var client *nofxos.Client
-	if apiKey != "" {
-		client = nofxos.NewClient(nofxos.DefaultBaseURL, apiKey)
-	}
+// NewStrategyEngine creates a Binance-backed strategy engine for backwards
+// compatibility with callers that do not specify an exchange.
+func NewStrategyEngine(config *store.StrategyConfig) *StrategyEngine {
+	return NewStrategyEngineForExchange(config, "binance")
+}
 
-	// If claw402 wallet key is provided (from trader's AI config), route through claw402
-	walletKey := ""
-	if len(claw402WalletKey) > 0 {
-		walletKey = claw402WalletKey[0]
+// NewStrategyEngineForExchange creates a strategy engine whose public market
+// data and contract checks use the requested exchange. It deliberately keeps
+// the requested exchange when provider construction fails instead of silently
+// switching analysis to Binance.
+func NewStrategyEngineForExchange(config *store.StrategyConfig, exchange string) *StrategyEngine {
+	normalizedExchange := strings.ToLower(strings.TrimSpace(exchange))
+	if normalizedExchange == "" {
+		normalizedExchange = "binance"
 	}
-	if walletKey == "" && strategyUsesClaw402Data(config) && apiKey == "" {
-		walletKey = os.Getenv("CLAW402_WALLET_KEY")
+	var binanceCandidates func(limit int) ([]string, error)
+	if normalizedExchange == "binance" {
+		binanceClient := market.NewAPIClient()
+		binanceCandidates = binanceClient.GetBinanceDynamicSymbols
 	}
-	if walletKey != "" && strategyUsesClaw402Data(config) {
-		if client == nil {
-			client = nofxos.NewClient(nofxos.DefaultBaseURL, "")
-		}
-		claw402URL := os.Getenv("CLAW402_URL")
-		if claw402URL == "" {
-			claw402URL = "https://claw402.ai"
-		}
-		claw402Client, err := nofxos.NewClaw402DataClient(claw402URL, walletKey, &logger.MCPLogger{})
-		if err == nil {
-			client.SetClaw402(claw402Client)
-			logger.Infof("🔗 NofxOS data routed through claw402 (%s)", claw402URL)
-		} else {
-			client = nil
-			logger.Warnf("⚠️ Failed to init claw402 data client: %v (external ranking data disabled)", err)
-		}
-
-		vergexClient, err := vergex.NewClient(claw402URL, walletKey, &logger.MCPLogger{})
-		if err == nil {
-			logger.Infof("🔗 Vergex signals routed through claw402 (%s)", claw402URL)
-		} else {
-			logger.Warnf("⚠️ Failed to init Vergex claw402 client: %v", err)
-		}
-		return &StrategyEngine{
-			config:             config,
-			nofxosClient:       client,
-			vergexClient:       vergexClient,
-			vergexRankingCache: make(map[string]*vergex.SignalRankItem),
-			binanceCandidates:  binanceCandidates,
-		}
+	marketDataProvider, providerErr := market.NewMarketDataProvider(normalizedExchange)
+	if providerErr != nil {
+		logger.Warnf("Unable to create %s market provider; keeping the requested exchange unavailable: %v", normalizedExchange, providerErr)
+		marketDataProvider = market.NewUnavailableMarketDataProvider(normalizedExchange, providerErr)
 	}
-
 	return &StrategyEngine{
 		config:             config,
-		nofxosClient:       client,
-		vergexRankingCache: make(map[string]*vergex.SignalRankItem),
 		binanceCandidates:  binanceCandidates,
+		marketDataProvider: marketDataProvider,
+		exchange:           normalizedExchange,
+		contractCache:      make(map[string]*market.ContractSpec),
+		contractCacheAt:    make(map[string]time.Time),
 	}
-}
-
-func strategyUsesClaw402Data(config *store.StrategyConfig) bool {
-	if config == nil {
-		return false
-	}
-	source := config.CoinSource
-	switch source.SourceType {
-	case "vergex_signal", "ai500", "oi_top", "oi_low":
-		return true
-	case "mixed":
-		return source.UseAI500 || source.UseOITop || source.UseOILow
-	default:
-		return false
-	}
-}
-
-func (e *StrategyEngine) usesHyperliquidNativeUniverse() bool {
-	if e == nil || e.config == nil {
-		return false
-	}
-	source := e.config.CoinSource
-	if source.SourceType == "hyper_all" || source.SourceType == "hyper_main" || source.SourceType == "hyper_rank" || source.SourceType == "vergex_signal" || source.UseHyperAll || source.UseHyperMain {
-		return true
-	}
-	for _, symbol := range source.StaticCoins {
-		if market.IsXyzDexAsset(symbol) {
-			return true
-		}
-	}
-	return false
 }
 
 // GetRiskControlConfig gets risk control configuration
@@ -314,6 +211,95 @@ func (e *StrategyEngine) GetLanguage() Language {
 // GetConfig gets complete strategy configuration
 func (e *StrategyEngine) GetConfig() *store.StrategyConfig {
 	return e.config
+}
+
+// MarketDataProvider returns the exchange-specific public market-data source
+// used by strategy analysis and paper trading.
+func (e *StrategyEngine) MarketDataProvider() market.MarketDataProvider {
+	if e == nil {
+		return nil
+	}
+	return e.marketDataProvider
+}
+
+func (e *StrategyEngine) Exchange() string {
+	if e == nil || strings.TrimSpace(e.exchange) == "" {
+		return "binance"
+	}
+	return e.exchange
+}
+
+func (e *StrategyEngine) normalizeCandidateSymbol(symbol string) string {
+	if e != nil && e.marketDataProvider != nil {
+		return e.marketDataProvider.NormalizeSymbol(symbol)
+	}
+	return market.NormalizeForExchange("binance", symbol)
+}
+
+func (e *StrategyEngine) isHyperliquidExchange() bool {
+	if e == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(e.exchange)) {
+	case "hyperliquid", "hyperliquid-xyz", "xyz":
+		return true
+	default:
+		return false
+	}
+}
+
+// ValidateCandidateContract verifies that a symbol is an active USDT
+// perpetual on a native unified venue. Legacy CoinAnk-only venues retain
+// their existing K-line validation path until native contract metadata exists.
+func (e *StrategyEngine) ValidateCandidateContract(symbol string) (*market.ContractSpec, error) {
+	if e == nil || e.marketDataProvider == nil {
+		return nil, fmt.Errorf("strategy market-data provider is unavailable")
+	}
+	if e.Exchange() != "binance" && e.Exchange() != "okx" && e.Exchange() != "bitget" {
+		return nil, nil
+	}
+	normalizedSymbol := e.marketDataProvider.NormalizeSymbol(symbol)
+	const contractCacheTTL = 10 * time.Minute
+	e.contractCacheMu.Lock()
+	if e.contractCache == nil {
+		e.contractCache = make(map[string]*market.ContractSpec)
+	}
+	if e.contractCacheAt == nil {
+		e.contractCacheAt = make(map[string]time.Time)
+	}
+	if cachedSpec, found := e.contractCache[normalizedSymbol]; found && time.Since(e.contractCacheAt[normalizedSymbol]) < contractCacheTTL {
+		e.contractCacheMu.Unlock()
+		return cachedSpec, nil
+	}
+	e.contractCacheMu.Unlock()
+
+	spec, err := e.marketDataProvider.GetContractSpec(normalizedSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("verify %s contract %s: %w", e.Exchange(), normalizedSymbol, err)
+	}
+	if spec == nil {
+		return nil, fmt.Errorf("verify %s contract %s: empty contract metadata", e.Exchange(), normalizedSymbol)
+	}
+	if spec.Status != "" && !isActiveContractStatus(spec.Status) {
+		return nil, fmt.Errorf("%s contract %s is not active (status=%s)", e.Exchange(), normalizedSymbol, spec.Status)
+	}
+	if spec.QuoteAsset != "" && !strings.EqualFold(spec.QuoteAsset, "USDT") {
+		return nil, fmt.Errorf("%s contract %s settles in %s, not USDT", e.Exchange(), normalizedSymbol, spec.QuoteAsset)
+	}
+	e.contractCacheMu.Lock()
+	e.contractCache[normalizedSymbol] = spec
+	e.contractCacheAt[normalizedSymbol] = time.Now()
+	e.contractCacheMu.Unlock()
+	return spec, nil
+}
+
+func isActiveContractStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "trading", "live", "normal", "enabled", "online":
+		return true
+	default:
+		return false
+	}
 }
 
 // ============================================================================
@@ -346,67 +332,10 @@ func (e *StrategyEngine) GetCandidateCoins() ([]CandidateCoin, error) {
 
 		return e.filterExcludedCoins(candidates), nil
 
-	case "ai500":
-		// Check use_ai500 flag; if false, fall back to static coins
-		if !coinSource.UseAI500 {
-			logger.Infof("⚠️  source_type is 'ai500' but use_ai500 is false, falling back to static coins")
-			for _, symbol := range coinSource.StaticCoins {
-				symbol = market.NormalizeForExchange("binance", symbol)
-				candidates = append(candidates, CandidateCoin{
-					Symbol:  symbol,
-					Sources: []string{"static"},
-				})
-			}
-			return e.filterExcludedCoins(candidates), nil
-		}
-		coins, err := e.getAI500Coins(coinSource.AI500Limit)
-		if err != nil {
-			return nil, err
-		}
-		// Empty list is a normal condition, return directly
-		return e.filterExcludedCoins(coins), nil
-
-	case "oi_top":
-		// Check use_oi_top flag; if false, fall back to static coins
-		if !coinSource.UseOITop {
-			logger.Infof("⚠️  source_type is 'oi_top' but use_oi_top is false, falling back to static coins")
-			for _, symbol := range coinSource.StaticCoins {
-				symbol = market.NormalizeForExchange("binance", symbol)
-				candidates = append(candidates, CandidateCoin{
-					Symbol:  symbol,
-					Sources: []string{"static"},
-				})
-			}
-			return e.filterExcludedCoins(candidates), nil
-		}
-		coins, err := e.getOITopCoins(coinSource.OITopLimit)
-		if err != nil {
-			return nil, err
-		}
-		// Empty list is a normal condition, return directly
-		return e.filterExcludedCoins(coins), nil
-
-	case "oi_low":
-		// OI decrease ranking, suitable for short positions
-		if !coinSource.UseOILow {
-			logger.Infof("⚠️  source_type is 'oi_low' but use_oi_low is false, falling back to static coins")
-			for _, symbol := range coinSource.StaticCoins {
-				symbol = market.NormalizeForExchange("binance", symbol)
-				candidates = append(candidates, CandidateCoin{
-					Symbol:  symbol,
-					Sources: []string{"static"},
-				})
-			}
-			return e.filterExcludedCoins(candidates), nil
-		}
-		coins, err := e.getOILowCoins(coinSource.OILowLimit)
-		if err != nil {
-			return nil, err
-		}
-		// Empty list is a normal condition, return directly
-		return e.filterExcludedCoins(coins), nil
-
 	case "hyper_all":
+		if !e.isHyperliquidExchange() {
+			return nil, fmt.Errorf("Hyperliquid candidate source requires a Hyperliquid trader, current exchange is %s", e.Exchange())
+		}
 		// All Hyperliquid perp coins
 		if !coinSource.UseHyperAll {
 			logger.Infof("⚠️  source_type is 'hyper_all' but use_hyper_all is false, falling back to static coins")
@@ -426,6 +355,9 @@ func (e *StrategyEngine) GetCandidateCoins() ([]CandidateCoin, error) {
 		return e.filterExcludedCoins(coins), nil
 
 	case "hyper_main":
+		if !e.isHyperliquidExchange() {
+			return nil, fmt.Errorf("Hyperliquid candidate source requires a Hyperliquid trader, current exchange is %s", e.Exchange())
+		}
 		// Top N Hyperliquid coins by 24h volume
 		if !coinSource.UseHyperMain {
 			logger.Infof("⚠️  source_type is 'hyper_main' but use_hyper_main is false, falling back to static coins")
@@ -445,60 +377,19 @@ func (e *StrategyEngine) GetCandidateCoins() ([]CandidateCoin, error) {
 		return e.filterExcludedCoins(coins), nil
 
 	case "hyper_rank":
+		if !e.isHyperliquidExchange() {
+			return nil, fmt.Errorf("Hyperliquid candidate source requires a Hyperliquid trader, current exchange is %s", e.Exchange())
+		}
 		coins, err := e.getHyperRankCoins(coinSource.HyperRankCategory, coinSource.HyperRankDirection, coinSource.HyperRankLimit)
 		if err != nil {
 			return nil, err
 		}
 		return e.filterExcludedCoins(coins), nil
 
-	case "vergex_signal":
-		coins, err := e.getVergexSignalCoins(
-			coinSource.VergexLimit,
-			coinSource.VergexMarketType,
-			coinSource.VergexChain,
-			coinSource.VergexLiqBand,
-			coinSource.HyperRankCategory,
-			coinSource.StaticCoins,
-		)
-		if err != nil {
-			return nil, err
-		}
-		return e.filterExcludedCoins(coins), nil
-
 	case "mixed":
-		if coinSource.UseAI500 {
-			poolCoins, err := e.getAI500Coins(coinSource.AI500Limit)
-			if err != nil {
-				logger.Infof("⚠️  Failed to get AI500 coins: %v", err)
-			} else {
-				for _, coin := range poolCoins {
-					symbolSources[coin.Symbol] = append(symbolSources[coin.Symbol], "ai500")
-				}
-			}
+		if (coinSource.UseHyperAll || coinSource.UseHyperMain) && !e.isHyperliquidExchange() {
+			return nil, fmt.Errorf("mixed strategy enables Hyperliquid candidates but trader exchange is %s", e.Exchange())
 		}
-
-		if coinSource.UseOITop {
-			oiCoins, err := e.getOITopCoins(coinSource.OITopLimit)
-			if err != nil {
-				logger.Infof("⚠️  Failed to get OI Top: %v", err)
-			} else {
-				for _, coin := range oiCoins {
-					symbolSources[coin.Symbol] = append(symbolSources[coin.Symbol], "oi_top")
-				}
-			}
-		}
-
-		if coinSource.UseOILow {
-			oiLowCoins, err := e.getOILowCoins(coinSource.OILowLimit)
-			if err != nil {
-				logger.Infof("⚠️  Failed to get OI Low: %v", err)
-			} else {
-				for _, coin := range oiLowCoins {
-					symbolSources[coin.Symbol] = append(symbolSources[coin.Symbol], "oi_low")
-				}
-			}
-		}
-
 		if coinSource.UseHyperAll {
 			hyperCoins, err := e.getHyperAllCoins()
 			if err != nil {
@@ -544,18 +435,24 @@ func (e *StrategyEngine) GetCandidateCoins() ([]CandidateCoin, error) {
 }
 
 func (e *StrategyEngine) getBinanceDynamicCoins(limit int) ([]CandidateCoin, error) {
-	if e.binanceCandidates == nil {
-		return nil, fmt.Errorf("Binance dynamic candidate source is unavailable")
+	var symbols []string
+	var err error
+	if e.Exchange() != "binance" && e.marketDataProvider != nil {
+		symbols, err = e.marketDataProvider.ListPerpetualSymbols(limit)
+	} else {
+		if e.binanceCandidates == nil {
+			return nil, fmt.Errorf("Binance dynamic candidate source is unavailable")
+		}
+		symbols, err = e.binanceCandidates(limit)
 	}
-	symbols, err := e.binanceCandidates(limit)
 	if err != nil {
-		return nil, fmt.Errorf("load Binance dynamic candidates: %w", err)
+		return nil, fmt.Errorf("load %s dynamic candidates: %w", e.Exchange(), err)
 	}
 	candidates := make([]CandidateCoin, 0, len(symbols))
 	for _, symbol := range symbols {
 		candidates = append(candidates, CandidateCoin{
-			Symbol:  market.NormalizeForExchange("binance", symbol),
-			Sources: []string{"binance_dynamic"},
+			Symbol:  e.normalizeCandidateSymbol(symbol),
+			Sources: []string{e.Exchange() + "_dynamic"},
 		})
 	}
 	return candidates, nil
@@ -563,105 +460,25 @@ func (e *StrategyEngine) getBinanceDynamicCoins(limit int) ([]CandidateCoin, err
 
 // filterExcludedCoins removes excluded coins from the candidates list
 func (e *StrategyEngine) filterExcludedCoins(candidates []CandidateCoin) []CandidateCoin {
-	if len(e.config.CoinSource.ExcludedCoins) == 0 {
-		return candidates
-	}
-
 	// Build excluded set for O(1) lookup
 	excluded := make(map[string]bool)
 	for _, coin := range e.config.CoinSource.ExcludedCoins {
-		normalized := market.NormalizeForExchange("binance", coin)
+		normalized := e.normalizeCandidateSymbol(coin)
 		excluded[normalized] = true
 	}
 
 	// Filter out excluded coins
 	filtered := make([]CandidateCoin, 0, len(candidates))
-	for _, c := range candidates {
-		if !excluded[c.Symbol] {
-			filtered = append(filtered, c)
+	for _, candidate := range candidates {
+		candidate.Symbol = e.normalizeCandidateSymbol(candidate.Symbol)
+		if !excluded[candidate.Symbol] {
+			filtered = append(filtered, candidate)
 		} else {
-			logger.Infof("🚫 Excluded coin: %s", c.Symbol)
+			logger.Infof("🚫 Excluded coin: %s", candidate.Symbol)
 		}
 	}
 
 	return filtered
-}
-
-func (e *StrategyEngine) getAI500Coins(limit int) ([]CandidateCoin, error) {
-	if e.nofxosClient == nil {
-		return nil, fmt.Errorf("AI500 requires an explicit NofxOS API key or Claw402 data wallet")
-	}
-	if limit <= 0 {
-		limit = 30
-	}
-
-	symbols, err := e.nofxosClient.GetTopRatedCoins(limit)
-	if err != nil {
-		return nil, err
-	}
-
-	var candidates []CandidateCoin
-	for _, symbol := range symbols {
-		candidates = append(candidates, CandidateCoin{
-			Symbol:  symbol,
-			Sources: []string{"ai500"},
-		})
-	}
-	return candidates, nil
-}
-
-func (e *StrategyEngine) getOITopCoins(limit int) ([]CandidateCoin, error) {
-	if e.nofxosClient == nil {
-		return nil, fmt.Errorf("OI ranking requires an explicit NofxOS API key or Claw402 data wallet")
-	}
-	if limit <= 0 {
-		limit = 10
-	}
-
-	positions, err := e.nofxosClient.GetOITopPositions()
-	if err != nil {
-		return nil, err
-	}
-
-	var candidates []CandidateCoin
-	for i, pos := range positions {
-		if i >= limit {
-			break
-		}
-		symbol := market.Normalize(pos.Symbol)
-		candidates = append(candidates, CandidateCoin{
-			Symbol:  symbol,
-			Sources: []string{"oi_top"},
-		})
-	}
-	return candidates, nil
-}
-
-func (e *StrategyEngine) getOILowCoins(limit int) ([]CandidateCoin, error) {
-	if e.nofxosClient == nil {
-		return nil, fmt.Errorf("OI ranking requires an explicit NofxOS API key or Claw402 data wallet")
-	}
-	if limit <= 0 {
-		limit = 10
-	}
-
-	positions, err := e.nofxosClient.GetOILowPositions()
-	if err != nil {
-		return nil, err
-	}
-
-	var candidates []CandidateCoin
-	for i, pos := range positions {
-		if i >= limit {
-			break
-		}
-		symbol := market.Normalize(pos.Symbol)
-		candidates = append(candidates, CandidateCoin{
-			Symbol:  symbol,
-			Sources: []string{"oi_low"},
-		})
-	}
-	return candidates, nil
 }
 
 // getHyperAllCoins returns all available Hyperliquid perpetual coins
@@ -794,213 +611,6 @@ func (e *StrategyEngine) getHyperRankCoins(category, direction string, limit int
 	return candidates, nil
 }
 
-func (e *StrategyEngine) getVergexSignalCoins(limit int, marketType, chain, liqBand, category string, selectedSymbols []string) ([]CandidateCoin, error) {
-	if e.vergexClient == nil {
-		return nil, fmt.Errorf("vergex signal source requires a configured claw402 wallet")
-	}
-	if marketType == "" {
-		marketType = vergex.DefaultMarketType
-	}
-	chain = vergex.QueryChain(chain)
-	if limit <= 0 {
-		limit = 5
-	}
-	if limit > store.MaxCandidateCoins {
-		limit = store.MaxCandidateCoins
-	}
-	category = strings.ToLower(strings.TrimSpace(category))
-
-	ranking, err := e.vergexClient.GetSignalRanking(context.Background(), vergex.Query{
-		Chain:   chain,
-		LiqBand: liqBand,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch Vergex signal ranking: %w", err)
-	}
-
-	rankedItems := vergex.FilterSignalRankingItems(ranking.Items, marketType, store.MaxCandidateCoins)
-	if len(rankedItems) == 0 && strings.TrimSpace(chain) != "" {
-		fallbackRanking, fallbackErr := e.vergexClient.GetSignalRanking(context.Background(), vergex.Query{
-			LiqBand: liqBand,
-		})
-		if fallbackErr == nil {
-			fallbackItems := vergex.FilterSignalRankingItems(fallbackRanking.Items, marketType, store.MaxCandidateCoins)
-			if len(fallbackItems) > 0 {
-				logger.Infof("✅ Vergex signal ranking returned TradeFi items after retrying without chain filter (chain=%s)", chain)
-				ranking = fallbackRanking
-				rankedItems = fallbackItems
-			}
-		} else {
-			logger.Warnf("⚠️ Vergex signal ranking retry without chain failed: %v", fallbackErr)
-		}
-	}
-	e.vergexRankingCache = make(map[string]*vergex.SignalRankItem, len(rankedItems))
-	for _, item := range rankedItems {
-		itemCopy := item
-		if symbol := vergex.TradableSymbolForMarket(item.MarketType, item.Symbol); symbol != "" {
-			e.vergexRankingCache[symbol] = &itemCopy
-		}
-	}
-
-	if len(selectedSymbols) > 0 {
-		candidates := make([]CandidateCoin, 0, minInt(len(selectedSymbols), limit))
-		seen := make(map[string]bool)
-		for _, raw := range selectedSymbols {
-			symbol := vergex.TradableSymbolForMarket(marketType, raw)
-			if symbol == "" || seen[symbol] {
-				continue
-			}
-			candidates = append(candidates, CandidateCoin{
-				Symbol:  symbol,
-				Sources: []string{"vergex_signal"},
-			})
-			seen[symbol] = true
-			if len(candidates) >= limit {
-				break
-			}
-		}
-		if len(candidates) == 0 {
-			return nil, fmt.Errorf("selected Claw402 symbols are not tradable %s items", marketType)
-		}
-		logger.Infof("✅ Loaded %d selected Vergex candidates (%s)", len(candidates), marketType)
-		return candidates, nil
-	}
-
-	// Direction-balanced selection: interleave the top bullish and top bearish
-	// signals so the candidate universe carries BOTH long and short ideas every
-	// cycle (instead of filling up with whichever bias ranks highest). This is
-	// what lets the AI actually judge — and trade — both directions.
-	var bullItems, bearItems, otherItems []vergex.SignalRankItem
-	for _, item := range rankedItems {
-		if category != "" && category != "all" && item.Category != category {
-			continue
-		}
-		switch strings.ToLower(strings.TrimSpace(item.Bias)) {
-		case "bearish", "short", "sell":
-			bearItems = append(bearItems, item)
-		case "bullish", "long", "buy":
-			bullItems = append(bullItems, item)
-		default:
-			otherItems = append(otherItems, item)
-		}
-	}
-	items := make([]vergex.SignalRankItem, 0, limit)
-	bi, ri, oi := 0, 0, 0
-	for len(items) < limit {
-		progressed := false
-		if bi < len(bullItems) {
-			items = append(items, bullItems[bi])
-			bi++
-			progressed = true
-			if len(items) >= limit {
-				break
-			}
-		}
-		if ri < len(bearItems) {
-			items = append(items, bearItems[ri])
-			ri++
-			progressed = true
-			if len(items) >= limit {
-				break
-			}
-		}
-		if !progressed {
-			if oi < len(otherItems) {
-				items = append(items, otherItems[oi])
-				oi++
-			} else {
-				break
-			}
-		}
-	}
-	if len(items) == 0 {
-		if category != "" && category != "all" {
-			return nil, fmt.Errorf("vergex signal ranking returned no tradable %s items in category %s", marketType, category)
-		}
-		return nil, fmt.Errorf("vergex signal ranking returned no tradable %s items", marketType)
-	}
-
-	candidates := make([]CandidateCoin, 0, len(items))
-	for _, item := range items {
-		itemCopy := item
-		symbol := vergex.TradableSymbolForMarket(item.MarketType, item.Symbol)
-		if symbol == "" {
-			continue
-		}
-		e.vergexRankingCache[symbol] = &itemCopy
-		candidates = append(candidates, CandidateCoin{
-			Symbol:  symbol,
-			Sources: []string{"vergex_signal"},
-		})
-	}
-	logger.Infof("✅ Loaded %d Vergex signal candidates (%s/%s, capped at %d)", len(candidates), marketType, withDefaultText(category, "all"), limit)
-	return candidates, nil
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-// DirectionalCandidate is a Vergex board candidate with its directional
-// signal strength (the board z-score; sign follows the bias direction).
-type DirectionalCandidate struct {
-	Symbol string
-	Score  float64
-}
-
-// DirectionalCandidates returns bullish (long) and bearish (short) candidates
-// from the most recent Vergex signal ranking, each ordered by upstream rank
-// (strongest first) and carrying the signal score so callers can require a
-// minimum strength. Only populated for vergex_signal coin sources, since that
-// is the only source carrying a per-symbol directional bias.
-func (e *StrategyEngine) DirectionalCandidates() (bullish []DirectionalCandidate, bearish []DirectionalCandidate) {
-	if e == nil || len(e.vergexRankingCache) == 0 {
-		return nil, nil
-	}
-	type ranked struct {
-		cand DirectionalCandidate
-		rank int
-	}
-	rankKey := func(r int) int {
-		if r > 0 {
-			return r
-		}
-		return 1 << 30
-	}
-	var bl, br []ranked
-	for sym, item := range e.vergexRankingCache {
-		if item == nil {
-			continue
-		}
-		entry := ranked{DirectionalCandidate{Symbol: sym, Score: item.Score}, item.Rank}
-		switch strings.ToLower(strings.TrimSpace(item.Bias)) {
-		case "bearish", "short", "sell":
-			br = append(br, entry)
-		case "bullish", "long", "buy":
-			bl = append(bl, entry)
-		}
-	}
-	sort.SliceStable(bl, func(i, j int) bool { return rankKey(bl[i].rank) < rankKey(bl[j].rank) })
-	sort.SliceStable(br, func(i, j int) bool { return rankKey(br[i].rank) < rankKey(br[j].rank) })
-	for _, r := range bl {
-		bullish = append(bullish, r.cand)
-	}
-	for _, r := range br {
-		bearish = append(bearish, r.cand)
-	}
-	return bullish, bearish
-}
-
-func withDefaultText(value, fallback string) string {
-	if strings.TrimSpace(value) == "" {
-		return fallback
-	}
-	return value
-}
-
 // ============================================================================
 // External & Quant Data
 // ============================================================================
@@ -1085,486 +695,6 @@ func extractJSONPath(data interface{}, path string) interface{} {
 	}
 
 	return current
-}
-
-// FetchQuantData fetches quantitative data for a single coin
-func (e *StrategyEngine) FetchQuantData(symbol string) (*QuantData, error) {
-	if !e.config.Indicators.EnableQuantData {
-		return nil, nil
-	}
-	if e.usesHyperliquidNativeUniverse() || market.IsXyzDexAsset(symbol) {
-		logger.Infof("⏭️  Skipping NofxOS quant data for Hyperliquid symbol %s; using native Hyperliquid klines/mark data only", symbol)
-		return nil, nil
-	}
-
-	// Use nofxos client with unified API key
-	include := "oi,price"
-	if e.config.Indicators.EnableQuantNetflow {
-		include = "netflow,oi,price"
-	}
-
-	nofxosData, err := e.nofxosClient.GetCoinData(symbol, include)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch quant data: %w", err)
-	}
-
-	if nofxosData == nil {
-		return nil, nil
-	}
-
-	// Convert nofxos.QuantData to kernel.QuantData
-	quantData := &QuantData{
-		Symbol:      nofxosData.Symbol,
-		Price:       nofxosData.Price,
-		PriceChange: nofxosData.PriceChange,
-	}
-
-	// Convert OI data
-	if nofxosData.OI != nil {
-		quantData.OI = make(map[string]*OIData)
-		for exchange, oiData := range nofxosData.OI {
-			if oiData != nil {
-				kData := &OIData{
-					CurrentOI: oiData.CurrentOI,
-				}
-				if oiData.Delta != nil {
-					kData.Delta = make(map[string]*OIDeltaData)
-					for dur, delta := range oiData.Delta {
-						if delta != nil {
-							kData.Delta[dur] = &OIDeltaData{
-								OIDelta:        delta.OIDelta,
-								OIDeltaValue:   delta.OIDeltaValue,
-								OIDeltaPercent: delta.OIDeltaPercent,
-							}
-						}
-					}
-				}
-				quantData.OI[exchange] = kData
-			}
-		}
-	}
-
-	// Convert Netflow data
-	if nofxosData.Netflow != nil {
-		quantData.Netflow = &NetflowData{}
-		if nofxosData.Netflow.Institution != nil {
-			quantData.Netflow.Institution = &FlowTypeData{
-				Future: nofxosData.Netflow.Institution.Future,
-				Spot:   nofxosData.Netflow.Institution.Spot,
-			}
-		}
-		if nofxosData.Netflow.Personal != nil {
-			quantData.Netflow.Personal = &FlowTypeData{
-				Future: nofxosData.Netflow.Personal.Future,
-				Spot:   nofxosData.Netflow.Personal.Spot,
-			}
-		}
-	}
-
-	return quantData, nil
-}
-
-// FetchQuantDataBatch batch fetches quantitative data
-func (e *StrategyEngine) FetchQuantDataBatch(symbols []string) map[string]*QuantData {
-	result := make(map[string]*QuantData)
-
-	if !e.config.Indicators.EnableQuantData {
-		return result
-	}
-
-	for _, symbol := range symbols {
-		data, err := e.FetchQuantData(symbol)
-		if err != nil {
-			logger.Infof("⚠️  Failed to fetch quantitative data for %s: %v", symbol, err)
-			continue
-		}
-		if data != nil {
-			result[symbol] = data
-		}
-	}
-
-	return result
-}
-
-func (e *StrategyEngine) FetchVergexDataBatch(ctx context.Context, symbols []string) map[string]*vergex.MarketAnalysis {
-	result := make(map[string]*vergex.MarketAnalysis)
-	if e == nil || e.config == nil || e.config.CoinSource.SourceType != "vergex_signal" {
-		return result
-	}
-	if e.vergexClient == nil {
-		logger.Warnf("⚠️ Vergex signal data skipped: claw402 wallet is not configured")
-		return result
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	source := e.config.CoinSource
-	marketType := source.VergexMarketType
-	if marketType == "" {
-		marketType = vergex.DefaultMarketType
-	}
-	chain := source.VergexChain
-	chain = vergex.QueryChain(chain)
-
-	seen := make(map[string]bool)
-	limited := make([]string, 0, store.MaxCandidateCoins)
-	for _, symbol := range symbols {
-		symbol = vergexDetailSymbolForLookup(marketType, symbol)
-		if symbol == "" {
-			continue
-		}
-		if seen[symbol] {
-			continue
-		}
-		seen[symbol] = true
-		limited = append(limited, symbol)
-		if len(limited) >= store.MaxCandidateCoins+store.MaxPositions {
-			break
-		}
-	}
-
-	type vergexAnalysisResult struct {
-		symbol   string
-		analysis *vergex.MarketAnalysis
-	}
-
-	resultCh := make(chan vergexAnalysisResult, len(limited))
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, vergexDetailSymbolConcurrency)
-	for _, symbol := range limited {
-		symbol := symbol
-		querySymbol := vergex.QuerySymbol(symbol)
-		if querySymbol == "" {
-			continue
-		}
-		itemMarketType := marketType
-		itemCategory := ""
-		var ranking *vergex.SignalRankItem
-		if cached, ok := e.vergexRankingCache[symbol]; ok && cached != nil {
-			ranking = cached
-			if cached.MarketType != "" {
-				itemMarketType = cached.MarketType
-			}
-			itemCategory = cached.Category
-		}
-
-		analysis := &vergex.MarketAnalysis{
-			Symbol:      symbol,
-			QuerySymbol: querySymbol,
-			MarketType:  itemMarketType,
-			Ranking:     ranking,
-		}
-		query := vergex.Query{
-			MarketType: itemMarketType,
-			Symbol:     symbol,
-			Chain:      chain,
-			LiqBand:    source.VergexLiqBand,
-			Category:   itemCategory,
-		}
-
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				analysis.SignalLabError = ctx.Err().Error()
-				analysis.HeatmapError = ctx.Err().Error()
-				resultCh <- vergexAnalysisResult{symbol: symbol, analysis: analysis}
-				return
-			}
-			e.populateVergexDetailData(ctx, analysis, query)
-			if len(analysis.SignalLab) > 0 || len(analysis.Heatmap) > 0 ||
-				analysis.SignalLabError != "" || analysis.HeatmapError != "" || analysis.Ranking != nil {
-				resultCh <- vergexAnalysisResult{symbol: symbol, analysis: analysis}
-			}
-		}()
-	}
-
-	wg.Wait()
-	close(resultCh)
-	for item := range resultCh {
-		result[item.symbol] = item.analysis
-	}
-
-	logger.Infof("📊 Vergex detail data ready for %d symbols", len(result))
-	return result
-}
-
-func vergexDetailSymbolForLookup(marketType, symbol string) string {
-	return vergex.TradableSymbolForMarket(marketType, symbol)
-}
-
-const (
-	vergexDetailRequestTimeout    = 45 * time.Second
-	vergexDetailSymbolConcurrency = 2
-)
-
-func (e *StrategyEngine) populateVergexDetailData(ctx context.Context, analysis *vergex.MarketAnalysis, query vergex.Query) {
-	type endpointResult struct {
-		name string
-		body json.RawMessage
-		err  error
-	}
-
-	run := func(name string, fetch func(context.Context, vergex.Query) (json.RawMessage, error), out chan<- endpointResult) {
-		requestCtx, cancel := context.WithTimeout(ctx, vergexDetailRequestTimeout)
-		defer cancel()
-		body, err := fetch(requestCtx, query)
-		out <- endpointResult{name: name, body: body, err: err}
-	}
-
-	out := make(chan endpointResult, 2)
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		run("signal-lab", e.fetchVergexSignalLabWithFallback, out)
-	}()
-	go func() {
-		defer wg.Done()
-		run("heatmap", e.fetchVergexHeatmapWithFallback, out)
-	}()
-	wg.Wait()
-	close(out)
-
-	for item := range out {
-		switch item.name {
-		case "signal-lab":
-			if item.err != nil {
-				logger.Warnf("⚠️ Failed to fetch Vergex signal-lab for %s: %v", analysis.Symbol, item.err)
-				analysis.SignalLabError = item.err.Error()
-			} else {
-				analysis.SignalLab = item.body
-			}
-		case "heatmap":
-			if item.err != nil {
-				logger.Warnf("⚠️ Failed to fetch Vergex heatmap for %s: %v", analysis.Symbol, item.err)
-				analysis.HeatmapError = item.err.Error()
-			} else {
-				analysis.Heatmap = item.body
-			}
-		}
-	}
-}
-
-func (e *StrategyEngine) fetchVergexSignalLabWithFallback(ctx context.Context, query vergex.Query) (json.RawMessage, error) {
-	var lastErr error
-	for idx, candidate := range vergexDetailQueryCandidates(query) {
-		body, err := e.vergexClient.GetSignalLab(ctx, candidate)
-		if err == nil {
-			if idx > 0 {
-				logger.Infof("✅ Vergex signal-lab succeeded with fallback marketType=%s chain=%s", candidate.MarketType, withDefaultText(candidate.Chain, "default"))
-			}
-			return body, nil
-		}
-		lastErr = err
-		if !isRetryableVergexDetailError(err) {
-			break
-		}
-	}
-	return nil, lastErr
-}
-
-func (e *StrategyEngine) fetchVergexHeatmapWithFallback(ctx context.Context, query vergex.Query) (json.RawMessage, error) {
-	var lastErr error
-	for idx, candidate := range vergexDetailQueryCandidates(query) {
-		body, err := e.vergexClient.GetCostLiquidationHeatmap(ctx, candidate)
-		if err == nil {
-			if idx > 0 {
-				logger.Infof("✅ Vergex heatmap succeeded with fallback marketType=%s chain=%s", candidate.MarketType, withDefaultText(candidate.Chain, "default"))
-			}
-			return body, nil
-		}
-		lastErr = err
-		if !isRetryableVergexDetailError(err) {
-			break
-		}
-	}
-	return nil, lastErr
-}
-
-func vergexDetailQueryCandidates(query vergex.Query) []vergex.Query {
-	marketTypes := vergexDetailMarketTypeCandidates(query)
-	chains := uniqueValues(query.Chain, "mainnet", "")
-
-	candidates := make([]vergex.Query, 0, len(marketTypes)*len(chains))
-	for _, marketType := range marketTypes {
-		for _, chain := range chains {
-			candidate := query
-			candidate.MarketType = marketType
-			candidate.Chain = chain
-			candidates = append(candidates, candidate)
-		}
-	}
-	return candidates
-}
-
-func vergexDetailMarketTypeCandidates(query vergex.Query) []string {
-	if isVergexAllMarketType(query.MarketType) {
-		if market.IsXyzDexAsset(query.Symbol) {
-			return uniqueNonEmpty(vergex.DefaultMarketType, "hip3-perp", "hip3Perp", "core_perp")
-		}
-		return uniqueNonEmpty("core_perp", vergex.DefaultMarketType, "hip3-perp", "hip3Perp")
-	}
-	values := []string{query.MarketType, vergex.DefaultMarketType, "hip3-perp", "hip3Perp", "core_perp"}
-	return uniqueNonEmpty(values...)
-}
-
-func isVergexAllMarketType(marketType string) bool {
-	switch strings.ToLower(strings.TrimSpace(marketType)) {
-	case "", "all", "any", "ranking", "signal-ranking", "signal_ranking", "claw402", "vergex":
-		return true
-	default:
-		return false
-	}
-}
-
-func isRetryableVergexDetailError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "invalid markettype") ||
-		strings.Contains(msg, "invalid_request") ||
-		strings.Contains(msg, "invalid chain") ||
-		strings.Contains(msg, "market not found") ||
-		strings.Contains(msg, "not_found")
-}
-
-func uniqueNonEmpty(values ...string) []string {
-	out := make([]string, 0, len(values))
-	seen := make(map[string]bool, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" || seen[value] {
-			continue
-		}
-		seen[value] = true
-		out = append(out, value)
-	}
-	return out
-}
-
-func uniqueValues(values ...string) []string {
-	out := make([]string, 0, len(values))
-	seen := make(map[string]bool, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if seen[value] {
-			continue
-		}
-		seen[value] = true
-		out = append(out, value)
-	}
-	return out
-}
-
-// FetchOIRankingData fetches market-wide OI ranking data
-func (e *StrategyEngine) FetchOIRankingData() *nofxos.OIRankingData {
-	indicators := e.config.Indicators
-	if !indicators.EnableOIRanking {
-		return nil
-	}
-	if e.usesHyperliquidNativeUniverse() {
-		logger.Infof("⏭️  Skipping NofxOS OI ranking for Hyperliquid strategy; native Hyperliquid universe is the source of truth")
-		return nil
-	}
-
-	duration := indicators.OIRankingDuration
-	if duration == "" {
-		duration = "1h"
-	}
-
-	limit := indicators.OIRankingLimit
-	if limit <= 0 {
-		limit = 10
-	}
-
-	logger.Infof("📊 Fetching OI ranking data (duration: %s, limit: %d)", duration, limit)
-
-	data, err := e.nofxosClient.GetOIRanking(duration, limit)
-	if err != nil {
-		logger.Warnf("⚠️  Failed to fetch OI ranking data: %v", err)
-		return nil
-	}
-
-	logger.Infof("✓ OI ranking data ready: %d top, %d low positions",
-		len(data.TopPositions), len(data.LowPositions))
-
-	return data
-}
-
-// FetchNetFlowRankingData fetches market-wide NetFlow ranking data
-func (e *StrategyEngine) FetchNetFlowRankingData() *nofxos.NetFlowRankingData {
-	indicators := e.config.Indicators
-	if !indicators.EnableNetFlowRanking {
-		return nil
-	}
-	if e.usesHyperliquidNativeUniverse() {
-		logger.Infof("⏭️  Skipping NofxOS netflow ranking for Hyperliquid strategy; native Hyperliquid universe is the source of truth")
-		return nil
-	}
-
-	duration := indicators.NetFlowRankingDuration
-	if duration == "" {
-		duration = "1h"
-	}
-
-	limit := indicators.NetFlowRankingLimit
-	if limit <= 0 {
-		limit = 10
-	}
-
-	logger.Infof("💰 Fetching NetFlow ranking data (duration: %s, limit: %d)", duration, limit)
-
-	data, err := e.nofxosClient.GetNetFlowRanking(duration, limit)
-	if err != nil {
-		logger.Warnf("⚠️  Failed to fetch NetFlow ranking data: %v", err)
-		return nil
-	}
-
-	logger.Infof("✓ NetFlow ranking data ready: inst_in=%d, inst_out=%d, retail_in=%d, retail_out=%d",
-		len(data.InstitutionFutureTop), len(data.InstitutionFutureLow),
-		len(data.PersonalFutureTop), len(data.PersonalFutureLow))
-
-	return data
-}
-
-// FetchPriceRankingData fetches market-wide price ranking data (gainers/losers)
-func (e *StrategyEngine) FetchPriceRankingData() *nofxos.PriceRankingData {
-	indicators := e.config.Indicators
-	if !indicators.EnablePriceRanking {
-		return nil
-	}
-	if e.usesHyperliquidNativeUniverse() {
-		logger.Infof("⏭️  Skipping NofxOS price ranking for Hyperliquid strategy; native Hyperliquid universe is the source of truth")
-		return nil
-	}
-
-	durations := indicators.PriceRankingDuration
-	if durations == "" {
-		durations = "1h"
-	}
-
-	limit := indicators.PriceRankingLimit
-	if limit <= 0 {
-		limit = 10
-	}
-
-	logger.Infof("📈 Fetching Price ranking data (durations: %s, limit: %d)", durations, limit)
-
-	data, err := e.nofxosClient.GetPriceRanking(durations, limit)
-	if err != nil {
-		logger.Warnf("⚠️  Failed to fetch Price ranking data: %v", err)
-		return nil
-	}
-
-	logger.Infof("✓ Price ranking data ready for %d durations", len(data.Durations))
-
-	return data
 }
 
 // ============================================================================

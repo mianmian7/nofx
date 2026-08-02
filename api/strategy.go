@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,7 +8,6 @@ import (
 	"nofx/logger"
 	"nofx/market"
 	"nofx/mcp"
-	_ "nofx/mcp/payment"
 	_ "nofx/mcp/provider"
 	"nofx/store"
 	"time"
@@ -23,13 +21,6 @@ func validateStrategyConfig(config *store.StrategyConfig) []string {
 	var warnings []string
 	if config.StrategyType == "grid_trading" {
 		return warnings
-	}
-
-	// Validate NofxOS API key if any NofxOS feature is enabled
-	if (config.Indicators.EnableQuantData || config.Indicators.EnableOIRanking ||
-		config.Indicators.EnableNetFlowRanking || config.Indicators.EnablePriceRanking) &&
-		config.Indicators.NofxOSAPIKey == "" {
-		warnings = append(warnings, "NofxOS API key is not configured. NofxOS data sources may not work properly.")
 	}
 
 	return warnings
@@ -558,6 +549,7 @@ func (s *Server) handleStrategyTestRun(c *gin.Context) {
 		PromptVariant string               `json:"prompt_variant"`
 		AIModelID     string               `json:"ai_model_id"`
 		RunRealAI     bool                 `json:"run_real_ai"`
+		Exchange      string               `json:"exchange"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -569,17 +561,8 @@ func (s *Server) handleStrategyTestRun(c *gin.Context) {
 		req.PromptVariant = "balanced"
 	}
 
-	claw402WalletKey, err := s.resolveStrategyDataWalletKey(userID, req.AIModelID)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":       err.Error(),
-			"ai_response": "",
-		})
-		return
-	}
-
 	// Create strategy engine to build prompt
-	engine := kernel.NewStrategyEngine(&req.Config, claw402WalletKey)
+	engine := kernel.NewStrategyEngineForExchange(&req.Config, req.Exchange)
 
 	// Get candidate coins
 	candidates, err := engine.GetCandidateCoins()
@@ -621,7 +604,14 @@ func (s *Server) handleStrategyTestRun(c *gin.Context) {
 	// Get real market data (using multiple timeframes)
 	marketDataMap := make(map[string]*market.Data)
 	for _, coin := range candidates {
-		data, err := market.GetWithTimeframes(coin.Symbol, timeframes, primaryTimeframe, klineCount)
+		data, err := market.GetWithTimeframesForProvider(
+			engine.MarketDataProvider(),
+			coin.Symbol,
+			timeframes,
+			primaryTimeframe,
+			klineCount,
+			false,
+		)
 		if err != nil {
 			// If getting data for a coin fails, log but continue
 			fmt.Printf("⚠️  Failed to get market data for %s: %v\n", coin.Symbol, err)
@@ -629,23 +619,6 @@ func (s *Server) handleStrategyTestRun(c *gin.Context) {
 		}
 		marketDataMap[coin.Symbol] = data
 	}
-
-	// Fetch quantitative data for each candidate coin
-	symbols := make([]string, 0, len(candidates))
-	for _, c := range candidates {
-		symbols = append(symbols, c.Symbol)
-	}
-	quantDataMap := engine.FetchQuantDataBatch(symbols)
-	vergexDataMap := engine.FetchVergexDataBatch(context.Background(), symbols)
-
-	// Fetch OI ranking data (market-wide position changes)
-	oiRankingData := engine.FetchOIRankingData()
-
-	// Fetch NetFlow ranking data (market-wide fund flow)
-	netFlowRankingData := engine.FetchNetFlowRankingData()
-
-	// Fetch Price ranking data (market-wide gainers/losers)
-	priceRankingData := engine.FetchPriceRankingData()
 
 	// Build real context (for generating User Prompt)
 	testContext := &kernel.Context{
@@ -662,15 +635,10 @@ func (s *Server) handleStrategyTestRun(c *gin.Context) {
 			MarginUsedPct:    0,
 			PositionCount:    0,
 		},
-		Positions:          []kernel.PositionInfo{},
-		CandidateCoins:     candidates,
-		PromptVariant:      req.PromptVariant,
-		MarketDataMap:      marketDataMap,
-		QuantDataMap:       quantDataMap,
-		VergexDataMap:      vergexDataMap,
-		OIRankingData:      oiRankingData,
-		NetFlowRankingData: netFlowRankingData,
-		PriceRankingData:   priceRankingData,
+		Positions:      []kernel.PositionInfo{},
+		CandidateCoins: candidates,
+		PromptVariant:  req.PromptVariant,
+		MarketDataMap:  marketDataMap,
 	}
 
 	// Build System Prompt
@@ -758,24 +726,14 @@ func (s *Server) newConfiguredAIClient(userID, modelID string) (mcp.AIClient, *s
 		return nil, nil, fmt.Errorf("unsupported AI provider %q", provider)
 	}
 
-	// Payment providers ignore custom URL
-	switch provider {
-	case "claw402":
-		aiClient.SetAPIKey(apiKey, "", model.CustomModelName)
-	default:
-		aiClient.SetAPIKey(apiKey, model.CustomAPIURL, model.CustomModelName)
-		if model.CustomAPIURL != "" {
-			if configurator, ok := aiClient.(mcp.CustomURLConfigurator); ok {
-				if err := configurator.ConfigureCustomURL(model.CustomAPIURL); err != nil {
-					return nil, nil, fmt.Errorf("invalid custom model URL: %w", err)
-				}
+	aiClient.SetAPIKey(apiKey, model.CustomAPIURL, model.CustomModelName)
+	if model.CustomAPIURL != "" {
+		if configurator, ok := aiClient.(mcp.CustomURLConfigurator); ok {
+			if err := configurator.ConfigureCustomURL(model.CustomAPIURL); err != nil {
+				return nil, nil, fmt.Errorf("invalid custom model URL: %w", err)
 			}
 		}
 	}
 	aiClient.SetTimeout(90 * time.Second)
 	return aiClient, model, nil
-}
-
-func (s *Server) resolveStrategyDataWalletKey(userID, selectedModelID string) (string, error) {
-	return s.store.AIModel().ResolveClaw402WalletKey(userID, selectedModelID)
 }

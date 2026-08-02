@@ -119,25 +119,6 @@ func GetFullDecisionWithStrategy(ctx *Context, mcpClient mcp.AIClient, engine *S
 		return nil, &MarketDataUnavailableError{Cause: fmt.Errorf("preloaded market data has no freshness proof")}
 	}
 	pruneCandidateCoinsWithoutMarketData(ctx)
-	enrichVergexDataWithStrategy(ctx, engine)
-
-	// Ensure OITopDataMap is initialized
-	if ctx.OITopDataMap == nil {
-		ctx.OITopDataMap = make(map[string]*OITopData)
-		if engine.nofxosClient != nil {
-			oiPositions, err := engine.nofxosClient.GetOITopPositions()
-			if err == nil {
-				for _, pos := range oiPositions {
-					ctx.OITopDataMap[pos.Symbol] = &OITopData{
-						Rank:              pos.Rank,
-						OIDeltaPercent:    pos.OIDeltaPercent,
-						OIDeltaValue:      pos.OIDeltaValue,
-						PriceDeltaPercent: pos.PriceDeltaPercent,
-					}
-				}
-			}
-		}
-	}
 
 	// 2. Build System Prompt using strategy engine
 	riskConfig := engine.GetRiskControlConfig()
@@ -170,30 +151,6 @@ func GetFullDecisionWithStrategy(ctx *Context, mcpClient mcp.AIClient, engine *S
 	}
 
 	return decision, nil
-}
-
-func enrichVergexDataWithStrategy(ctx *Context, engine *StrategyEngine) {
-	if ctx == nil || engine == nil || ctx.VergexDataMap != nil {
-		return
-	}
-	if engine.GetConfig().CoinSource.SourceType != "vergex_signal" {
-		return
-	}
-	symbolSet := make(map[string]bool)
-	symbols := make([]string, 0, len(ctx.CandidateCoins)+len(ctx.Positions))
-	for _, coin := range ctx.CandidateCoins {
-		if !symbolSet[coin.Symbol] {
-			symbolSet[coin.Symbol] = true
-			symbols = append(symbols, coin.Symbol)
-		}
-	}
-	for _, pos := range ctx.Positions {
-		if !symbolSet[pos.Symbol] {
-			symbolSet[pos.Symbol] = true
-			symbols = append(symbols, pos.Symbol)
-		}
-	}
-	ctx.VergexDataMap = engine.FetchVergexDataBatch(nil, symbols)
 }
 
 // ============================================================================
@@ -229,18 +186,22 @@ func fetchMarketDataWithStrategy(ctx *Context, engine *StrategyEngine) error {
 	}
 
 	logger.Infof("📊 Strategy timeframes: %v, Primary: %s, Kline count: %d", timeframes, primaryTimeframe, klineCount)
+	marketDataProvider := engine.MarketDataProvider()
+	if marketDataProvider == nil {
+		return fmt.Errorf("strategy market data provider is unavailable")
+	}
+	marketExchange := engine.Exchange()
 
 	// 1. First fetch data for position coins (must fetch)
 	for _, pos := range ctx.Positions {
 		var data *market.Data
 		var err error
-		if ctx.RequireFreshMarketData {
-			data, err = market.GetWithTimeframesFresh(pos.Symbol, timeframes, primaryTimeframe, klineCount)
-		} else {
-			data, err = market.GetWithTimeframes(pos.Symbol, timeframes, primaryTimeframe, klineCount)
+		if _, contractErr := engine.ValidateCandidateContract(pos.Symbol); contractErr != nil {
+			return &MarketDataUnavailableError{Symbols: []string{pos.Symbol}, Cause: contractErr}
 		}
+		data, err = market.GetWithTimeframesForProvider(marketDataProvider, pos.Symbol, timeframes, primaryTimeframe, klineCount, ctx.RequireFreshMarketData)
 		if err != nil {
-			logger.Infof("⚠️  Failed to fetch market data for position %s: %v", pos.Symbol, err)
+			logger.Infof("Failed to fetch %s market data for position %s: %v", marketExchange, pos.Symbol, err)
 			if ctx.RequireFreshMarketData {
 				return &MarketDataUnavailableError{Symbols: []string{pos.Symbol}, Cause: err}
 			}
@@ -264,13 +225,13 @@ func fetchMarketDataWithStrategy(ctx *Context, engine *StrategyEngine) error {
 
 		var data *market.Data
 		var err error
-		if ctx.RequireFreshMarketData {
-			data, err = market.GetWithTimeframesFresh(coin.Symbol, timeframes, primaryTimeframe, klineCount)
-		} else {
-			data, err = market.GetWithTimeframes(coin.Symbol, timeframes, primaryTimeframe, klineCount)
+		if _, contractErr := engine.ValidateCandidateContract(coin.Symbol); contractErr != nil {
+			logger.Infof("Skipping %s candidate %s: %v", marketExchange, coin.Symbol, contractErr)
+			continue
 		}
+		data, err = market.GetWithTimeframesForProvider(marketDataProvider, coin.Symbol, timeframes, primaryTimeframe, klineCount, ctx.RequireFreshMarketData)
 		if err != nil {
-			logger.Infof("⚠️  Failed to fetch market data for %s: %v", coin.Symbol, err)
+			logger.Infof("Failed to fetch %s market data for %s: %v", marketExchange, coin.Symbol, err)
 			// Candidate coins fail open by skipping the individual symbol: a
 			// single newly-listed/delisted pair must not block the whole live
 			// decision. Open positions still fail closed above.
@@ -281,7 +242,10 @@ func fetchMarketDataWithStrategy(ctx *Context, engine *StrategyEngine) error {
 		isExistingPosition := positionSymbols[coin.Symbol]
 		isXyzAsset := market.IsXyzDexAsset(coin.Symbol)
 		if !isExistingPosition && !isXyzAsset && data.OpenInterest != nil && data.CurrentPrice > 0 {
-			oiValue := data.OpenInterest.Latest * data.CurrentPrice
+			oiValue := data.OpenInterest.NotionalUSD
+			if oiValue <= 0 {
+				oiValue = data.OpenInterest.Latest * data.CurrentPrice
+			}
 			oiValueInMillions := oiValue / 1_000_000
 			if oiValueInMillions < minOIThresholdMillions {
 				logger.Infof("⚠️  %s OI value too low (%.2fM USD < %.1fM), skipping coin",

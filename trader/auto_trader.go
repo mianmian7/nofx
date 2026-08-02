@@ -2,12 +2,10 @@ package trader
 
 import (
 	"fmt"
-	"github.com/ethereum/go-ethereum/crypto"
 	"nofx/kernel"
 	"nofx/logger"
 	"nofx/market"
 	"nofx/mcp"
-	_ "nofx/mcp/payment"
 	_ "nofx/mcp/provider"
 	"nofx/store"
 	"nofx/trader/aster"
@@ -20,7 +18,6 @@ import (
 	"nofx/trader/kucoin"
 	"nofx/trader/lighter"
 	"nofx/trader/okx"
-	"nofx/wallet"
 	"strings"
 	"sync"
 	"time"
@@ -147,7 +144,6 @@ type AutoTraderConfig struct {
 	CustomAPIURL      string
 	CustomAPIKey      string
 	CustomModelName   string
-	Claw402WalletKey  string
 	AIModelCandidates []AIModelCandidate
 
 	// Scan configuration
@@ -203,9 +199,10 @@ type AutoTrader struct {
 	executionMode         ExecutionMode
 	paperBroker           *PaperBroker
 	binanceMarketClient   binanceMarketAvailabilityClient // Shared-cache public client used for Binance open preflight
-	exchangeID            string                          // Exchange account UUID
-	showInCompetition     bool                            // Whether to show in competition page
-	invertSignals         bool                            // Whether to invert AI trading decisions
+	marketDataProvider    market.MarketDataProvider
+	exchangeID            string // Exchange account UUID
+	showInCompetition     bool   // Whether to show in competition page
+	invertSignals         bool   // Whether to invert AI trading decisions
 	config                AutoTraderConfig
 	trader                Trader // Use Trader interface (supports multiple platforms)
 	mcpClient             mcp.AIClient
@@ -231,18 +228,14 @@ type AutoTrader struct {
 	lastBalanceSyncTime   time.Time          // Last balance sync time
 	userID                string             // User ID
 	gridState             *GridState         // Grid trading state (only used when StrategyType == "grid_trading")
-	claw402WalletAddr     string             // Claw402 wallet address (derived from private key at start)
 	runStopCh             chan struct{}      // Stops only the AI decision loop when the trader is paused
 	consecutiveAIFailures int                // Consecutive AI call failures
 	monitorLifecycleMu    sync.Mutex         // Guards background monitor startup and shutdown
 	monitorsStarted       bool               // Background position/risk monitors are running
 	monitorsStopped       bool               // This trader instance has been permanently shut down
-	runtimeHealthMu       sync.RWMutex       // Guards safe mode + AI wallet health (loop writes, API reads)
+	runtimeHealthMu       sync.RWMutex       // Guards safe mode state (loop writes, API reads)
 	safeMode              bool               // Safe mode: no new positions, protect existing ones
 	safeModeReason        string             // Why safe mode was activated
-	aiWalletStatus        string             // "ok"|"low"|"empty"|"unknown" — see runtime_health.go
-	aiWalletBalanceUSDC   float64            // Last observed Base USDC balance of the claw402 wallet
-	aiWalletCheckedAt     time.Time          // When the balance was last observed
 }
 
 // NewAutoTrader creates an automatic trader
@@ -326,17 +319,11 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 			return nil, fmt.Errorf("unsupported AI provider %q; configure a registered provider or custom endpoint", aiModel)
 		}
 
-		// Payment providers (claw402) ignore customURL.
-		switch aiModel {
-		case "claw402":
-			mcpClient.SetAPIKey(apiKey, "", config.CustomModelName)
-		default:
-			mcpClient.SetAPIKey(apiKey, customURL, config.CustomModelName)
-			if customURL != "" {
-				if configurator, ok := mcpClient.(mcp.CustomURLConfigurator); ok {
-					if err := configurator.ConfigureCustomURL(customURL); err != nil {
-						return nil, fmt.Errorf("invalid custom model URL: %w", err)
-					}
+		mcpClient.SetAPIKey(apiKey, customURL, config.CustomModelName)
+		if customURL != "" {
+			if configurator, ok := mcpClient.(mcp.CustomURLConfigurator); ok {
+				if err := configurator.ConfigureCustomURL(customURL); err != nil {
+					return nil, fmt.Errorf("invalid custom model URL: %w", err)
 				}
 			}
 		}
@@ -363,6 +350,10 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 	var paperBroker *PaperBroker
 	var err error
 	var binanceMarketClient *market.APIClient
+	marketDataProvider, providerErr := market.NewMarketDataProvider(config.Exchange)
+	if providerErr != nil {
+		return nil, fmt.Errorf("failed to initialize %s market data provider: %w", config.Exchange, providerErr)
+	}
 	if config.ExecutionMode == ExecutionModePaper || strings.EqualFold(config.Exchange, "binance") {
 		binanceMarketClient = market.NewAPIClient()
 	}
@@ -378,7 +369,7 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 		if config.InitialBalance <= 0 {
 			config.InitialBalance = 10_000
 		}
-		priceSource := &binancePaperPriceSource{client: binanceMarketClient}
+		priceSource := newMarketPaperPriceSource(marketDataProvider)
 		paperConfig := PaperBrokerConfig{
 			InitialBalance: config.InitialBalance,
 			MakerFirst:     true, MakerFeeBPS: 2, TakerFeeBPS: 5, SlippageBPS: 2,
@@ -489,13 +480,7 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 	if config.StrategyConfig == nil {
 		return nil, fmt.Errorf("[%s] strategy not configured", config.Name)
 	}
-	// Pass claw402 wallet key to strategy engine so nofxos data requests
-	// are routed through claw402 (reuses the same wallet as AI calls)
-	claw402Key := config.Claw402WalletKey
-	if claw402Key == "" && config.AIModel == "claw402" && config.CustomAPIKey != "" {
-		claw402Key = config.CustomAPIKey
-	}
-	strategyEngine := kernel.NewStrategyEngine(config.StrategyConfig, claw402Key)
+	strategyEngine := kernel.NewStrategyEngineForExchange(config.StrategyConfig, config.Exchange)
 	logger.Infof("✓ [%s] Using strategy engine (strategy configuration loaded)", config.Name)
 
 	return &AutoTrader{
@@ -506,6 +491,7 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 		executionMode:         config.ExecutionMode,
 		paperBroker:           paperBroker,
 		binanceMarketClient:   binanceMarketClient,
+		marketDataProvider:    marketDataProvider,
 		exchangeID:            config.ExchangeID,
 		showInCompetition:     config.ShowInCompetition,
 		invertSignals:         config.InvertSignals,
@@ -557,14 +543,9 @@ func (at *AutoTrader) reloadStrategyConfigIfChanged() error {
 	// ClampLimits above bounds it (ratio 0.5–10, leverage caps), and the
 	// margin auto-reduce at order time keeps the book solvent.
 
-	claw402Key := at.config.Claw402WalletKey
-	if claw402Key == "" && at.config.AIModel == "claw402" && at.config.CustomAPIKey != "" {
-		claw402Key = at.config.CustomAPIKey
-	}
-
 	at.config.StrategyConfig = strategyConfig
 	at.config.StrategyConfigRaw = strategy.Config
-	at.strategyEngine = kernel.NewStrategyEngine(strategyConfig, claw402Key)
+	at.strategyEngine = kernel.NewStrategyEngineForExchange(strategyConfig, at.exchange)
 	at.logInfof("🔄 Strategy config refreshed from DB: %s", strategy.Name)
 	return nil
 }
@@ -618,9 +599,6 @@ func (at *AutoTrader) Run() error {
 			return nil
 		}
 	}
-
-	// Pre-launch checks for claw402 users
-	at.runPreLaunchChecks()
 
 	at.StartBackgroundMonitoring()
 
@@ -798,66 +776,4 @@ func calculatePnLPercentage(unrealizedPnl, marginUsed float64) float64 {
 		return (unrealizedPnl / marginUsed) * 100
 	}
 	return 0.0
-}
-
-// runPreLaunchChecks performs pre-launch checks for claw402 users (wallet balance, runway estimate)
-func (at *AutoTrader) runPreLaunchChecks() {
-	if !store.IsClaw402Config(at.config.AIModel) {
-		return
-	}
-
-	logger.Info("🔍 Running pre-launch checks (claw402)...")
-
-	// Derive wallet address from CustomAPIKey (which is the private key for claw402)
-	if at.config.CustomAPIKey != "" {
-		// Try to derive address using go-ethereum
-		addr := deriveWalletAddress(at.config.CustomAPIKey)
-		if addr != "" {
-			at.claw402WalletAddr = addr
-			logger.Infof("💳 [%s] Claw402 wallet: %s", at.name, addr)
-
-			// Query USDC balance
-			balance, err := wallet.QueryUSDCBalance(addr)
-			if err != nil {
-				logger.Warnf("⚠️ [%s] Could not query USDC balance: %v", at.name, err)
-				at.markAIWalletHealthUnknown()
-			} else {
-				at.setAIWalletHealth(balance)
-				// Estimate runway
-				scanMinutes := int(at.config.ScanInterval.Minutes())
-				modelName := at.config.CustomModelName
-				if modelName == "" {
-					modelName = "deepseek"
-				}
-				dailyCost, runway := store.EstimateRunway(balance, modelName, scanMinutes)
-				logger.Infof("💰 [%s] USDC Balance: $%.2f | Daily AI cost: ~$%.2f | Runway: ~%.1f days",
-					at.name, balance, dailyCost, runway)
-
-				if balance < 1.0 {
-					logger.Warnf("⚠️ [%s] Low USDC balance! Consider topping up.", at.name)
-				}
-				if balance <= 0 {
-					logger.Errorf("🚨 [%s] USDC balance is ZERO — AI calls will fail!", at.name)
-				}
-			}
-		}
-	}
-
-	logger.Info("✅ Pre-launch checks complete")
-}
-
-// deriveWalletAddress derives an Ethereum address from a hex private key
-func deriveWalletAddress(privateKeyHex string) string {
-	// Remove 0x prefix if present
-	if len(privateKeyHex) > 2 && privateKeyHex[:2] == "0x" {
-		privateKeyHex = privateKeyHex[2:]
-	}
-
-	privateKey, err := crypto.HexToECDSA(privateKeyHex)
-	if err != nil {
-		return ""
-	}
-
-	address := crypto.PubkeyToAddress(privateKey.PublicKey)
-	return address.Hex()
 }

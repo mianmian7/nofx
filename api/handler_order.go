@@ -40,6 +40,11 @@ func (s *Server) handleTraderList(c *gin.Context) {
 			}
 		}
 
+		var exchangeType string
+		if fullConfig, configErr := s.store.Trader().GetFullConfig(userID, trader.ID); configErr == nil && fullConfig.Exchange != nil {
+			exchangeType = fullConfig.Exchange.ExchangeType
+		}
+
 		// Return complete AIModelID (e.g. "admin_deepseek"), don't truncate
 		// Frontend needs complete ID to verify model exists (consistent with handleGetTraderConfig)
 		result = append(result, map[string]interface{}{
@@ -47,6 +52,7 @@ func (s *Server) handleTraderList(c *gin.Context) {
 			"trader_name":           trader.Name,
 			"ai_model":              trader.AIModelID, // Use complete ID
 			"exchange_id":           trader.ExchangeID,
+			"exchange_type":         exchangeType,
 			"is_running":            isRunning,
 			"show_in_competition":   trader.ShowInCompetition,
 			"initial_balance":       trader.InitialBalance,
@@ -105,6 +111,7 @@ func (s *Server) handleGetTraderConfig(c *gin.Context) {
 		"trader_name":           traderConfig.Name,
 		"ai_model":              aiModelID,
 		"exchange_id":           traderConfig.ExchangeID,
+		"exchange_type":         "",
 		"strategy_id":           traderConfig.StrategyID,
 		"initial_balance":       traderConfig.InitialBalance,
 		"scan_interval_minutes": traderConfig.ScanIntervalMinutes,
@@ -120,9 +127,10 @@ func (s *Server) handleGetTraderConfig(c *gin.Context) {
 		"show_in_competition":   traderConfig.ShowInCompetition,
 		"invert_signals":        traderConfig.InvertSignals,
 		"execution_mode":        traderConfig.ExecutionMode,
-		"use_ai500":             traderConfig.UseAI500,
-		"use_oi_top":            traderConfig.UseOITop,
 		"is_running":            isRunning,
+	}
+	if fullCfg.Exchange != nil {
+		result["exchange_type"] = fullCfg.Exchange.ExchangeType
 	}
 
 	c.JSON(http.StatusOK, result)
@@ -244,7 +252,7 @@ func (s *Server) handlePositionHistory(c *gin.Context) {
 	if strings.EqualFold(strings.TrimSpace(trader.GetName()), "NOFX Autopilot") && strings.TrimSpace(userID) != "" {
 		// Older one-click launches created new Autopilot trader rows. When a row was
 		// deleted, its closed position records remained under the old generated ID.
-		// The generated Autopilot ID embeds userID + "claw402", so this safely
+		// Pre-retirement Autopilot IDs use a provider suffix. This pattern safely
 		// restores same-user history continuity without joining deleted rows.
 		traderIDPatterns = append(traderIDPatterns, "%_"+userID+"_claw402_%")
 	}

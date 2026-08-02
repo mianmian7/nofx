@@ -36,7 +36,7 @@ func (at *AutoTrader) executeDecisionWithRecord(decision *kernel.Decision, actio
 		}
 	}
 	if at.executionMode == ExecutionModePaper && (decision.Action == "open_long" || decision.Action == "open_short") {
-		if _, err := at.validateBinanceOpenMarket(decision.Symbol); err != nil {
+		if _, err := at.validateOpenMarket(decision.Symbol); err != nil {
 			return err
 		}
 		if err := at.enforceOpenRiskBudget(decision); err != nil {
@@ -592,8 +592,18 @@ func validateExecutionSymbol(exchange, symbol string) error {
 	return nil
 }
 
-func (at *AutoTrader) validateBinanceOpenMarket(symbol string) (*market.MarketAvailability, error) {
-	if at == nil || (at.executionMode != ExecutionModePaper && !strings.EqualFold(at.exchange, "binance")) {
+func (at *AutoTrader) validateOpenMarket(symbol string) (*market.MarketAvailability, error) {
+	if at == nil {
+		return nil, nil
+	}
+	if at.marketDataProvider != nil {
+		availability, err := at.marketDataProvider.ValidateMarketAvailability(symbol)
+		if err != nil {
+			return nil, fmt.Errorf("refusing to open %s while %s public market data is unavailable: %w", symbol, at.exchange, err)
+		}
+		return availability, nil
+	}
+	if at.executionMode != ExecutionModePaper && !strings.EqualFold(at.exchange, "binance") {
 		return nil, nil
 	}
 	// Tests and specialized in-memory traders may construct AutoTrader directly.
@@ -635,7 +645,7 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 	if err != nil {
 		return fmt.Errorf("failed to get market data for %s: %w", decision.Symbol, err)
 	}
-	availability, err := at.validateBinanceOpenMarket(decision.Symbol)
+	availability, err := at.validateOpenMarket(decision.Symbol)
 	if err != nil {
 		return err
 	}
@@ -663,7 +673,6 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 		equity = availableBalance // Fallback to available balance
 	}
 
-	at.applyAutopilotFullSizeOpen(decision, equity)
 	if provider, ok := at.trader.(leverageLimitProvider); ok {
 		if err := clampDecisionToExchangeLeverageLimit(decision, provider); err != nil {
 			return err
@@ -766,7 +775,7 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 	if err != nil {
 		return fmt.Errorf("failed to get market data for %s: %w", decision.Symbol, err)
 	}
-	availability, err := at.validateBinanceOpenMarket(decision.Symbol)
+	availability, err := at.validateOpenMarket(decision.Symbol)
 	if err != nil {
 		return err
 	}
@@ -794,7 +803,6 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 		equity = availableBalance // Fallback to available balance
 	}
 
-	at.applyAutopilotFullSizeOpen(decision, equity)
 	if provider, ok := at.trader.(leverageLimitProvider); ok {
 		if err := clampDecisionToExchangeLeverageLimit(decision, provider); err != nil {
 			return err

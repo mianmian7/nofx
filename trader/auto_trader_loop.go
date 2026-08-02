@@ -7,10 +7,8 @@ import (
 	"nofx/kernel"
 	"nofx/logger"
 	"nofx/market"
-	"nofx/mcp/payment"
 	"nofx/provider/hyperliquid"
 	"nofx/store"
-	"nofx/wallet"
 	"strconv"
 	"strings"
 	"time"
@@ -38,11 +36,6 @@ func (at *AutoTrader) runCycle() error {
 
 	if err := at.reloadStrategyConfigIfChanged(); err != nil {
 		at.logWarnf("⚠️ Strategy refresh failed, using current in-memory config: %v", err)
-	}
-
-	// Check USDC balance periodically for claw402 users (every 10 cycles)
-	if callCount%10 == 0 && store.IsClaw402Config(at.config.AIModel) {
-		at.checkClaw402Balance()
 	}
 
 	// Create decision record
@@ -138,7 +131,7 @@ func (at *AutoTrader) runCycle() error {
 	// Record AI charge (track cost regardless of decision outcome).
 	// Use the effective model name (custom model, e.g. "gpt-5.6") so the
 	// per-call price lookup matches what was actually invoked — at.aiModel is
-	// the provider id (e.g. "claw402") and would fall back to the default price.
+	// the provider ID and would fall back to the default price.
 	// Prefer the gateway-reported settled amount (upto scheme) over the flat
 	// catalog estimate when the client exposes it.
 	if aiDecision != nil && at.store != nil {
@@ -166,7 +159,7 @@ func (at *AutoTrader) runCycle() error {
 		if errors.As(err, &marketDataErr) {
 			at.logWarnf("⏭️ Skipping live AI decision: %v", marketDataErr)
 			record.Success = false
-			record.ErrorMessage = fmt.Sprintf("Skipped AI decision because fresh Binance market data was unavailable: %v", marketDataErr)
+			record.ErrorMessage = fmt.Sprintf("Skipped AI decision because fresh %s market data was unavailable: %v", at.exchange, marketDataErr)
 			record.ExecutionLog = append(record.ExecutionLog, record.ErrorMessage)
 			if saveErr := at.saveDecision(record); saveErr != nil {
 				at.logWarnf("⚠ Failed to save decision record: %v", saveErr)
@@ -178,18 +171,6 @@ func (at *AutoTrader) runCycle() error {
 		at.consecutiveAIFailures++
 		record.Success = false
 		record.ErrorMessage = fmt.Sprintf("Failed to get AI decision: %v", err)
-
-		// Payment-layer rejection means the AI fee wallet is definitively out
-		// of funds — surface it as structured health state (GetStatus), not
-		// just a log line.
-		var insufficientFunds *payment.ErrInsufficientFunds
-		if errors.As(err, &insufficientFunds) {
-			at.markAIWalletEmptyFromPayment(insufficientFunds.Balance)
-			record.ErrorMessage = fmt.Sprintf(
-				"AI fee wallet out of funds: balance $%.2f USDC, next call needs ~$%.2f. Top up the Base USDC wallet.",
-				insufficientFunds.Balance, insufficientFunds.Needed,
-			)
-		}
 
 		// Activate safe mode after 3 consecutive failures
 		if at.consecutiveAIFailures >= 3 && !at.isSafeMode() {
@@ -677,7 +658,7 @@ func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 		CurrentTime:            time.Now().UTC().Format("2006-01-02 15:04:05 UTC"),
 		RuntimeMinutes:         int(time.Since(at.startTime).Minutes()),
 		CallCount:              callCount,
-		RequireFreshMarketData: at.executionMode == ExecutionModeLive && strings.EqualFold(at.exchange, "binance"),
+		RequireFreshMarketData: at.executionMode == ExecutionModeLive,
 		Account: kernel.AccountInfo{
 			TotalEquity:      totalEquity,
 			AvailableBalance: availableBalance,
@@ -750,57 +731,6 @@ func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 		at.logWarnf("⚠️ Store is nil, cannot get recent trades")
 	}
 
-	// 8. Get quantitative data (if enabled in strategy config)
-	if strategyConfig.Indicators.EnableQuantData {
-		// Collect symbols to query (candidate coins + position coins)
-		symbolsToQuery := make(map[string]bool)
-		for _, coin := range candidateCoins {
-			symbolsToQuery[coin.Symbol] = true
-		}
-		for _, pos := range positionInfos {
-			symbolsToQuery[pos.Symbol] = true
-		}
-
-		symbols := make([]string, 0, len(symbolsToQuery))
-		for sym := range symbolsToQuery {
-			symbols = append(symbols, sym)
-		}
-
-		logger.Infof("📊 [%s] Fetching quantitative data for %d symbols...", at.name, len(symbols))
-		ctx.QuantDataMap = at.strategyEngine.FetchQuantDataBatch(symbols)
-		logger.Infof("📊 [%s] Successfully fetched quantitative data for %d symbols", at.name, len(ctx.QuantDataMap))
-	}
-
-	// 9. Get OI ranking data (market-wide position changes)
-	if strategyConfig.Indicators.EnableOIRanking {
-		logger.Infof("📊 [%s] Fetching OI ranking data...", at.name)
-		ctx.OIRankingData = at.strategyEngine.FetchOIRankingData()
-		if ctx.OIRankingData != nil {
-			logger.Infof("📊 [%s] OI ranking data ready: %d top, %d low positions",
-				at.name, len(ctx.OIRankingData.TopPositions), len(ctx.OIRankingData.LowPositions))
-		}
-	}
-
-	// 10. Get NetFlow ranking data (market-wide fund flow)
-	if strategyConfig.Indicators.EnableNetFlowRanking {
-		logger.Infof("💰 [%s] Fetching NetFlow ranking data...", at.name)
-		ctx.NetFlowRankingData = at.strategyEngine.FetchNetFlowRankingData()
-		if ctx.NetFlowRankingData != nil {
-			logger.Infof("💰 [%s] NetFlow ranking data ready: inst_in=%d, inst_out=%d",
-				at.name, len(ctx.NetFlowRankingData.InstitutionFutureTop), len(ctx.NetFlowRankingData.InstitutionFutureLow))
-		}
-	}
-
-	// 11. Get Price ranking data (market-wide gainers/losers)
-	if strategyConfig.Indicators.EnablePriceRanking {
-		logger.Infof("📈 [%s] Fetching Price ranking data...", at.name)
-		ctx.PriceRankingData = at.strategyEngine.FetchPriceRankingData()
-		if ctx.PriceRankingData != nil {
-			logger.Infof("📈 [%s] Price ranking data ready for %d durations",
-				at.name, len(ctx.PriceRankingData.Durations))
-		}
-	}
-
 	return ctx, nil
 }
 
@@ -865,41 +795,6 @@ func floatFromPosition(position map[string]interface{}, keys ...string) float64 
 		}
 	}
 	return 0
-}
-
-// checkClaw402Balance checks USDC balance and logs warnings if low
-func (at *AutoTrader) checkClaw402Balance() {
-	scanMinutes := int(at.config.ScanInterval.Minutes())
-	if scanMinutes <= 0 {
-		scanMinutes = 15
-	}
-	dailyCost, _ := store.EstimateRunway(1.0, at.config.CustomModelName, scanMinutes)
-	logger.Infof("💰 [%s] Estimated daily AI cost: ~$%.2f (model: %s, interval: %dm)",
-		at.name, dailyCost, at.config.CustomModelName, scanMinutes)
-
-	if at.claw402WalletAddr != "" {
-		balance, err := wallet.QueryUSDCBalance(at.claw402WalletAddr)
-		if err != nil {
-			at.logWarnf("⚠️ Failed to query USDC balance: %v", err)
-			at.markAIWalletHealthUnknown()
-			return
-		}
-
-		at.setAIWalletHealth(balance)
-		if balance < aiWalletLowThresholdUSDC {
-			at.logWarnf("⚠️ Low USDC balance: $%.2f — AI may stop soon!", balance)
-		}
-		if balance <= 0 {
-			at.logErrorf("🚨 USDC balance is ZERO — AI calls will fail!")
-		}
-
-		runway := float64(0)
-		if dailyCost > 0 {
-			runway = balance / dailyCost
-		}
-		logger.Infof("💰 [%s] USDC Balance: $%.2f | Daily AI cost: ~$%.2f | Runway: ~%.1f days",
-			at.name, balance, dailyCost, runway)
-	}
 }
 
 // invertDecisions mirrors entry signals while preserving exits for the actual

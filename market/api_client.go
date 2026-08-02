@@ -278,6 +278,62 @@ func (c *APIClient) GetExchangeInfo() (*ExchangeInfo, error) {
 	return &exchangeInfo, nil
 }
 
+// GetContractSpec returns the normalized Binance contract rules for one
+// perpetual symbol. Exact exchangeInfo filters are preferred; precision is
+// retained as a fallback for older/mock responses that omit filters.
+func (c *APIClient) GetContractSpec(symbol string) (*ContractSpec, error) {
+	normalizedSymbol, err := NormalizeBinanceSymbol(symbol)
+	if err != nil {
+		return nil, err
+	}
+	exchangeInfo, err := c.GetExchangeInfo()
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range exchangeInfo.Symbols {
+		if !strings.EqualFold(item.Symbol, normalizedSymbol) {
+			continue
+		}
+		priceTick := math.Pow10(-item.PricePrecision)
+		quantityStep := math.Pow10(-item.QuantityPrecision)
+		minimumQuantity := 0.0
+		maximumQuantity := 0.0
+		for _, filter := range item.Filters {
+			switch strings.ToUpper(strings.TrimSpace(filter.FilterType)) {
+			case "PRICE_FILTER":
+				if parsedTick, parseErr := strconv.ParseFloat(filter.TickSize, 64); parseErr == nil && parsedTick > 0 {
+					priceTick = parsedTick
+				}
+			case "LOT_SIZE":
+				if parsedStep, parseErr := strconv.ParseFloat(filter.StepSize, 64); parseErr == nil && parsedStep > 0 {
+					quantityStep = parsedStep
+				}
+				minimumQuantity, _ = strconv.ParseFloat(filter.MinQty, 64)
+				maximumQuantity, _ = strconv.ParseFloat(filter.MaxQty, 64)
+			case "MARKET_LOT_SIZE":
+				if maximumQuantity <= 0 {
+					maximumQuantity, _ = strconv.ParseFloat(filter.MaxQty, 64)
+				}
+			}
+		}
+		return &ContractSpec{
+			Symbol:             normalizedSymbol,
+			ExchangeSymbol:     item.Symbol,
+			BaseAsset:          item.BaseAsset,
+			QuoteAsset:         item.QuoteAsset,
+			ContractType:       item.ContractType,
+			Status:             item.Status,
+			ContractMultiplier: 1,
+			PriceTick:          priceTick,
+			QuantityStep:       quantityStep,
+			MinQuantity:        minimumQuantity,
+			MaxQuantity:        maximumQuantity,
+			QuantityUnit:       "base",
+		}, nil
+	}
+	return nil, fmt.Errorf("Binance contract %s not found", normalizedSymbol)
+}
+
 // Get24hrTickers returns Binance Futures 24-hour statistics for all symbols.
 // The endpoint is public and does not require exchange credentials.
 func (c *APIClient) Get24hrTickers() ([]Ticker24hr, error) {
@@ -641,7 +697,7 @@ func binanceErrorMessage(responseBody []byte) string {
 // GetBinanceDynamicTickers builds a deterministic local candidate universe:
 // active USDT perpetual contracts ranked by current 24-hour quote volume.
 // It deliberately excludes stablecoin-vs-stablecoin contracts and never calls
-// Claw402, Vergex, NofxOS, or an authenticated exchange endpoint.
+// any paid provider or an authenticated exchange endpoint.
 func (c *APIClient) GetBinanceDynamicTickers(limit int) ([]Ticker24hr, error) {
 	if limit <= 0 {
 		limit = 10
@@ -816,7 +872,7 @@ func (c *APIClient) GetOpenInterest(symbol string) (*OIData, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse Binance open interest for %s: %w", symbol, err)
 	}
-	return &OIData{Latest: openInterest, Average: openInterest * 0.999}, nil
+	return &OIData{Latest: openInterest, Average: openInterest * 0.999, Unit: "base"}, nil
 }
 
 type MarketAvailability struct {

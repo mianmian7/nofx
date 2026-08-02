@@ -5,6 +5,7 @@ import "time"
 // Data market data structure
 type Data struct {
 	Symbol            string
+	Exchange          string `json:"exchange,omitempty"`
 	CurrentPrice      float64
 	PriceChange1h     float64 // 1-hour price change percentage
 	PriceChange4h     float64 // 4-hour price change percentage
@@ -49,8 +50,28 @@ type TimeframeSeriesData struct {
 
 // OIData Open Interest data
 type OIData struct {
-	Latest  float64
-	Average float64
+	Latest      float64 `json:"latest"`
+	Average     float64 `json:"average"`
+	Unit        string  `json:"unit,omitempty"`
+	NotionalUSD float64 `json:"notional_usd,omitempty"`
+}
+
+// ContractSpec describes the venue-specific contract rules needed by order
+// sizing and market preflight. Provider symbols remain canonical in Symbol;
+// ExchangeSymbol is the identifier used by the upstream exchange API.
+type ContractSpec struct {
+	Symbol             string  `json:"symbol"`
+	ExchangeSymbol     string  `json:"exchange_symbol"`
+	BaseAsset          string  `json:"base_asset"`
+	QuoteAsset         string  `json:"quote_asset"`
+	ContractType       string  `json:"contract_type,omitempty"`
+	Status             string  `json:"status,omitempty"`
+	ContractMultiplier float64 `json:"contract_multiplier,omitempty"`
+	PriceTick          float64 `json:"price_tick,omitempty"`
+	QuantityStep       float64 `json:"quantity_step,omitempty"`
+	MinQuantity        float64 `json:"min_quantity,omitempty"`
+	MaxQuantity        float64 `json:"max_quantity,omitempty"`
+	QuantityUnit       string  `json:"quantity_unit,omitempty"`
 }
 
 // IntradayData intraday data (3-minute interval)
@@ -82,14 +103,23 @@ type ExchangeInfo struct {
 }
 
 type SymbolInfo struct {
-	Symbol            string `json:"symbol"`
-	Status            string `json:"status"`
-	BaseAsset         string `json:"baseAsset"`
-	QuoteAsset        string `json:"quoteAsset"`
-	ContractType      string `json:"contractType"`
-	UnderlyingType    string `json:"underlyingType"`
-	PricePrecision    int    `json:"pricePrecision"`
-	QuantityPrecision int    `json:"quantityPrecision"`
+	Symbol            string         `json:"symbol"`
+	Status            string         `json:"status"`
+	BaseAsset         string         `json:"baseAsset"`
+	QuoteAsset        string         `json:"quoteAsset"`
+	ContractType      string         `json:"contractType"`
+	UnderlyingType    string         `json:"underlyingType"`
+	PricePrecision    int            `json:"pricePrecision"`
+	QuantityPrecision int            `json:"quantityPrecision"`
+	Filters           []SymbolFilter `json:"filters,omitempty"`
+}
+
+type SymbolFilter struct {
+	FilterType string `json:"filterType"`
+	TickSize   string `json:"tickSize,omitempty"`
+	StepSize   string `json:"stepSize,omitempty"`
+	MinQty     string `json:"minQty,omitempty"`
+	MaxQty     string `json:"maxQty,omitempty"`
 }
 
 type Kline struct {
@@ -113,13 +143,19 @@ type PriceTicker struct {
 	Price  string `json:"price"`
 }
 
-type BinanceDepthSnapshot struct {
+// DepthSnapshot is the exchange-neutral order-book snapshot returned by all
+// public market-data providers. Bids and asks contain price/size string pairs.
+type DepthSnapshot struct {
 	LastUpdateID    int64      `json:"lastUpdateId"`
 	EventTime       int64      `json:"E,omitempty"`
 	TransactionTime int64      `json:"T,omitempty"`
 	Bids            [][]string `json:"bids"`
 	Asks            [][]string `json:"asks"`
 }
+
+// BinanceDepthSnapshot remains as an alias for compatibility with existing
+// API handlers, paper-trading code, and tests.
+type BinanceDepthSnapshot = DepthSnapshot
 
 type FundingSnapshot struct {
 	Symbol          string  `json:"symbol"`

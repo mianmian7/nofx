@@ -3,7 +3,6 @@ package market
 import (
 	"context"
 	"fmt"
-	"nofx/logger"
 	"nofx/provider/coinank/coinank_api"
 	"nofx/provider/coinank/coinank_enum"
 	"nofx/provider/hyperliquid"
@@ -69,8 +68,7 @@ func getKlinesFromCoinAnk(symbol, interval, exchange string, limit int) ([]Kline
 	case "aster":
 		coinankExchange = coinank_enum.Aster
 	default:
-		// Default to Binance for unknown exchanges
-		coinankExchange = coinank_enum.Binance
+		return nil, fmt.Errorf("unsupported CoinAnk exchange: %s", exchange)
 	}
 
 	// Call CoinAnk free/open API (no authentication required)
@@ -78,21 +76,11 @@ func getKlinesFromCoinAnk(symbol, interval, exchange string, limit int) ([]Kline
 	ts := time.Now().UnixMilli()
 	// Use "To" side to search backward from current time (get historical klines)
 	coinankKlines, err := coinank_api.Kline(ctx, symbol, coinankExchange, ts, coinank_enum.To, limit, coinankInterval)
-	if err != nil || len(coinankKlines) == 0 {
-		// If exchange-specific data fails or returns empty, fallback to Binance
-		if coinankExchange != coinank_enum.Binance {
-			if err != nil {
-				logger.Warnf("⚠️ CoinAnk %s data failed, falling back to Binance: %v", exchange, err)
-			} else {
-				logger.Warnf("⚠️ CoinAnk %s %s data empty for %s, falling back to Binance", exchange, interval, symbol)
-			}
-			coinankKlines, err = coinank_api.Kline(ctx, symbol, coinank_enum.Binance, ts, coinank_enum.To, limit, coinankInterval)
-			if err != nil {
-				return nil, fmt.Errorf("CoinAnk API error (fallback): %w", err)
-			}
-		} else if err != nil {
-			return nil, fmt.Errorf("CoinAnk API error: %w", err)
-		}
+	if err != nil {
+		return nil, fmt.Errorf("CoinAnk %s API error: %w", exchange, err)
+	}
+	if len(coinankKlines) == 0 {
+		return nil, fmt.Errorf("CoinAnk %s returned no K-line data for %s", exchange, symbol)
 	}
 
 	// Convert coinank kline format to market.Kline format

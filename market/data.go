@@ -31,6 +31,14 @@ func Get(symbol string) (*Data, error) {
 
 // GetWithExchange retrieves market data for the specified token using exchange-specific data
 func GetWithExchange(symbol, exchange string) (*Data, error) {
+	if isUnifiedPublicExchange(exchange) {
+		provider, providerErr := NewMarketDataProvider(exchange)
+		if providerErr != nil {
+			return nil, providerErr
+		}
+		return getWithTimeframesFromProvider(provider, symbol, []string{"3m", "4h"}, "3m", 100, false)
+	}
+
 	var klines3m, klines4h []Kline
 	var err error
 	// Normalize within the selected venue. Explicit Binance TradFi USDT
@@ -120,15 +128,19 @@ func GetWithExchange(symbol, exchange string) (*Data, error) {
 		}
 	}
 
-	// Get OI data
-	oiData, err := getOpenInterestData(symbol)
-	if err != nil {
-		// OI failure doesn't affect overall result, use default values
-		oiData = &OIData{Latest: 0, Average: 0}
+	// Legacy providers may not expose OI or funding. Do not fill those fields
+	// from Binance: that would make a CoinAnk/Hyperliquid analysis appear to be
+	// sourced from the selected venue while mixing data from another exchange.
+	oiData := &OIData{Latest: 0, Average: 0}
+	fundingRate := 0.0
+	if provider, providerErr := NewMarketDataProvider(exchange); providerErr == nil {
+		if providerOI, oiErr := provider.GetOpenInterest(symbol); oiErr == nil && providerOI != nil {
+			oiData = providerOI
+		}
+		if fundingSnapshot, fundingErr := provider.GetFundingSnapshot(symbol); fundingErr == nil && fundingSnapshot != nil {
+			fundingRate = fundingSnapshot.Rate
+		}
 	}
-
-	// Get Funding Rate
-	fundingRate, _ := getFundingRate(symbol)
 
 	// Calculate intraday series data
 	intradayData := calculateIntradaySeries(klines3m)
@@ -138,6 +150,7 @@ func GetWithExchange(symbol, exchange string) (*Data, error) {
 
 	return &Data{
 		Symbol:            symbol,
+		Exchange:          strings.ToLower(strings.TrimSpace(exchange)),
 		CurrentPrice:      currentPrice,
 		PriceChange1h:     priceChange1h,
 		PriceChange4h:     priceChange4h,
@@ -156,18 +169,48 @@ func GetWithExchange(symbol, exchange string) (*Data, error) {
 // primaryTimeframe: primary timeframe (used for calculating current indicators), defaults to timeframes[0]
 // count: number of K-lines for each timeframe
 func GetWithTimeframes(symbol string, timeframes []string, primaryTimeframe string, count int) (*Data, error) {
-	return getWithTimeframes(symbol, timeframes, primaryTimeframe, count, false)
+	return GetWithTimeframesForExchange("binance", symbol, timeframes, primaryTimeframe, count)
 }
 
-// GetWithTimeframesFresh is the fail-closed variant used by live AI decision
-// cycles. Any selected Binance timeframe that cannot be fetched fresh aborts
-// the symbol instead of silently using the public client's stale snapshot.
+// GetWithTimeframesFresh is the fail-closed Binance-compatible entry point
+// used by live AI decision cycles. Any selected timeframe that cannot be
+// fetched fresh aborts the symbol instead of using a stale snapshot.
 func GetWithTimeframesFresh(symbol string, timeframes []string, primaryTimeframe string, count int) (*Data, error) {
-	return getWithTimeframes(symbol, timeframes, primaryTimeframe, count, true)
+	return GetWithTimeframesFreshForExchange("binance", symbol, timeframes, primaryTimeframe, count)
 }
 
-func getWithTimeframes(symbol string, timeframes []string, primaryTimeframe string, count int, requireFresh bool) (*Data, error) {
-	symbol = NormalizeForExchange("binance", symbol)
+// GetWithTimeframesForExchange fetches all strategy-analysis data from one
+// exchange. It is the exchange-aware counterpart to the legacy Binance-only
+// GetWithTimeframes entry point.
+func GetWithTimeframesForExchange(exchange, symbol string, timeframes []string, primaryTimeframe string, count int) (*Data, error) {
+	provider, err := NewMarketDataProvider(exchange)
+	if err != nil {
+		return nil, err
+	}
+	return getWithTimeframesFromProvider(provider, symbol, timeframes, primaryTimeframe, count, false)
+}
+
+// GetWithTimeframesFreshForExchange is the fail-closed exchange-aware variant
+// used by live decision cycles.
+func GetWithTimeframesFreshForExchange(exchange, symbol string, timeframes []string, primaryTimeframe string, count int) (*Data, error) {
+	provider, err := NewMarketDataProvider(exchange)
+	if err != nil {
+		return nil, err
+	}
+	return getWithTimeframesFromProvider(provider, symbol, timeframes, primaryTimeframe, count, true)
+}
+
+// GetWithTimeframesForProvider is useful when a caller owns a provider and
+// wants to reuse its HTTP client and caches across several symbols.
+func GetWithTimeframesForProvider(provider MarketDataProvider, symbol string, timeframes []string, primaryTimeframe string, count int, requireFresh bool) (*Data, error) {
+	if provider == nil {
+		return nil, fmt.Errorf("market data provider is nil")
+	}
+	return getWithTimeframesFromProvider(provider, symbol, timeframes, primaryTimeframe, count, requireFresh)
+}
+
+func getWithTimeframesFromProvider(provider MarketDataProvider, symbol string, timeframes []string, primaryTimeframe string, count int, requireFresh bool) (*Data, error) {
+	symbol = provider.NormalizeSymbol(symbol)
 
 	if len(timeframes) == 0 {
 		return nil, fmt.Errorf("at least one timeframe is required")
@@ -193,6 +236,7 @@ func getWithTimeframes(symbol string, timeframes []string, primaryTimeframe stri
 	// Store data for all timeframes
 	timeframeData := make(map[string]*TimeframeSeriesData)
 	var primaryKlines []Kline
+	klinesByTimeframe := make(map[string][]Kline)
 
 	// Get K-line data for each timeframe
 	for _, tf := range timeframes {
@@ -200,12 +244,12 @@ func getWithTimeframes(symbol string, timeframes []string, primaryTimeframe stri
 		var err error
 
 		if requireFresh {
-			klines, err = GetBinanceKlinesFresh(symbol, tf, 200)
+			klines, err = provider.GetKlinesFresh(symbol, tf, 200)
 		} else {
-			klines, err = GetBinanceKlines(symbol, tf, 200)
+			klines, err = provider.GetKlines(symbol, tf, 200)
 		}
 		if err != nil {
-			logger.Infof("⚠️ Failed to get %s %s K-line from Binance: %v", symbol, tf, err)
+			logger.Infof("Failed to get %s %s K-line from %s: %v", symbol, tf, provider.Exchange(), err)
 			if requireFresh {
 				return nil, fmt.Errorf("fresh %s K-line unavailable: %w", tf, err)
 			}
@@ -213,12 +257,13 @@ func getWithTimeframes(symbol string, timeframes []string, primaryTimeframe stri
 		}
 
 		if len(klines) == 0 {
-			logger.Infof("⚠️ %s %s K-line data is empty", symbol, tf)
+			logger.Infof("%s %s K-line data from %s is empty", symbol, tf, provider.Exchange())
 			if requireFresh {
 				return nil, fmt.Errorf("fresh %s K-line data is empty", tf)
 			}
 			continue
 		}
+		klinesByTimeframe[tf] = klines
 
 		// Save primary timeframe K-lines for calculating base indicators
 		if tf == primaryTimeframe {
@@ -251,17 +296,23 @@ func getWithTimeframes(symbol string, timeframes []string, primaryTimeframe stri
 	priceChange1h := calculatePriceChangeByBars(primaryKlines, primaryTimeframe, 60)  // 1 hour
 	priceChange4h := calculatePriceChangeByBars(primaryKlines, primaryTimeframe, 240) // 4 hours
 
-	// Get OI data
-	oiData, err := getOpenInterestData(symbol)
+	// Get OI data from the same exchange. OI is optional for prompt analysis,
+	// but never silently sourced from Binance for a different venue.
+	oiData, err := provider.GetOpenInterest(symbol)
 	if err != nil {
 		oiData = &OIData{Latest: 0, Average: 0}
 	}
 
-	// Get Funding Rate
-	fundingRate, _ := getFundingRate(symbol)
+	// Get funding from the same exchange. Current funding is optional because
+	// some legacy CoinAnk-only providers do not expose it.
+	fundingRate := 0.0
+	if fundingSnapshot, fundingErr := provider.GetFundingSnapshot(symbol); fundingErr == nil && fundingSnapshot != nil {
+		fundingRate = fundingSnapshot.Rate
+	}
 
-	return &Data{
+	data := &Data{
 		Symbol:        symbol,
+		Exchange:      provider.Exchange(),
 		CurrentPrice:  currentPrice,
 		PriceChange1h: priceChange1h,
 		PriceChange4h: priceChange4h,
@@ -271,7 +322,24 @@ func getWithTimeframes(symbol string, timeframes []string, primaryTimeframe stri
 		OpenInterest:  oiData,
 		FundingRate:   fundingRate,
 		TimeframeData: timeframeData,
-	}, nil
+	}
+	if intradayKlines, ok := klinesByTimeframe["3m"]; ok {
+		data.IntradaySeries = calculateIntradaySeries(intradayKlines)
+	}
+	if longerTermKlines, ok := klinesByTimeframe["4h"]; ok {
+		data.LongerTermContext = calculateLongerTermData(longerTermKlines)
+	}
+
+	return data, nil
+}
+
+func isUnifiedPublicExchange(exchange string) bool {
+	switch strings.ToLower(strings.TrimSpace(exchange)) {
+	case "binance", "okx", "bitget":
+		return true
+	default:
+		return false
+	}
 }
 
 // getOpenInterestData retrieves OI data
@@ -549,10 +617,12 @@ func Normalize(symbol string) string {
 // Binance TradFi contracts such as MUUSDT and SKHYNIXUSDT must remain exact
 // USDT symbols even when their base ticker also exists on Hyperliquid XYZ.
 func NormalizeForExchange(exchange, symbol string) string {
-	if strings.EqualFold(strings.TrimSpace(exchange), "binance") {
+	exchangeName := strings.ToLower(strings.TrimSpace(exchange))
+	if exchangeName == "binance" || exchangeName == "okx" || exchangeName == "bitget" || exchangeName == "bybit" || exchangeName == "gate" || exchangeName == "kucoin" || exchangeName == "aster" {
 		normalized := strings.ToUpper(strings.TrimSpace(symbol))
 		normalized = strings.ReplaceAll(normalized, "_", "")
 		normalized = strings.TrimSuffix(normalized, "-SWAP")
+		normalized = strings.TrimSuffix(normalized, "-PERP")
 		normalized = strings.ReplaceAll(normalized, "-", "")
 		if strings.HasSuffix(normalized, "USDT") {
 			return normalized
