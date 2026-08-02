@@ -39,21 +39,15 @@ const (
 func (c *StrategyConfig) ClampLimits() {
 	c.NormalizeProductSchema()
 
-	// Clamp coin source limits
-	if c.CoinSource.AI500Limit > MaxCandidateCoins {
-		c.CoinSource.AI500Limit = MaxCandidateCoins
-	}
-	if c.CoinSource.OITopLimit > MaxCandidateCoins {
-		c.CoinSource.OITopLimit = MaxCandidateCoins
-	}
-	if c.CoinSource.OILowLimit > MaxCandidateCoins {
-		c.CoinSource.OILowLimit = MaxCandidateCoins
-	}
-	if c.CoinSource.VergexLimit > MaxCandidateCoins {
-		c.CoinSource.VergexLimit = MaxCandidateCoins
-	}
+	// Clamp public candidate source limits.
 	if c.CoinSource.BinanceDynamicLimit > MaxCandidateCoins {
 		c.CoinSource.BinanceDynamicLimit = MaxCandidateCoins
+	}
+	if c.CoinSource.HyperMainLimit > MaxCandidateCoins {
+		c.CoinSource.HyperMainLimit = MaxCandidateCoins
+	}
+	if c.CoinSource.HyperRankLimit > MaxCandidateCoins {
+		c.CoinSource.HyperRankLimit = MaxCandidateCoins
 	}
 
 	// Clamp static coins
@@ -155,8 +149,8 @@ func (c *StrategyConfig) ClampLimits() {
 }
 
 // NormalizeProductSchema keeps saved strategy JSON aligned with the product
-// editor schema. LLMs may emit user-facing labels such as "AI500"; persistence
-// must use the exact frontend/backend enum values.
+// editor schema and safely falls back to native public-market candidates for
+// unknown legacy source labels.
 func (c *StrategyConfig) NormalizeProductSchema() {
 	if c.RiskControl.PositionSizingMode != "margin_based" {
 		c.RiskControl.PositionSizingMode = "notional_based"
@@ -185,74 +179,28 @@ func (c *StrategyConfig) NormalizeProductSchema() {
 	switch c.CoinSource.SourceType {
 	case "binance_dynamic":
 		c.CoinSource.UseWatchlist = false
-		c.CoinSource.UseAI500 = false
-		c.CoinSource.UseOITop = false
-		c.CoinSource.UseOILow = false
 		c.CoinSource.UseHyperAll = false
 		c.CoinSource.UseHyperMain = false
 		c.CoinSource.HyperMainLimit = 0
 		c.CoinSource.HyperRankCategory = ""
 		c.CoinSource.HyperRankDirection = ""
 		c.CoinSource.HyperRankLimit = 0
-		c.CoinSource.VergexLimit = 0
-		c.CoinSource.VergexMarketType = ""
-		c.CoinSource.VergexChain = ""
-		c.CoinSource.VergexLiqBand = ""
 		if c.CoinSource.BinanceDynamicLimit <= 0 {
 			c.CoinSource.BinanceDynamicLimit = MaxCandidateCoins
 		}
-	case "ai500":
-		c.CoinSource.UseAI500 = true
-		c.CoinSource.UseOITop = false
-		c.CoinSource.UseOILow = false
-		c.CoinSource.UseHyperAll = false
-		c.CoinSource.UseHyperMain = false
-		if c.CoinSource.AI500Limit <= 0 {
-			c.CoinSource.AI500Limit = 3
-		}
-	case "oi_top":
-		c.CoinSource.UseAI500 = false
-		c.CoinSource.UseOITop = true
-		c.CoinSource.UseOILow = false
-		c.CoinSource.UseHyperAll = false
-		c.CoinSource.UseHyperMain = false
-		if c.CoinSource.OITopLimit <= 0 {
-			c.CoinSource.OITopLimit = 3
-		}
-	case "oi_low":
-		c.CoinSource.UseAI500 = false
-		c.CoinSource.UseOITop = false
-		c.CoinSource.UseOILow = true
-		c.CoinSource.UseHyperAll = false
-		c.CoinSource.UseHyperMain = false
-		if c.CoinSource.OILowLimit <= 0 {
-			c.CoinSource.OILowLimit = 3
-		}
 	case "static":
-		c.CoinSource.UseAI500 = false
-		c.CoinSource.UseOITop = false
-		c.CoinSource.UseOILow = false
 		c.CoinSource.UseHyperAll = false
 		c.CoinSource.UseHyperMain = false
 	case "hyper_all":
-		c.CoinSource.UseAI500 = false
-		c.CoinSource.UseOITop = false
-		c.CoinSource.UseOILow = false
 		c.CoinSource.UseHyperAll = true
 		c.CoinSource.UseHyperMain = false
 	case "hyper_main":
-		c.CoinSource.UseAI500 = false
-		c.CoinSource.UseOITop = false
-		c.CoinSource.UseOILow = false
 		c.CoinSource.UseHyperAll = false
 		c.CoinSource.UseHyperMain = true
 		if c.CoinSource.HyperMainLimit <= 0 {
 			c.CoinSource.HyperMainLimit = 30
 		}
 	case "hyper_rank":
-		c.CoinSource.UseAI500 = false
-		c.CoinSource.UseOITop = false
-		c.CoinSource.UseOILow = false
 		c.CoinSource.UseHyperAll = false
 		c.CoinSource.UseHyperMain = false
 		if c.CoinSource.HyperRankCategory == "" {
@@ -264,32 +212,9 @@ func (c *StrategyConfig) NormalizeProductSchema() {
 		if c.CoinSource.HyperRankLimit <= 0 {
 			c.CoinSource.HyperRankLimit = 5
 		}
-	case "vergex_signal":
-		c.CoinSource.UseAI500 = false
-		c.CoinSource.UseOITop = false
-		c.CoinSource.UseOILow = false
-		c.CoinSource.UseHyperAll = false
-		c.CoinSource.UseHyperMain = false
-		minLimit := 10
-		if len(c.CoinSource.StaticCoins) > 0 {
-			minLimit = len(c.CoinSource.StaticCoins)
-			if minLimit > MaxCandidateCoins {
-				minLimit = MaxCandidateCoins
-			}
-		}
-		if c.CoinSource.VergexLimit < minLimit {
-			c.CoinSource.VergexLimit = minLimit
-		}
-		if c.CoinSource.VergexMarketType == "" {
-			c.CoinSource.VergexMarketType = "all"
-		}
-		if c.CoinSource.VergexChain == "" {
-			c.CoinSource.VergexChain = "hyperliquid"
-		}
 	default:
-		c.CoinSource.UseAI500 = false
-		c.CoinSource.UseOITop = false
-		c.CoinSource.UseOILow = false
+		c.CoinSource.SourceType = "binance_dynamic"
+		c.CoinSource.UseWatchlist = false
 		c.CoinSource.UseHyperAll = false
 		c.CoinSource.UseHyperMain = false
 	}
@@ -320,28 +245,20 @@ func normalizeCoinSourceType(value string) string {
 	switch {
 	case compact == "":
 		return ""
-	case strings.Contains(compact, "ai500"):
-		return "ai500"
-	case strings.Contains(compact, "oitop") || strings.Contains(value, "oi top") || strings.Contains(value, "highest open interest") || strings.Contains(value, "top open interest"):
-		return "oi_top"
-	case strings.Contains(compact, "oilow") || strings.Contains(value, "oi low") || strings.Contains(value, "lowest open interest") || strings.Contains(value, "low open interest"):
-		return "oi_low"
 	case strings.Contains(compact, "hyperrank"):
-		return "binance_dynamic"
+		return "hyper_rank"
 	case strings.Contains(compact, "binance") && (strings.Contains(compact, "dynamic") || strings.Contains(compact, "local")):
 		return "binance_dynamic"
 	case strings.Contains(compact, "localdynamic") || strings.Contains(value, "local dynamic"):
 		return "binance_dynamic"
-	case strings.Contains(compact, "vergex") || strings.Contains(compact, "claw402") || strings.Contains(compact, "dynamicranking") || strings.Contains(value, "dynamic board") || strings.Contains(value, "gainers board") || strings.Contains(value, "signal board"):
-		return "binance_dynamic"
 	case strings.Contains(compact, "hyperall"):
-		return "binance_dynamic"
+		return "hyper_all"
 	case strings.Contains(compact, "hypermain"):
-		return "binance_dynamic"
+		return "hyper_main"
 	case strings.Contains(value, "static") || strings.Contains(value, "fixed"):
 		return "static"
 	default:
-		return value
+		return "binance_dynamic"
 	}
 }
 
@@ -349,20 +266,12 @@ func inferCoinSourceType(source CoinSourceConfig) string {
 	switch {
 	case len(source.StaticCoins) > 0:
 		return "static"
-	case source.UseAI500:
-		return "ai500"
-	case source.UseOITop:
-		return "oi_top"
-	case source.UseOILow:
-		return "oi_low"
 	case source.UseHyperAll:
-		return "binance_dynamic"
+		return "hyper_all"
 	case source.UseHyperMain:
-		return "binance_dynamic"
-	case source.VergexLimit > 0 || source.VergexMarketType != "" || source.VergexChain != "" || source.VergexLiqBand != "":
-		return "binance_dynamic"
+		return "hyper_main"
 	case source.HyperRankCategory != "" || source.HyperRankDirection != "" || source.HyperRankLimit > 0:
-		return "binance_dynamic"
+		return "hyper_rank"
 	default:
 		return "binance_dynamic"
 	}
@@ -886,18 +795,6 @@ type CoinSourceConfig struct {
 	UseWatchlist bool     `json:"use_watchlist,omitempty"`
 	// excluded coins list (filtered out from all sources)
 	ExcludedCoins []string `json:"excluded_coins,omitempty"`
-	// whether to use AI500 coin pool
-	UseAI500 bool `json:"use_ai500"`
-	// AI500 coin pool maximum count
-	AI500Limit int `json:"ai500_limit,omitempty"`
-	// whether to use OI Top (OI increase ranking, suitable for long positions)
-	UseOITop bool `json:"use_oi_top"`
-	// OI Top maximum count
-	OITopLimit int `json:"oi_top_limit,omitempty"`
-	// whether to use OI Low (OI decrease ranking, suitable for short positions)
-	UseOILow bool `json:"use_oi_low"`
-	// OI Low maximum count
-	OILowLimit int `json:"oi_low_limit,omitempty"`
 	// whether to use Hyperliquid All coins (all available perp pairs)
 	UseHyperAll bool `json:"use_hyper_all"`
 	// whether to use Hyperliquid Main coins (top N by 24h volume)
@@ -910,15 +807,6 @@ type CoinSourceConfig struct {
 	HyperRankDirection string `json:"hyper_rank_direction,omitempty"`
 	// Hyperliquid dynamic ranking maximum count. Defaults to 5 and is hard capped at 10 for AI context safety.
 	HyperRankLimit int `json:"hyper_rank_limit,omitempty"`
-	// Vergex signal-ranking maximum count. Defaults to 5 and is hard capped at 10.
-	VergexLimit int `json:"vergex_limit,omitempty"`
-	// Vergex market type for detail endpoints, e.g. hip3_perp for Hyperliquid TradeFi perps.
-	VergexMarketType string `json:"vergex_market_type,omitempty"`
-	// Vergex chain query parameter. Defaults to hyperliquid.
-	VergexChain string `json:"vergex_chain,omitempty"`
-	// Vergex liquidation band query parameter.
-	VergexLiqBand string `json:"vergex_liq_band,omitempty"`
-	// Note: API URLs are now built automatically using NofxOSAPIKey from IndicatorConfig
 }
 
 // IndicatorConfig indicator configuration
@@ -946,30 +834,6 @@ type IndicatorConfig struct {
 	BOLLPeriods []int `json:"boll_periods,omitempty"` // default [20] - can select multiple timeframes
 	// external data sources
 	ExternalDataSources []ExternalDataSource `json:"external_data_sources,omitempty"`
-
-	// ========== NofxOS Unified API Configuration ==========
-	// Unified API Key for all NofxOS data sources
-	NofxOSAPIKey string `json:"nofxos_api_key,omitempty"`
-
-	// quantitative data sources (capital flow, position changes, price changes)
-	EnableQuantData    bool `json:"enable_quant_data"`    // whether to enable quantitative data
-	EnableQuantOI      bool `json:"enable_quant_oi"`      // whether to show OI data
-	EnableQuantNetflow bool `json:"enable_quant_netflow"` // whether to show Netflow data
-
-	// OI ranking data (market-wide open interest increase/decrease rankings)
-	EnableOIRanking   bool   `json:"enable_oi_ranking"`             // whether to enable OI ranking data
-	OIRankingDuration string `json:"oi_ranking_duration,omitempty"` // duration: 1h, 4h, 24h
-	OIRankingLimit    int    `json:"oi_ranking_limit,omitempty"`    // number of entries (default 10)
-
-	// NetFlow ranking data (market-wide fund flow rankings - institution/personal)
-	EnableNetFlowRanking   bool   `json:"enable_netflow_ranking"`             // whether to enable NetFlow ranking data
-	NetFlowRankingDuration string `json:"netflow_ranking_duration,omitempty"` // duration: 1h, 4h, 24h
-	NetFlowRankingLimit    int    `json:"netflow_ranking_limit,omitempty"`    // number of entries (default 10)
-
-	// Price ranking data (market-wide gainers/losers)
-	EnablePriceRanking   bool   `json:"enable_price_ranking"`             // whether to enable price ranking data
-	PriceRankingDuration string `json:"price_ranking_duration,omitempty"` // durations: "1h" or "1h,4h,24h"
-	PriceRankingLimit    int    `json:"price_ranking_limit,omitempty"`    // number of entries per ranking (default 10)
 }
 
 // KlineConfig K-line configuration
@@ -1303,16 +1167,8 @@ func GetDefaultStrategyConfig(lang string) StrategyConfig {
 		CoinSource: CoinSourceConfig{
 			SourceType:          "binance_dynamic",
 			BinanceDynamicLimit: MaxCandidateCoins,
-			UseAI500:            false,
-			AI500Limit:          3,
-			UseOITop:            false,
-			OITopLimit:          3,
-			UseOILow:            false,
-			OILowLimit:          3,
 			UseHyperAll:         false,
 			UseHyperMain:        false,
-			HyperMainLimit:      30,
-			HyperRankCategory:   "all",
 		},
 		Indicators: IndicatorConfig{
 			Klines: KlineConfig{
@@ -1336,21 +1192,6 @@ func GetDefaultStrategyConfig(lang string) StrategyConfig {
 			RSIPeriods:        []int{7, 14},
 			ATRPeriods:        []int{14},
 			BOLLPeriods:       []int{20},
-			// External ranking datasets are opt-in. The default local dynamic
-			// strategy uses exchange public data and raw candles only.
-			NofxOSAPIKey:           "",
-			EnableQuantData:        false,
-			EnableQuantOI:          false,
-			EnableQuantNetflow:     false,
-			EnableOIRanking:        false,
-			OIRankingDuration:      "1h",
-			OIRankingLimit:         10,
-			EnableNetFlowRanking:   false,
-			NetFlowRankingDuration: "1h",
-			NetFlowRankingLimit:    10,
-			EnablePriceRanking:     false,
-			PriceRankingDuration:   "1h,4h,24h",
-			PriceRankingLimit:      10,
 		},
 		RiskControl: RiskControlConfig{
 			MaxPositions:                 3,
@@ -1589,8 +1430,6 @@ type TokenEstimate struct {
 type TokenBreakdown struct {
 	SystemPrompt  int `json:"system_prompt"`
 	MarketData    int `json:"market_data"`
-	RankingData   int `json:"ranking_data"`
-	QuantData     int `json:"quant_data"`
 	FixedOverhead int `json:"fixed_overhead"`
 }
 
@@ -1634,31 +1473,9 @@ func GetContextLimit(provider string) int {
 	return contextLimitDeepSeek // safe default
 }
 
-// GetContextLimitForClient returns context limit for a provider+model pair.
-// For claw402, the underlying model is inferred from the model name prefix.
+// GetContextLimitForClient returns the context limit for a provider.
 func GetContextLimitForClient(provider, model string) int {
-	if provider == "claw402" {
-		switch {
-		case strings.HasPrefix(model, "claude"):
-			return ModelContextLimits["claude"]
-		case strings.HasPrefix(model, "gpt"), strings.HasPrefix(model, "o1"), strings.HasPrefix(model, "o3"):
-			return ModelContextLimits["openai"]
-		case strings.HasPrefix(model, "gemini"):
-			return ModelContextLimits["gemini"]
-		case strings.HasPrefix(model, "grok"):
-			return ModelContextLimits["grok"]
-		case strings.HasPrefix(model, "kimi"):
-			return ModelContextLimits["kimi"]
-		case strings.HasPrefix(model, "qwen"):
-			return ModelContextLimits["qwen"]
-		case strings.HasPrefix(model, "minimax"):
-			return ModelContextLimits["minimax"]
-		case strings.HasPrefix(model, "deepseek"):
-			return ModelContextLimits["deepseek"]
-		default:
-			return ModelContextLimits["deepseek"]
-		}
-	}
+	_ = model
 	return GetContextLimit(provider)
 }
 
@@ -1732,50 +1549,8 @@ func (c *StrategyConfig) EstimateTokens() TokenEstimate {
 
 	breakdown.MarketData = totalMarketChars / 4 // numeric data: ~4 chars per token
 
-	// --- Quant Data ---
-	if c.Indicators.EnableQuantData {
-		quantCharsPerCoin := 0
-		if c.Indicators.EnableQuantOI {
-			quantCharsPerCoin += 300
-		}
-		if c.Indicators.EnableQuantNetflow {
-			quantCharsPerCoin += 300
-		}
-		breakdown.QuantData = (numCoins * quantCharsPerCoin) / 4
-	}
-
-	// --- Ranking Data ---
-	rankingChars := 0
-	if c.Indicators.EnableOIRanking {
-		limit := c.Indicators.OIRankingLimit
-		if limit <= 0 {
-			limit = 10
-		}
-		rankingChars += limit * 60
-	}
-	if c.Indicators.EnableNetFlowRanking {
-		limit := c.Indicators.NetFlowRankingLimit
-		if limit <= 0 {
-			limit = 10
-		}
-		rankingChars += limit * 80
-	}
-	if c.Indicators.EnablePriceRanking {
-		limit := c.Indicators.PriceRankingLimit
-		if limit <= 0 {
-			limit = 10
-		}
-		// Count durations (comma-separated)
-		numDurations := 1
-		if c.Indicators.PriceRankingDuration != "" {
-			numDurations = len(strings.Split(c.Indicators.PriceRankingDuration, ","))
-		}
-		rankingChars += limit * numDurations * 40
-	}
-	breakdown.RankingData = rankingChars / 4
-
 	// --- Total with 15% safety margin ---
-	subtotal := breakdown.SystemPrompt + breakdown.MarketData + breakdown.RankingData + breakdown.QuantData + breakdown.FixedOverhead
+	subtotal := breakdown.SystemPrompt + breakdown.MarketData + breakdown.FixedOverhead
 	total := subtotal * 115 / 100
 
 	// --- Model limits ---
@@ -1841,20 +1616,14 @@ func (c *StrategyConfig) getEffectiveCoinCount() int {
 	switch c.CoinSource.SourceType {
 	case "static":
 		count = len(c.CoinSource.StaticCoins)
-	case "ai500":
-		count = c.CoinSource.AI500Limit
-	case "oi_top":
-		count = c.CoinSource.OITopLimit
-	case "oi_low":
-		count = c.CoinSource.OILowLimit
 	case "hyper_rank":
 		count = c.CoinSource.HyperRankLimit
-	case "vergex_signal":
-		count = c.CoinSource.VergexLimit
 	case "hyper_main":
 		count = c.CoinSource.HyperMainLimit
 	case "hyper_all":
 		count = c.CoinSource.HyperMainLimit
+	case "binance_dynamic":
+		count = c.CoinSource.BinanceDynamicLimit
 	default:
 		count = c.CoinSource.HyperRankLimit
 	}

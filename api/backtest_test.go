@@ -12,7 +12,7 @@ func TestValidateHistoricalReplaySupportRejectsLiveOnlySources(t *testing.T) {
 		t.Fatalf("local default should be replayable: %v", err)
 	}
 
-	cfg.CoinSource.SourceType = "vergex_signal"
+	cfg.CoinSource.SourceType = "hyper_rank"
 	if err := validateHistoricalReplaySupport(&cfg); err == nil {
 		t.Fatal("expected paid live ranking source to be rejected")
 	}

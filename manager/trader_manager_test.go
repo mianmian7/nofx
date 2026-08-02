@@ -288,19 +288,18 @@ func TestEnsureHyperliquidNativeStrategy(t *testing.T) {
 	t.Run("non-hyperliquid exchange is untouched", func(t *testing.T) {
 		cfg := &store.StrategyConfig{
 			CoinSource: store.CoinSourceConfig{
-				SourceType: "ai500",
-				UseAI500:   true,
+				SourceType: "legacy_remote_source",
 			},
 		}
 		ensureHyperliquidNativeStrategy("bot", "binance", cfg)
 
-		if cfg.CoinSource.SourceType != "ai500" || !cfg.CoinSource.UseAI500 {
+		if cfg.CoinSource.SourceType != "legacy_remote_source" {
 			t.Errorf("non-hyperliquid config was modified: %+v", cfg.CoinSource)
 		}
 	})
 
 	t.Run("native sources are kept as-is", func(t *testing.T) {
-		nativeSources := []string{"hyper_rank", "vergex_signal", "static", "hyper_all", "hyper_main", " Hyper_Rank "}
+		nativeSources := []string{"hyper_rank", "static", "hyper_all", "hyper_main", " Hyper_Rank "}
 		for _, src := range nativeSources {
 			cfg := &store.StrategyConfig{
 				CoinSource: store.CoinSourceConfig{SourceType: src},
@@ -316,10 +315,7 @@ func TestEnsureHyperliquidNativeStrategy(t *testing.T) {
 	t.Run("legacy source on hyperliquid is forced to hyper_rank with defaults", func(t *testing.T) {
 		cfg := &store.StrategyConfig{
 			CoinSource: store.CoinSourceConfig{
-				SourceType:   "ai500",
-				UseAI500:     true,
-				UseOITop:     true,
-				UseOILow:     true,
+				SourceType:   "legacy_remote_source",
 				UseHyperAll:  true,
 				UseHyperMain: true,
 			},
@@ -330,7 +326,7 @@ func TestEnsureHyperliquidNativeStrategy(t *testing.T) {
 		if cs.SourceType != "hyper_rank" {
 			t.Errorf("SourceType = %q, want hyper_rank", cs.SourceType)
 		}
-		if cs.UseAI500 || cs.UseOITop || cs.UseOILow || cs.UseHyperAll || cs.UseHyperMain {
+		if cs.UseHyperAll || cs.UseHyperMain {
 			t.Errorf("legacy source flags should all be cleared: %+v", cs)
 		}
 		if cs.HyperRankCategory != "stock" {
@@ -347,7 +343,7 @@ func TestEnsureHyperliquidNativeStrategy(t *testing.T) {
 	t.Run("existing hyper_rank settings are preserved when forcing", func(t *testing.T) {
 		cfg := &store.StrategyConfig{
 			CoinSource: store.CoinSourceConfig{
-				SourceType:         "oi_top",
+				SourceType:         "legacy_remote_source",
 				HyperRankCategory:  "crypto",
 				HyperRankDirection: "losers",
 				HyperRankLimit:     8,
@@ -372,7 +368,7 @@ func TestEnsureHyperliquidNativeStrategy(t *testing.T) {
 
 	t.Run("exchange type is matched case-insensitively with whitespace", func(t *testing.T) {
 		cfg := &store.StrategyConfig{
-			CoinSource: store.CoinSourceConfig{SourceType: "ai500"},
+			CoinSource: store.CoinSourceConfig{SourceType: "legacy_remote_source"},
 		}
 		ensureHyperliquidNativeStrategy("bot", "  HyperLiquid  ", cfg)
 

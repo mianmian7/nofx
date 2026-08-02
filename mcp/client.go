@@ -50,22 +50,16 @@ var (
 
 // TokenUsage represents token usage from AI API response
 type TokenUsage struct {
-	Provider         string // payment channel: "claw402" or native provider name
+	Provider         string // native AI provider name
 	Model            string
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
 }
 
-// Channel returns the payment channel category for telemetry.
-// Returns "claw402" or "native" based on the provider.
+// Channel returns the provider channel category for telemetry.
 func (u TokenUsage) Channel() string {
-	switch u.Provider {
-	case ProviderClaw402:
-		return "claw402"
-	default:
-		return "native"
-	}
+	return "native"
 }
 
 // Client AI API configuration
@@ -81,15 +75,11 @@ type Client struct {
 	Log        Logger       // Exported for sub-packages
 	Cfg        *Config      // Exported for sub-packages
 
-	// LastCallSettledUSD is the actually-settled cost (USD) of the most
-	// recent call, reported by x402 upto gateways via response header.
-	// Zero when the last call carried no settlement information.
+	// LastCallSettledUSD is retained for interface compatibility with older
+	// callers. Native provider calls do not report gateway settlement data.
 	LastCallSettledUSD float64
 
 	// LastCallUsage is the token usage of the most recent streamed call.
-	// On SSE responses the gateway cannot deliver the settlement header
-	// (headers are flushed before usage is known), so callers derive the
-	// actual cost from this instead. Nil when the stream carried no usage.
 	LastCallUsage *TokenUsage
 
 	// Hooks are used to implement dynamic dispatch (polymorphism)

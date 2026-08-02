@@ -54,8 +54,8 @@ func TestCreateDefaultStrategiesUsesOneReadyToRunLocalDynamicPreset(t *testing.T
 	if trendCfg.CoinSource.SourceType != "binance_dynamic" || trendCfg.CoinSource.BinanceDynamicLimit != store.MaxCandidateCoins {
 		t.Fatalf("default strategy should use Binance local dynamic candidates, got %+v", trendCfg.CoinSource)
 	}
-	if trendCfg.CoinSource.UseAI500 || trendCfg.CoinSource.VergexLimit != 0 || trendCfg.RiskControl.MaxPositions != 3 {
-		t.Fatalf("default strategy should avoid paid ranking sources, got coin=%+v risk=%+v", trendCfg.CoinSource, trendCfg.RiskControl)
+	if trendCfg.CoinSource.HyperRankLimit != 0 || trendCfg.RiskControl.MaxPositions != 3 {
+		t.Fatalf("default strategy should avoid non-Binance ranking sources, got coin=%+v risk=%+v", trendCfg.CoinSource, trendCfg.RiskControl)
 	}
 	if trendCfg.RiskControl.MaxLeverage != 3 {
 		t.Fatalf("default strategy should use conservative 3x leverage, got risk=%+v", trendCfg.RiskControl)

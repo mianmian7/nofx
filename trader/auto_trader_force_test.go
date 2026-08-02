@@ -9,7 +9,7 @@ import (
 
 func baseForceTrader() *AutoTrader {
 	cfg := store.GetDefaultStrategyConfig("en")
-	cfg.CoinSource.SourceType = "vergex_signal"
+	cfg.CoinSource.SourceType = "static"
 	cfg.RiskControl.MaxPositions = 5
 	cfg.RiskControl.MaxLeverage = 10
 	cfg.RiskControl.AltcoinMaxPositionValueRatio = 10
@@ -27,12 +27,12 @@ func TestEnsureLongShortCoverageSafeModeSkips(t *testing.T) {
 	}
 }
 
-func TestEnsureLongShortCoverageNonVergexSkips(t *testing.T) {
+func TestEnsureLongShortCoveragePreservesDecisions(t *testing.T) {
 	at := baseForceTrader()
-	at.config.StrategyConfig.CoinSource.SourceType = "static"
-	out := at.ensureLongShortCoverage(nil, &kernel.Context{}, 100)
-	if len(out) != 0 {
-		t.Fatalf("non-vergex source must not force opens, got %d", len(out))
+	in := []kernel.Decision{{Action: "open_long", Symbol: "BTCUSDT"}}
+	out := at.ensureLongShortCoverage(in, &kernel.Context{}, 100)
+	if len(out) != len(in) || out[0].Symbol != in[0].Symbol {
+		t.Fatalf("compatibility hook changed decisions: got %#v", out)
 	}
 }
 
@@ -53,20 +53,5 @@ func TestEnsureLongShortCoverageNoCandidatesNoForce(t *testing.T) {
 	out := at.ensureLongShortCoverage(nil, &kernel.Context{}, 100)
 	if len(out) != 0 {
 		t.Fatalf("no candidates available -> nothing to force, got %d", len(out))
-	}
-}
-
-func TestDirectionalCandidatesForSignalModeMirrorsForcedCoverage(t *testing.T) {
-	bullish := []kernel.DirectionalCandidate{{Symbol: "BTCUSDT", Score: 1.2}}
-	bearish := []kernel.DirectionalCandidate{{Symbol: "ETHUSDT", Score: -0.9}}
-
-	longCandidates, shortCandidates := directionalCandidatesForSignalMode(bullish, bearish, false)
-	if longCandidates[0].Symbol != "BTCUSDT" || shortCandidates[0].Symbol != "ETHUSDT" {
-		t.Fatalf("normal candidates were unexpectedly swapped: long=%v short=%v", longCandidates, shortCandidates)
-	}
-
-	longCandidates, shortCandidates = directionalCandidatesForSignalMode(bullish, bearish, true)
-	if longCandidates[0].Symbol != "ETHUSDT" || shortCandidates[0].Symbol != "BTCUSDT" {
-		t.Fatalf("inverse candidates were not swapped: long=%v short=%v", longCandidates, shortCandidates)
 	}
 }

@@ -102,7 +102,7 @@ func TestStrategyConfigNormalizeProductSchemaForLLMLabels(t *testing.T) {
 		"strategy_type": "AI strategy",
 		"ai_config": map[string]any{
 			"coin_source": map[string]any{
-				"source_type": "AI500",
+				"source_type": "Binance local dynamic",
 			},
 			"indicators": map[string]any{
 				"klines": map[string]any{
@@ -122,11 +122,8 @@ func TestStrategyConfigNormalizeProductSchemaForLLMLabels(t *testing.T) {
 	if merged.StrategyType != "ai_trading" {
 		t.Fatalf("strategy_type = %q, want ai_trading", merged.StrategyType)
 	}
-	if merged.CoinSource.SourceType != "ai500" {
-		t.Fatalf("source_type = %q, want ai500", merged.CoinSource.SourceType)
-	}
-	if !merged.CoinSource.UseAI500 || merged.CoinSource.UseOITop || merged.CoinSource.UseOILow {
-		t.Fatalf("coin source flags not normalized: %+v", merged.CoinSource)
+	if merged.CoinSource.SourceType != "binance_dynamic" {
+		t.Fatalf("source_type = %q, want binance_dynamic", merged.CoinSource.SourceType)
 	}
 	if merged.Indicators.Klines.PrimaryTimeframe != "1m" {
 		t.Fatalf("primary_timeframe = %q, want 1m", merged.Indicators.Klines.PrimaryTimeframe)
@@ -142,10 +139,10 @@ func TestStrategyConfigNormalizeProductSchemaForLLMLabels(t *testing.T) {
 	}
 }
 
-func TestStrategyConfigMigratesVergexSignalToBinanceDynamic(t *testing.T) {
+func TestStrategyConfigMigratesLegacyRemoteSourceToBinanceDynamic(t *testing.T) {
 	cfg := GetDefaultStrategyConfig("zh")
 	cfg.CoinSource = CoinSourceConfig{
-		SourceType: "Claw402 Vergex signal board",
+		SourceType: "legacy remote signal board",
 	}
 
 	cfg.NormalizeProductSchema()
@@ -153,8 +150,8 @@ func TestStrategyConfigMigratesVergexSignalToBinanceDynamic(t *testing.T) {
 	if cfg.CoinSource.SourceType != "binance_dynamic" {
 		t.Fatalf("source_type = %q, want binance_dynamic", cfg.CoinSource.SourceType)
 	}
-	if cfg.CoinSource.VergexLimit != 0 || cfg.CoinSource.VergexMarketType != "" || cfg.CoinSource.VergexChain != "" {
-		t.Fatalf("migrated source retained Vergex settings: %+v", cfg.CoinSource)
+	if cfg.CoinSource.BinanceDynamicLimit != MaxCandidateCoins {
+		t.Fatalf("migrated source did not receive default Binance limit: %+v", cfg.CoinSource)
 	}
 }
 
@@ -191,36 +188,32 @@ func TestTradFiWatchlistBuildsBinanceUSDTContracts(t *testing.T) {
 	}
 }
 
-func TestStrategyConfigNormalizeProductSchemaRemovesVergexSignal(t *testing.T) {
+func TestStrategyConfigNormalizeProductSchemaRemovesLegacyRemoteSource(t *testing.T) {
 	t.Run("dynamic board keeps the one built-in strategy candidate depth", func(t *testing.T) {
 		cfg := GetDefaultStrategyConfig("zh")
 		cfg.CoinSource = CoinSourceConfig{
-			SourceType:    "vergex_signal",
-			VergexLimit:   1,
-			StaticCoins:   nil,
-			VergexChain:   "hyperliquid",
-			VergexLiqBand: "",
+			SourceType:  "legacy_remote_source",
+			StaticCoins: nil,
 		}
 
 		cfg.NormalizeProductSchema()
 
-		if cfg.CoinSource.SourceType != "binance_dynamic" || cfg.CoinSource.VergexLimit != 0 {
-			t.Fatalf("Vergex source was not migrated: %+v", cfg.CoinSource)
+		if cfg.CoinSource.SourceType != "binance_dynamic" || cfg.CoinSource.BinanceDynamicLimit != MaxCandidateCoins {
+			t.Fatalf("legacy source was not migrated: %+v", cfg.CoinSource)
 		}
 	})
 
 	t.Run("manual picks keep selected count", func(t *testing.T) {
 		cfg := GetDefaultStrategyConfig("zh")
 		cfg.CoinSource = CoinSourceConfig{
-			SourceType:  "vergex_signal",
-			VergexLimit: 1,
+			SourceType:  "legacy_remote_source",
 			StaticCoins: []string{"xyz:nvda", "XYZ:AAPL"},
 		}
 
 		cfg.NormalizeProductSchema()
 
-		if cfg.CoinSource.SourceType != "binance_dynamic" || cfg.CoinSource.VergexLimit != 0 {
-			t.Fatalf("Vergex source was not migrated: %+v", cfg.CoinSource)
+		if cfg.CoinSource.SourceType != "binance_dynamic" || cfg.CoinSource.BinanceDynamicLimit != MaxCandidateCoins {
+			t.Fatalf("legacy source was not migrated: %+v", cfg.CoinSource)
 		}
 	})
 }

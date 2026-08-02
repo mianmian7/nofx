@@ -147,14 +147,6 @@ func (s *Server) setupRoutes() {
 		// System config (no authentication required, for frontend to determine admin mode/registration status)
 		s.route(api, "GET", "/config", "Get system configuration", s.handleGetSystemConfig)
 
-		// Wallet validation (no authentication required — used by frontend config form)
-		api.POST("/wallet/validate", s.handleWalletValidate)
-		api.POST("/wallet/generate", s.handleWalletGenerate)
-		s.route(api, "GET", "/hyperliquid/connect-config", "Hyperliquid is disabled", s.handleHyperliquidGone)
-		s.route(api, "GET", "/hyperliquid/account", "Hyperliquid is disabled", s.handleHyperliquidGone)
-		s.route(api, "GET", "/hyperliquid/agent", "Hyperliquid is disabled", s.handleHyperliquidGone)
-		s.route(api, "POST", "/hyperliquid/submit-exchange", "Hyperliquid is disabled", s.handleHyperliquidGone)
-
 		// Crypto related endpoints (no authentication required, not exposed to bot).
 		// SECURITY: only the config + public-key endpoints are exposed. Transport
 		// encryption is one-directional (client encrypts to the server's public key;
@@ -203,8 +195,6 @@ func (s *Server) setupRoutes() {
 		{
 			// Logout (add to blacklist)
 			s.route(protected, "POST", "/logout", "Logout (blacklist token)", s.handleLogout)
-			s.route(protected, "POST", "/onboarding/beginner", "Prepare beginner claw402 wallet and default model", s.handleBeginnerOnboarding)
-			s.route(protected, "GET", "/onboarding/beginner/current", "Get current beginner claw402 wallet", s.handleCurrentBeginnerWallet)
 
 			// User account management
 			s.routeWithSchema(protected, "PUT", "/user/password", "Change current user password",
@@ -213,11 +203,6 @@ func (s *Server) setupRoutes() {
 
 			// Server IP query (requires authentication, for whitelist configuration)
 			s.route(protected, "GET", "/server-ip", "Get server public IP (for exchange whitelist)", s.handleGetServerIP)
-
-			s.route(protected, "GET", "/vergex/signal-ranking", "Hyperliquid/Vergex is disabled", s.handleHyperliquidGone)
-			s.route(protected, "GET", "/vergex/signal-lab", "Hyperliquid/Vergex is disabled", s.handleHyperliquidGone)
-			s.route(protected, "GET", "/vergex/cost-liquidation-heatmap", "Hyperliquid/Vergex is disabled", s.handleHyperliquidGone)
-			s.route(protected, "GET", "/vergex/flow-markets", "Hyperliquid/Vergex is disabled", s.handleHyperliquidGone)
 
 			// AI trader management
 			s.routeWithSchema(protected, "GET", "/my-traders", "List user's traders with status",
@@ -371,10 +356,7 @@ StrategyConfig fields:
   indicators.rsi_periods: [7,14] default
   indicators.atr_periods: [14] default
   indicators.boll_periods: [20] default
-  indicators.nofxos_api_key: optional; never insert a shared or hard-coded key
-  indicators.enable_quant_data/enable_quant_oi/enable_quant_netflow: optional paid/external enrichment, disabled by default
-  indicators.enable_oi_ranking/enable_netflow_ranking/enable_price_ranking: optional paid/external ranking, disabled by default
-  risk_control.max_positions: max simultaneous positions (1=single coin, 3=diversified, 5=wide)
+	  risk_control.max_positions: max simultaneous positions (1=single coin, 3=diversified, 5=wide)
   risk_control.max_leverage: unified maximum leverage for every asset (default 3; range 1-125)
   risk_control.btc_eth_max_position_value_ratio: max position size as multiple of equity (default 1)
   risk_control.altcoin_max_position_value_ratio: default 0.5

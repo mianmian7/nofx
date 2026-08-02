@@ -40,45 +40,6 @@ func GetModelPrice(model string) float64 {
 	return 0.01 // default fallback
 }
 
-// modelTokenPrices maps model → USD per 1M input/output tokens, mirroring the
-// claw402 gateway pricing config (providers/*.yaml). Used to derive the actual
-// upto-settled cost from streamed token usage, where the gateway cannot
-// deliver the settlement header (SSE headers are flushed before usage is known).
-var modelTokenPrices = map[string]struct{ In, Out float64 }{
-	"gpt-5.6":           {5, 30},
-	"gpt-5.6-terra":     {2.5, 15},
-	"gpt-5.6-luna":      {1, 6},
-	"claude-fable":      {10, 50},
-	"claude-opus":       {5, 25},
-	"deepseek-v4-flash": {0.14, 0.28},
-	"deepseek-v4-pro":   {1.74, 3.48},
-	"deepseek":          {0.27, 1.1},
-	"deepseek-reasoner": {0.55, 2.19},
-	"glm-5":             {0.6, 2},
-}
-
-// Gateway upto settlement formula constants (see claw402 token_estimate
-// pricing: token_safety_margin 0.15, token_min_price 0.0001).
-const (
-	uptoSafetyMargin = 1.15
-	uptoMinPriceUSD  = 0.0001
-)
-
-// ComputeUsageCost derives the upto-settled cost of a call from token usage,
-// using the same formula as the claw402 gateway. ok is false for models
-// without a token price entry.
-func ComputeUsageCost(model string, promptTokens, completionTokens int) (float64, bool) {
-	p, ok := modelTokenPrices[model]
-	if !ok {
-		return 0, false
-	}
-	cost := (float64(promptTokens)*p.In + float64(completionTokens)*p.Out) / 1e6 * uptoSafetyMargin
-	if cost < uptoMinPriceUSD {
-		cost = uptoMinPriceUSD
-	}
-	return cost, true
-}
-
 // AIChargeStore handles AI charge records
 type AIChargeStore struct {
 	db *gorm.DB
@@ -98,9 +59,8 @@ func (s *AIChargeStore) Record(traderID, model, provider string) error {
 	return s.RecordWithCost(traderID, model, provider, GetModelPrice(model))
 }
 
-// RecordWithCost records a charge with an explicit cost — e.g. the actual
-// settled amount reported by the payment gateway (upto scheme) — instead of
-// the flat per-call estimate from modelPrices.
+// RecordWithCost records a charge with an explicit cost instead of the flat
+// per-call estimate from modelPrices.
 func (s *AIChargeStore) RecordWithCost(traderID, model, provider string, costUSD float64) error {
 	charge := &AICharge{
 		TraderID: traderID,
@@ -186,23 +146,4 @@ func applyPeriodFilter(query *gorm.DB, period string) *gorm.DB {
 		start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 		return query.Where("created_at >= ?", start)
 	}
-}
-
-// IsClaw402Config checks if a trader config uses claw402 payment provider
-func IsClaw402Config(aiModel string) bool {
-	return aiModel == "claw402"
-}
-
-// EstimateRunway estimates how many days the given USDC balance will last
-func EstimateRunway(usdcBalance float64, modelName string, scanIntervalMinutes int) (dailyCost float64, runwayDays float64) {
-	if scanIntervalMinutes <= 0 {
-		scanIntervalMinutes = 15
-	}
-	callsPerDay := float64(24*60) / float64(scanIntervalMinutes)
-	pricePerCall := GetModelPrice(modelName)
-	dailyCost = callsPerDay * pricePerCall
-	if dailyCost > 0 && usdcBalance > 0 {
-		runwayDays = usdcBalance / dailyCost
-	}
-	return dailyCost, runwayDays
 }

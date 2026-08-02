@@ -95,7 +95,7 @@ func TestLeverageFallback(t *testing.T) {
 	}
 }
 
-func TestClaw402XyzAllowsFullTenXNotional(t *testing.T) {
+func TestXyzAllowsConfiguredTenXNotional(t *testing.T) {
 	decision := Decision{
 		Symbol:          "xyz:SP500",
 		Action:          "open_long",
@@ -106,7 +106,7 @@ func TestClaw402XyzAllowsFullTenXNotional(t *testing.T) {
 	}
 
 	if err := validateDecision(&decision, 30.68, 10, 10.0, 10.0); err != nil {
-		t.Fatalf("xyz TradeFi Claw402 full 10x notional should pass validation: %v", err)
+		t.Fatalf("xyz full 10x notional should pass validation: %v", err)
 	}
 }
 

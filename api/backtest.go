@@ -343,9 +343,7 @@ func validateHistoricalReplaySupport(config *store.StrategyConfig) error {
 		return fmt.Errorf("historical replay cannot reconstruct past %s candidate rankings; use a static or Binance local-dynamic strategy", config.CoinSource.SourceType)
 	}
 	indicators := config.Indicators
-	if indicators.EnableOI || indicators.EnableFundingRate || indicators.EnableQuantData ||
-		indicators.EnableQuantOI || indicators.EnableQuantNetflow || indicators.EnableOIRanking ||
-		indicators.EnableNetFlowRanking || indicators.EnablePriceRanking {
+	if indicators.EnableOI || indicators.EnableFundingRate {
 		return fmt.Errorf("historical replay requires external live-only indicators to be disabled")
 	}
 	return nil
@@ -546,8 +544,6 @@ func (p *historicalAIProvider) Decide(ctx context.Context, snapshot backtest.Sna
 		Positions:      positions,
 		CandidateCoins: []kernel.CandidateCoin{{Symbol: p.symbol, Sources: []string{"historical_replay"}}},
 		MarketDataMap:  map[string]*market.Data{p.symbol: marketData},
-		OITopDataMap:   map[string]*kernel.OITopData{},
-		QuantDataMap:   map[string]*kernel.QuantData{},
 	}
 	full, err := kernel.GetFullDecisionWithStrategy(kernelContext, p.client, p.engine, "")
 	if err != nil {

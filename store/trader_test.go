@@ -64,23 +64,31 @@ func TestEnsureInvertSignalsColumnMigratesExistingTraderTable(t *testing.T) {
 	}
 }
 
-func TestDropLegacyLeverageColumns(t *testing.T) {
+func TestDropLegacyTraderColumns(t *testing.T) {
 	database := openTraderTestDatabase(t)
 	if err := database.Exec(`CREATE TABLE traders (
 		id TEXT PRIMARY KEY,
-		user_id TEXT NOT NULL,
-		btc_eth_leverage INTEGER,
-		altcoin_leverage INTEGER
+			user_id TEXT NOT NULL,
+			btc_eth_leverage INTEGER,
+			altcoin_leverage INTEGER,
+			use_coin_pool BOOLEAN,
+			use_oi_top BOOLEAN
 	)`).Error; err != nil {
 		t.Fatalf("create legacy trader table: %v", err)
 	}
-	if err := NewTraderStore(database).dropLegacyLeverageColumns(); err != nil {
-		t.Fatalf("drop legacy leverage columns: %v", err)
+	if err := NewTraderStore(database).dropLegacyTraderColumns(); err != nil {
+		t.Fatalf("drop legacy trader columns: %v", err)
 	}
 	if database.Migrator().HasColumn("traders", "btc_eth_leverage") {
 		t.Fatal("btc_eth_leverage column still exists")
 	}
 	if database.Migrator().HasColumn("traders", "altcoin_leverage") {
 		t.Fatal("altcoin_leverage column still exists")
+	}
+	if database.Migrator().HasColumn("traders", "use_coin_pool") {
+		t.Fatal("use_coin_pool column still exists")
+	}
+	if database.Migrator().HasColumn("traders", "use_oi_top") {
+		t.Fatal("use_oi_top column still exists")
 	}
 }

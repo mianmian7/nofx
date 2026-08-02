@@ -451,11 +451,11 @@ func createTestContext() *Context {
 		CandidateCoins: []CandidateCoin{
 			{
 				Symbol:  "BTCUSDT",
-				Sources: []string{"ai500"},
+				Sources: []string{"static"},
 			},
 			{
 				Symbol:  "ETHUSDT",
-				Sources: []string{"oi_top"},
+				Sources: []string{"static"},
 			},
 		},
 		Timeframes: []string{"5M", "15M", "1H", "4H"},

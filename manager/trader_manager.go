@@ -447,15 +447,12 @@ func ensureHyperliquidNativeStrategy(traderName, exchangeType string, cfg *store
 	}
 
 	source := strings.ToLower(strings.TrimSpace(cfg.CoinSource.SourceType))
-	if source == "hyper_rank" || source == "vergex_signal" || source == "static" || source == "hyper_all" || source == "hyper_main" {
+	if source == "hyper_rank" || source == "static" || source == "hyper_all" || source == "hyper_main" {
 		return
 	}
 
 	logger.Warnf("⚠️ Trader %s uses legacy coin source %q on Hyperliquid; forcing native stock ranking to avoid crypto fallback", traderName, cfg.CoinSource.SourceType)
 	cfg.CoinSource.SourceType = "hyper_rank"
-	cfg.CoinSource.UseAI500 = false
-	cfg.CoinSource.UseOITop = false
-	cfg.CoinSource.UseOILow = false
 	cfg.CoinSource.UseHyperAll = false
 	cfg.CoinSource.UseHyperMain = false
 	if cfg.CoinSource.HyperRankCategory == "" {
@@ -655,7 +652,7 @@ func (tm *TraderManager) LoadTradersFromStore(st *store.Store) error {
 			continue
 		}
 
-		// Add to TraderManager (ai500APIURL/oiTopAPIURL already obtained from strategy config)
+		// Add the fully initialized trader to TraderManager.
 		err = tm.addTraderFromStore(traderCfg, aiModelCfg, exchangeCfg, st)
 		if err != nil {
 			logger.Warnf("%s failed to add trader: %v", traderLogTag(traderCfg.ID, traderCfg.Name), err)
@@ -785,7 +782,7 @@ func (tm *TraderManager) addTraderFromStore(traderCfg *store.Trader, aiModelCfg 
 		return fmt.Errorf("failed to configure AI models for trader %s: %w", traderCfg.Name, err)
 	}
 
-	// Build AutoTraderConfig (ai500APIURL/oiTopAPIURL obtained from strategy config, used in StrategyEngine)
+	// Build AutoTraderConfig for StrategyEngine.
 	traderConfig := trader.AutoTraderConfig{
 		ID:                    traderCfg.ID,
 		Name:                  traderCfg.Name,
@@ -870,8 +867,6 @@ func (tm *TraderManager) addTraderFromStore(traderCfg *store.Trader, aiModelCfg 
 		traderConfig.CustomAPIKey = string(aiModelCfg.APIKey)
 	}
 
-	traderConfig.Claw402WalletKey = resolveTraderDataWalletKey(st, traderCfg.UserID, aiModelCfg, strategyConfig)
-
 	// Create trader instance
 	at, err := trader.NewAutoTrader(traderConfig, st, traderCfg.UserID)
 	if err != nil {
@@ -909,49 +904,4 @@ func (tm *TraderManager) addTraderFromStore(traderCfg *store.Trader, aiModelCfg 
 	}
 
 	return nil
-}
-
-func resolveTraderDataWalletKey(st *store.Store, userID string, selectedModel *store.AIModel, strategyConfig *store.StrategyConfig) string {
-	if !strategyNeedsPaidDataWallet(strategyConfig) {
-		return ""
-	}
-
-	// Fast path: selected model is itself a claw402 model.
-	if selectedModel != nil && selectedModel.Provider == "claw402" {
-		if walletKey := string(selectedModel.APIKey); walletKey != "" {
-			return walletKey
-		}
-	}
-
-	if st == nil {
-		return ""
-	}
-
-	// Fallback: find any configured claw402 model for this user so that paid
-	// NofxAI data sources work even when a non-claw402 model (e.g. deepseek) is
-	// selected as the AI brain.
-	preferredID := ""
-	walletKey, err := st.AIModel().ResolveClaw402WalletKey(userID, preferredID)
-	if err != nil {
-		logger.Warnf("⚠️ Failed to load claw402 wallet for trader data routing: %v", err)
-		return ""
-	}
-	return walletKey
-}
-
-func strategyNeedsPaidDataWallet(config *store.StrategyConfig) bool {
-	if config == nil {
-		return false
-	}
-	source := config.CoinSource
-	switch source.SourceType {
-	case "vergex_signal":
-		return true
-	case "ai500", "oi_top", "oi_low":
-		return strings.TrimSpace(config.Indicators.NofxOSAPIKey) == ""
-	case "mixed":
-		return (source.UseAI500 || source.UseOITop || source.UseOILow) && strings.TrimSpace(config.Indicators.NofxOSAPIKey) == ""
-	default:
-		return false
-	}
 }

@@ -38,7 +38,7 @@ func (s *Server) handleStatisticsFull(c *gin.Context) {
 	// Aggregate across the trader's historical IDs exactly like the position
 	// history endpoint (handler_order.go). One-click "NOFX Autopilot" relaunches
 	// create fresh trader rows, but the closed positions stay under the old
-	// generated IDs (which embed userID + "claw402"). Without this, a freshly
+	// generated IDs with a legacy provider suffix. Without this, a freshly
 	// relaunched Autopilot would report only the current incarnation's trades
 	// instead of its real lifetime history.
 	userID := c.GetString("user_id")

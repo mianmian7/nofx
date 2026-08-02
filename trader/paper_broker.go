@@ -31,7 +31,7 @@ type PaperPriceSource interface {
 }
 
 type PaperDepthSource interface {
-	GetDepth(symbol string, limit int) (*market.BinanceDepthSnapshot, error)
+	GetDepth(symbol string, limit int) (*market.DepthSnapshot, error)
 }
 
 type PaperBrokerConfig struct {
@@ -1229,17 +1229,17 @@ func (b *PaperBroker) recordCloseLocked(position PaperPosition, exitPrice float6
 		return
 	}
 	rec := PaperClosedTrade{
-		Symbol:       position.Symbol,
-		Side:         position.Side,
-		Quantity:     position.Quantity,
-		EntryPrice:   position.EntryPrice,
-		ExitPrice:    exitPrice,
-		EntryTime:    position.EntryTime,
-		ExitTime:     at,
-		RealizedPnL:  realizedPnL,
-		Fee:          fee,
-		Leverage:     position.Leverage,
-		CloseReason:  "paper",
+		Symbol:      position.Symbol,
+		Side:        position.Side,
+		Quantity:    position.Quantity,
+		EntryPrice:  position.EntryPrice,
+		ExitPrice:   exitPrice,
+		EntryTime:   position.EntryTime,
+		ExitTime:    at,
+		RealizedPnL: realizedPnL,
+		Fee:         fee,
+		Leverage:    position.Leverage,
+		CloseReason: "paper",
 	}
 	// Record outside the lock to avoid deadlocks if the recorder talks to a DB.
 	go func() {

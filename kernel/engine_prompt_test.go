@@ -7,62 +7,33 @@ import (
 	"nofx/store"
 )
 
-func TestBuildSystemPromptUsesVergexClaw402Prompt(t *testing.T) {
+func TestBuildSystemPromptUsesOrdinaryPromptForUnknownLegacySource(t *testing.T) {
 	cfg := store.GetDefaultStrategyConfig("zh")
-	cfg.CoinSource.SourceType = "vergex_signal"
-	cfg.CoinSource.VergexLimit = 5
+	cfg.CoinSource.SourceType = "legacy_remote_source"
 	cfg.PromptSections.RoleDefinition = "# You are a professional Hyperliquid USDC multi-asset trading AI"
 	cfg.CustomPrompt = "Long only, no shorts."
 
 	engine := NewStrategyEngine(&cfg)
 	prompt := engine.BuildSystemPrompt(30, "balanced")
 
-	if !strings.Contains(prompt, "NOFX Claw402 auto-trader") {
-		t.Fatalf("prompt did not use the Claw402/Vergex TradeFi role:\n%s", prompt)
-	}
-	if !strings.Contains(prompt, "Claw402.ai Signal Ranking") || !strings.Contains(prompt, "Signal Lab") || !strings.Contains(prompt, "Cost/Liquidation Heatmap") {
-		t.Fatalf("prompt is missing Claw402/Vergex detail data guidance:\n%s", prompt)
-	}
-	if !strings.Contains(prompt, "open_short") {
-		t.Fatalf("prompt should explicitly allow short entries:\n%s", prompt)
-	}
-	if !strings.Contains(prompt, "Direction must be data-driven") {
-		t.Fatalf("prompt should explain that direction is data-driven, not long-only:\n%s", prompt)
-	}
-	if !strings.Contains(prompt, "every open position must use at most 3x") {
-		t.Fatalf("prompt should apply the configured 3x leverage limit:\n%s", prompt)
-	}
-	if !strings.Contains(prompt, "current available margin") {
-		t.Fatalf("prompt should size Claw402 opens from current available margin:\n%s", prompt)
-	}
 	for _, phrase := range []string{
-		"at least 4h",
-		"until 8h",
-		"Wait 3h after closing a symbol",
-		"no more than 3 new positions per hour and 2 per decision cycle",
+		"Data Dictionary & Trading Rules",
+		"You are a professional Binance USDⓈ-M multi-asset trading AI",
+		"open_short",
+		"current available margin",
 	} {
 		if !strings.Contains(prompt, phrase) {
-			t.Fatalf("prompt should reflect the strategy-scoped throttle %q:\n%s", phrase, prompt)
+			t.Fatalf("ordinary prompt missing %q:\n%s", phrase, prompt)
 		}
 	}
 	if containsCJK(prompt) {
 		t.Fatalf("system prompt must be English-only, got CJK text:\n%s", prompt)
 	}
-	legacyPhrases := []string{
-		"Hyperliquid USDC multi-asset trading AI",
-		"Long only",
-		"Altcoin",
-		"BTC/ETH",
-		"LONG-ONLY",
-		"Do not short",
-		"MUST open a long",
-		"25% of account equity",
-		"20-25%",
-		"2-3x leverage when conditions are uncertain",
-	}
-	for _, phrase := range legacyPhrases {
+	for _, phrase := range []string{
+		"paid signal provider",
+	} {
 		if strings.Contains(prompt, phrase) {
-			t.Fatalf("prompt still contains legacy phrase %q:\n%s", phrase, prompt)
+			t.Fatalf("ordinary prompt still contains removed remote phrase %q:\n%s", phrase, prompt)
 		}
 	}
 }
@@ -71,9 +42,6 @@ func TestBuildSystemPromptFallsBackToEnglishWhenConfiguredLanguageIsChinese(t *t
 	cfg := store.GetDefaultStrategyConfig("zh")
 	cfg.CoinSource.SourceType = "static"
 	cfg.CoinSource.StaticCoins = []string{"BTCUSDT", "ETHUSDT"}
-	cfg.CoinSource.VergexLimit = 0
-	cfg.CoinSource.VergexMarketType = ""
-	cfg.CoinSource.VergexChain = ""
 	cfg.PromptSections.RoleDefinition = "# You are a Chinese system prompt"
 	cfg.PromptSections.TradingFrequency = "# High-frequency trading\nTrade every minute."
 	cfg.PromptSections.EntryStandards = "# Entry\nOpen positions freely."
@@ -143,7 +111,7 @@ func TestBuildSystemPromptDoesNotForceLongOnlyForSingleXYZ(t *testing.T) {
 	prompt := buildXYZStockCustomPrompt("XYZ:INTC")
 
 	required := []string{
-		"DIRECTIONAL, SIGNAL-DRIVEN",
+		"DIRECTIONAL, DATA-DRIVEN",
 		"You may open long or short",
 		"open_short",
 	}
@@ -158,6 +126,8 @@ func TestBuildSystemPromptDoesNotForceLongOnlyForSingleXYZ(t *testing.T) {
 		"Do not short",
 		"MUST open a long",
 		"Probing > waiting",
+		"Signal Lab",
+		"Heatmap",
 	}
 	for _, phrase := range forbidden {
 		if strings.Contains(prompt, phrase) {

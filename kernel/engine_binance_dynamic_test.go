@@ -31,14 +31,3 @@ func TestBinanceDynamicCandidatesUseLocalMarketSource(t *testing.T) {
 		}
 	}
 }
-
-func TestBinanceDynamicDoesNotInitializeClaw402FromEnvironment(t *testing.T) {
-	t.Setenv("CLAW402_WALLET_KEY", "test-wallet-key-that-must-not-be-read")
-	cfg := store.GetDefaultStrategyConfig("zh")
-	cfg.CoinSource.SourceType = "binance_dynamic"
-
-	engine := NewStrategyEngine(&cfg)
-	if engine.vergexClient != nil {
-		t.Fatal("Binance dynamic strategy initialized a Vergex client")
-	}
-}

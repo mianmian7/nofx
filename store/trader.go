@@ -40,10 +40,7 @@ type Trader struct {
 	CreatedAt           time.Time `gorm:"column:created_at;autoCreateTime" json:"created_at"`
 	UpdatedAt           time.Time `gorm:"column:updated_at;autoUpdateTime" json:"updated_at"`
 
-	// Remaining legacy fields are retained until their separate migrations.
 	TradingSymbols       string `gorm:"column:trading_symbols;default:''" json:"trading_symbols,omitempty"`
-	UseAI500             bool   `gorm:"column:use_coin_pool;default:false" json:"use_ai500,omitempty"`
-	UseOITop             bool   `gorm:"column:use_oi_top;default:false" json:"use_oi_top,omitempty"`
 	CustomPrompt         string `gorm:"column:custom_prompt;default:''" json:"custom_prompt,omitempty"`
 	OverrideBasePrompt   bool   `gorm:"column:override_base_prompt;default:false" json:"override_base_prompt,omitempty"`
 	SystemPromptTemplate string `gorm:"column:system_prompt_template;default:default" json:"system_prompt_template,omitempty"`
@@ -119,14 +116,14 @@ func (s *TraderStore) initTables() error {
 			if err := s.ensureTraderConfigurationColumns(); err != nil {
 				return fmt.Errorf("failed to migrate trader configuration columns: %w", err)
 			}
-			return s.dropLegacyLeverageColumns()
+			return s.dropLegacyTraderColumns()
 		}
 	}
 	// Use GORM AutoMigrate
 	if err := s.db.AutoMigrate(&Trader{}); err != nil {
 		return fmt.Errorf("failed to migrate traders table: %w", err)
 	}
-	return s.dropLegacyLeverageColumns()
+	return s.dropLegacyTraderColumns()
 }
 
 func (s *TraderStore) ensureTraderConfigurationColumns() error {
@@ -151,8 +148,8 @@ func (s *TraderStore) ensureInvertSignalsColumn() error {
 	return s.ensureTraderConfigurationColumns()
 }
 
-func (s *TraderStore) dropLegacyLeverageColumns() error {
-	for _, columnName := range []string{"btc_eth_leverage", "altcoin_leverage"} {
+func (s *TraderStore) dropLegacyTraderColumns() error {
+	for _, columnName := range []string{"btc_eth_leverage", "altcoin_leverage", "use_coin_pool", "use_oi_top"} {
 		if !s.db.Migrator().HasColumn("traders", columnName) {
 			continue
 		}
@@ -210,8 +207,6 @@ func (s *TraderStore) Update(trader *Trader) error {
 		"show_in_competition":    trader.ShowInCompetition,
 		"invert_signals":         trader.InvertSignals,
 		"trading_symbols":        trader.TradingSymbols,
-		"use_coin_pool":          trader.UseAI500,
-		"use_oi_top":             trader.UseOITop,
 		"custom_prompt":          trader.CustomPrompt,
 		"override_base_prompt":   trader.OverrideBasePrompt,
 		"system_prompt_template": trader.SystemPromptTemplate,

@@ -1,26 +1,15 @@
 package api
 
 import (
-	"errors"
 	"testing"
 
 	"nofx/crypto"
 	"nofx/store"
 )
 
-// Well-known throwaway development key (hardhat account #1) — never funded.
-const testClaw402Key = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
-
-func withAIWalletBalance(t *testing.T, balance float64, err error) {
-	t.Helper()
-	original := queryAIWalletBalance
-	queryAIWalletBalance = func(string) (float64, error) {
-		return balance, err
-	}
-	t.Cleanup(func() {
-		queryAIWalletBalance = original
-	})
-}
+// Well-known throwaway development key used only to validate Hyperliquid
+// wallet-shaped exchange credentials in tests.
+const testPrivateKey = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
 
 func findCheck(t *testing.T, checks []LaunchCheck, id string) LaunchCheck {
 	t.Helper()
@@ -31,100 +20,6 @@ func findCheck(t *testing.T, checks []LaunchCheck, id string) LaunchCheck {
 	}
 	t.Fatalf("check %q not found in %+v", id, checks)
 	return LaunchCheck{}
-}
-
-func TestCheckLaunchAIModel(t *testing.T) {
-	if got := checkLaunchAIModel(nil); got.Status != launchCheckStatusFailed || got.Code != "MODEL_NOT_FOUND" {
-		t.Fatalf("nil model: expected failed/MODEL_NOT_FOUND, got %+v", got)
-	}
-
-	disabled := &store.AIModel{Name: "Claw402", Provider: "claw402", Enabled: false}
-	if got := checkLaunchAIModel(disabled); got.Code != "MODEL_DISABLED" {
-		t.Fatalf("disabled model: expected MODEL_DISABLED, got %+v", got)
-	}
-
-	noKey := &store.AIModel{Name: "Claw402", Provider: "claw402", Enabled: true}
-	if got := checkLaunchAIModel(noKey); got.Code != "MODEL_MISSING_CREDENTIALS" {
-		t.Fatalf("missing key: expected MODEL_MISSING_CREDENTIALS, got %+v", got)
-	}
-
-	ready := &store.AIModel{Name: "Claw402", Provider: "claw402", Enabled: true, APIKey: crypto.EncryptedString(testClaw402Key)}
-	if got := checkLaunchAIModel(ready); got.Status != launchCheckStatusOK {
-		t.Fatalf("ready model: expected ok, got %+v", got)
-	}
-}
-
-func TestCheckLaunchAIWalletSkipsNonClaw402(t *testing.T) {
-	model := &store.AIModel{Name: "DeepSeek", Provider: "deepseek", Enabled: true, APIKey: crypto.EncryptedString("sk-test")}
-	checks := checkLaunchAIWallet(model)
-	if got := findCheck(t, checks, launchCheckAIWallet); got.Status != launchCheckStatusSkipped {
-		t.Fatalf("non-claw402 wallet check should be skipped, got %+v", got)
-	}
-	if got := findCheck(t, checks, launchCheckAIWalletFunds); got.Status != launchCheckStatusSkipped {
-		t.Fatalf("non-claw402 funds check should be skipped, got %+v", got)
-	}
-}
-
-func TestCheckLaunchAIWalletInvalidKey(t *testing.T) {
-	model := &store.AIModel{Name: "Claw402", Provider: "claw402", Enabled: true, APIKey: crypto.EncryptedString("not-a-key")}
-	checks := checkLaunchAIWallet(model)
-	got := findCheck(t, checks, launchCheckAIWallet)
-	if got.Status != launchCheckStatusFailed || got.Code != "AI_WALLET_INVALID_KEY" {
-		t.Fatalf("invalid key: expected failed/AI_WALLET_INVALID_KEY, got %+v", got)
-	}
-	if funds := findCheck(t, checks, launchCheckAIWalletFunds); funds.Status != launchCheckStatusSkipped {
-		t.Fatalf("funds check should be skipped when the key is invalid, got %+v", funds)
-	}
-}
-
-func TestCheckLaunchAIWalletInsufficientFunds(t *testing.T) {
-	withAIWalletBalance(t, 0.25, nil)
-
-	model := &store.AIModel{Name: "Claw402", Provider: "claw402", Enabled: true, APIKey: crypto.EncryptedString(testClaw402Key)}
-	checks := checkLaunchAIWallet(model)
-
-	wallet := findCheck(t, checks, launchCheckAIWallet)
-	if wallet.Status != launchCheckStatusOK || wallet.Address == "" {
-		t.Fatalf("wallet check should pass with derived address, got %+v", wallet)
-	}
-
-	funds := findCheck(t, checks, launchCheckAIWalletFunds)
-	if funds.Status != launchCheckStatusFailed || funds.Code != "AI_WALLET_INSUFFICIENT_FUNDS" {
-		t.Fatalf("expected failed/AI_WALLET_INSUFFICIENT_FUNDS, got %+v", funds)
-	}
-	if funds.Actual == nil || *funds.Actual != 0.25 {
-		t.Fatalf("expected actual balance 0.25, got %+v", funds.Actual)
-	}
-	if funds.Required != MinAIFeeUSDC {
-		t.Fatalf("expected required %v, got %v", MinAIFeeUSDC, funds.Required)
-	}
-	if funds.Address == "" {
-		t.Fatalf("funds check should carry the deposit address")
-	}
-}
-
-func TestCheckLaunchAIWalletRPCOutageIsWarningNotFailure(t *testing.T) {
-	withAIWalletBalance(t, 0, errors.New("rpc unreachable"))
-
-	model := &store.AIModel{Name: "Claw402", Provider: "claw402", Enabled: true, APIKey: crypto.EncryptedString(testClaw402Key)}
-	checks := checkLaunchAIWallet(model)
-
-	funds := findCheck(t, checks, launchCheckAIWalletFunds)
-	if funds.Status != launchCheckStatusWarning || funds.Code != "AI_WALLET_BALANCE_UNKNOWN" {
-		t.Fatalf("RPC outage must degrade to warning, got %+v", funds)
-	}
-}
-
-func TestCheckLaunchAIWalletFunded(t *testing.T) {
-	withAIWalletBalance(t, 25.5, nil)
-
-	model := &store.AIModel{Name: "Claw402", Provider: "claw402", Enabled: true, APIKey: crypto.EncryptedString(testClaw402Key)}
-	checks := checkLaunchAIWallet(model)
-
-	funds := findCheck(t, checks, launchCheckAIWalletFunds)
-	if funds.Status != launchCheckStatusOK {
-		t.Fatalf("funded wallet should pass, got %+v", funds)
-	}
 }
 
 func TestDescribeExchangeConfigIssue(t *testing.T) {
@@ -146,7 +41,7 @@ func TestDescribeExchangeConfigIssue(t *testing.T) {
 		ID:                    "ex",
 		ExchangeType:          "hyperliquid",
 		Enabled:               true,
-		APIKey:                crypto.EncryptedString(testClaw402Key),
+		APIKey:                crypto.EncryptedString(testPrivateKey),
 		HyperliquidWalletAddr: "0x1111111111111111111111111111111111111111",
 	}
 	if _, code := describeExchangeConfigIssue(unapproved); code != "HYPERLIQUID_BUILDER_NOT_APPROVED" {
@@ -164,7 +59,7 @@ func readyHyperliquidExchange() *store.Exchange {
 		ID:                         "ex-hl",
 		ExchangeType:               "hyperliquid",
 		Enabled:                    true,
-		APIKey:                     crypto.EncryptedString(testClaw402Key),
+		APIKey:                     crypto.EncryptedString(testPrivateKey),
 		HyperliquidWalletAddr:      "0x1111111111111111111111111111111111111111",
 		HyperliquidBuilderApproved: true,
 	}
@@ -249,42 +144,28 @@ func TestCheckLaunchExchangeInvalidCredentials(t *testing.T) {
 }
 
 func TestRunLaunchPreflightAggregatesReadiness(t *testing.T) {
-	withAIWalletBalance(t, 10, nil)
-
 	exchange := readyHyperliquidExchange()
 	server := preflightTestServer(t, "user-1", map[string]ExchangeAccountState{
 		exchange.ID: {ExchangeID: exchange.ID, Status: exchangeAccountStatusOK, AvailableBalance: 100, TotalEquity: 100},
 	})
-	model := &store.AIModel{Name: "Claw402", Provider: "claw402", Enabled: true, APIKey: crypto.EncryptedString(testClaw402Key)}
+	model := &store.AIModel{Name: "DeepSeek", Provider: "deepseek", Enabled: true, APIKey: crypto.EncryptedString("sk-test")}
 	strategy := &store.Strategy{ID: "strat-1", Name: "Autopilot"}
 
 	result := server.runLaunchPreflight("user-1", model, exchange, strategy, true)
 	if !result.Ready {
 		t.Fatalf("expected ready, got %+v", result)
 	}
-	if result.MinAIFeeUSDC != MinAIFeeUSDC || result.MinTradingUSDC != MinTradingUSDC {
-		t.Fatalf("minimums must be exposed in the response, got %+v", result)
-	}
-
-	// Break one prerequisite → not ready, and Summary explains it.
-	withAIWalletBalance(t, 0, nil)
-	result = server.runLaunchPreflight("user-1", model, exchange, strategy, true)
-	if result.Ready {
-		t.Fatalf("expected not ready with empty AI wallet, got %+v", result)
-	}
-	if result.Summary() == "" {
-		t.Fatalf("summary should describe the failing check")
+	if result.MinTradingUSDC != MinTradingUSDC {
+		t.Fatalf("trading minimum must be exposed in the response, got %+v", result)
 	}
 }
 
 func TestRunLaunchPreflightWarningsDoNotBlock(t *testing.T) {
-	withAIWalletBalance(t, 0, errors.New("rpc down"))
-
 	exchange := readyHyperliquidExchange()
 	server := preflightTestServer(t, "user-1", map[string]ExchangeAccountState{
 		exchange.ID: {ExchangeID: exchange.ID, Status: exchangeAccountStatusOK, AvailableBalance: 100},
 	})
-	model := &store.AIModel{Name: "Claw402", Provider: "claw402", Enabled: true, APIKey: crypto.EncryptedString(testClaw402Key)}
+	model := &store.AIModel{Name: "DeepSeek", Provider: "deepseek", Enabled: true, APIKey: crypto.EncryptedString("sk-test")}
 
 	result := server.runLaunchPreflight("user-1", model, exchange, nil, false)
 	if !result.Ready {

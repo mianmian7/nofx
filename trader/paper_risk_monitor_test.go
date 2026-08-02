@@ -96,7 +96,7 @@ func TestPaperRiskMonitorClosesTakeProfitBetweenAIScanIntervals(t *testing.T) {
 			ScanInterval:             time.Hour,
 			PaperRiskMonitorInterval: 5 * time.Millisecond,
 		},
-		strategyEngine:        kernel.NewStrategyEngine(&strategy, ""),
+		strategyEngine:        kernel.NewStrategyEngine(&strategy),
 		initialBalance:        1_000,
 		lastResetTime:         time.Now(),
 		positionFirstSeenTime: make(map[string]int64),
@@ -446,7 +446,7 @@ func newMonitorTestAutoTrader(mode ExecutionMode, broker *PaperBroker, interval 
 		config: AutoTraderConfig{
 			ScanInterval: time.Hour, PaperRiskMonitorInterval: interval,
 		},
-		strategyEngine:        kernel.NewStrategyEngine(&strategy, ""),
+		strategyEngine:        kernel.NewStrategyEngine(&strategy),
 		initialBalance:        1_000,
 		lastResetTime:         time.Now(),
 		positionFirstSeenTime: make(map[string]int64),

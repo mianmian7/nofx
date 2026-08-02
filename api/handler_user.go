@@ -254,14 +254,8 @@ func (s *Server) createDefaultStrategies(userID string, lang string) error {
 		c.CoinSource.SourceType = "binance_dynamic"
 		c.CoinSource.BinanceDynamicLimit = store.MaxCandidateCoins
 		c.CoinSource.StaticCoins = nil
-		c.CoinSource.UseAI500 = false
-		c.CoinSource.UseOITop = false
-		c.CoinSource.UseOILow = false
 		c.CoinSource.UseHyperAll = false
 		c.CoinSource.UseHyperMain = false
-		c.CoinSource.VergexLimit = 0
-		c.CoinSource.VergexMarketType = ""
-		c.CoinSource.VergexChain = ""
 		c.RiskControl.MaxPositions = 3
 		c.RiskControl.MaxLeverage = 3
 		c.RiskControl.BTCETHMaxPositionValueRatio = 1.0

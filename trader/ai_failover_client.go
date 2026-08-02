@@ -54,15 +54,11 @@ func newAIClientForCandidate(configuration AIModelCandidate) (mcp.AIClient, erro
 		return nil, fmt.Errorf("unsupported AI provider %q", configuration.Provider)
 	}
 
-	if configuration.Provider == mcp.ProviderClaw402 {
-		client.SetAPIKey(configuration.APIKey, "", configuration.ModelName)
-	} else {
-		client.SetAPIKey(configuration.APIKey, configuration.CustomAPIURL, configuration.ModelName)
-		if configuration.CustomAPIURL != "" {
-			if configurator, ok := client.(mcp.CustomURLConfigurator); ok {
-				if err := configurator.ConfigureCustomURL(configuration.CustomAPIURL); err != nil {
-					return nil, fmt.Errorf("invalid custom model URL: %w", err)
-				}
+	client.SetAPIKey(configuration.APIKey, configuration.CustomAPIURL, configuration.ModelName)
+	if configuration.CustomAPIURL != "" {
+		if configurator, ok := client.(mcp.CustomURLConfigurator); ok {
+			if err := configurator.ConfigureCustomURL(configuration.CustomAPIURL); err != nil {
+				return nil, fmt.Errorf("invalid custom model URL: %w", err)
 			}
 		}
 	}
