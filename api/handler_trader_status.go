@@ -394,7 +394,7 @@ func (s *Server) closePaperPosition(traderID, symbol, side string) error {
 		MakerMaxReprices: 2,
 	}
 
-	broker, err := trader.NewPersistentPaperBroker(config, priceSource, s.store.Paper(), traderID, nil)
+	broker, err := trader.NewPersistentPaperBroker(config, priceSource, s.store.Paper(), traderID, trader.NewPaperTradeRecorder(s.store, "paper"))
 	if err != nil {
 		return fmt.Errorf("rebuild paper broker: %w", err)
 	}

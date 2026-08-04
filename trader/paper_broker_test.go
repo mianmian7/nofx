@@ -1,8 +1,10 @@
 package trader
 
 import (
+	"encoding/json"
 	"math"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,6 +70,13 @@ func TestPaperBrokerRestoresBalanceAndPositionsAfterRestart(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("open_long: %v", err)
 	}
+	openRows, err := st.Position().GetOpenPositions("paper-restart")
+	if err != nil {
+		t.Fatalf("query trader_positions: %v", err)
+	}
+	if len(openRows) != 0 {
+		t.Fatalf("paper trader_positions OPEN rows = %d, want zero because paper state is the runtime ledger", len(openRows))
+	}
 	want := first.Snapshot()
 
 	restored, err := NewPersistentPaperBroker(config, prices, st.Paper(), "paper-restart", newPaperTradeRecorder(st, "paper"))
@@ -82,6 +91,69 @@ func TestPaperBrokerRestoresBalanceAndPositionsAfterRestart(t *testing.T) {
 	positions, err := restored.GetPositions()
 	if err != nil || len(positions) != 1 || positions[0]["symbol"] != "MUUSDT" {
 		t.Fatalf("restored positions = %#v, err=%v", positions, err)
+	}
+}
+
+func TestPersistentPaperBrokerQuarantinesInvalidHistoricalProtection(t *testing.T) {
+	st, err := store.New(filepath.Join(t.TempDir(), "paper-quarantine.db"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	state := paperBrokerState{
+		InitialBalance: 1_000,
+		Balance:        1_000,
+		Positions: map[string]PaperPosition{
+			// This mirrors the observed failure: a long stop above its entry.
+			"MUUSDT:long": {
+				Symbol: "MUUSDT", Side: "long", Quantity: 1, EntryPrice: 852.91,
+				Leverage: 3, StopLoss: 855, TakeProfit: 900,
+			},
+			"BTCUSDT:short": {
+				Symbol: "BTCUSDT", Side: "short", Quantity: 1, EntryPrice: 100,
+				Leverage: 3, StopLoss: 110, TakeProfit: 90,
+			},
+		},
+		Marks:  map[string]float64{"MUUSDT": 852.91, "BTCUSDT": 100},
+		NextID: 1,
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshal state: %v", err)
+	}
+	if err := st.Paper().SavePaperState("paper-quarantine", raw); err != nil {
+		t.Fatalf("save paper state: %v", err)
+	}
+
+	broker, err := NewPersistentPaperBroker(
+		PaperBrokerConfig{InitialBalance: 1_000},
+		fixedPaperPriceSource{"MUUSDT": 852.91, "BTCUSDT": 100},
+		st.Paper(), "paper-quarantine", newPaperTradeRecorder(st, "paper"),
+	)
+	if err != nil {
+		t.Fatalf("NewPersistentPaperBroker: %v", err)
+	}
+	warnings := broker.RestoreWarnings()
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "MUUSDT:long") || !strings.Contains(warnings[0], "below entry price") {
+		t.Fatalf("restore warnings = %#v", warnings)
+	}
+	if len(broker.QuarantinedPositions()) != 1 {
+		t.Fatalf("quarantined positions = %#v, want one", broker.QuarantinedPositions())
+	}
+	positions, err := broker.GetPositions()
+	if err != nil || len(positions) != 1 || positions[0]["symbol"] != "BTCUSDT" || positions[0]["side"] != "short" {
+		t.Fatalf("active restored positions = %#v, err=%v", positions, err)
+	}
+
+	saved, found, err := st.Paper().LoadPaperState("paper-quarantine")
+	if err != nil || !found {
+		t.Fatalf("load migrated paper state: found=%v err=%v", found, err)
+	}
+	var migrated paperBrokerState
+	if err := json.Unmarshal(saved, &migrated); err != nil {
+		t.Fatalf("decode migrated paper state: %v", err)
+	}
+	if len(migrated.Positions) != 1 || len(migrated.QuarantinedPositions) != 1 || len(migrated.RestoreWarnings) != 1 {
+		t.Fatalf("migrated state active=%d quarantined=%d warnings=%d", len(migrated.Positions), len(migrated.QuarantinedPositions), len(migrated.RestoreWarnings))
 	}
 }
 
@@ -105,6 +177,56 @@ func TestPaperBrokerLiquidationPrecedesStopLoss(t *testing.T) {
 	}
 	if len(exits) != 1 || exits[0].Action != "liquidation" {
 		t.Fatalf("exits = %#v, want liquidation before stop loss", exits)
+	}
+}
+
+func TestPaperBrokerShortTakeProfitUsesAbsolutePriceAndDirection(t *testing.T) {
+	broker, err := NewPaperBroker(PaperBrokerConfig{InitialBalance: 1_000, SlippageBPS: 0}, fixedPaperPriceSource{"MUUSDT": 100})
+	if err != nil {
+		t.Fatalf("NewPaperBroker: %v", err)
+	}
+	if _, err := broker.ExecuteDecision(&kernel.Decision{
+		Symbol: "MUUSDT", Action: "open_short", PositionSizeUSD: 300,
+		Leverage: 3, StopLoss: 110, TakeProfit: 90,
+	}); err != nil {
+		t.Fatalf("open_short: %v", err)
+	}
+	exits, err := broker.ProcessPrice("MUUSDT", 90, time.Unix(1_784_650_050, 0).UTC())
+	if err != nil {
+		t.Fatalf("ProcessPrice: %v", err)
+	}
+	if len(exits) != 1 || exits[0].Action != "take_profit" || exits[0].Side != "short" {
+		t.Fatalf("short exits = %#v, want one short take_profit", exits)
+	}
+}
+
+func TestValidatePaperExitPricesCoversBothDirections(t *testing.T) {
+	tests := []struct {
+		name   string
+		action string
+		entry  float64
+		stop   float64
+		target float64
+		valid  bool
+	}{
+		{name: "long valid", action: "open_long", entry: 100, stop: 90, target: 110, valid: true},
+		{name: "long stop wrong side", action: "open_long", entry: 100, stop: 105, target: 110},
+		{name: "long target wrong side", action: "open_long", entry: 100, stop: 90, target: 95},
+		{name: "short valid", action: "open_short", entry: 100, stop: 110, target: 90, valid: true},
+		{name: "short stop wrong side", action: "open_short", entry: 100, stop: 95, target: 90},
+		{name: "short target wrong side", action: "open_short", entry: 100, stop: 110, target: 105},
+		{name: "optional protections", action: "open_long", entry: 100, valid: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validatePaperExitPrices(tt.action, tt.entry, tt.stop, tt.target)
+			if tt.valid && err != nil {
+				t.Fatalf("validation error = %v", err)
+			}
+			if !tt.valid && err == nil {
+				t.Fatal("invalid protection was accepted")
+			}
+		})
 	}
 }
 
@@ -443,6 +565,10 @@ func TestPaperPerformanceAndFillMetadataSurviveRestart(t *testing.T) {
 	prices["MUUSDT"] = 90
 	if _, err := first.ExecuteDecision(&kernel.Decision{Symbol: "MUUSDT", Action: "close_short"}); err != nil {
 		t.Fatalf("close_short: %v", err)
+	}
+	closedRows, err := st.Position().GetClosedPositions("paper-performance-restart", 10)
+	if err != nil || len(closedRows) != 1 || closedRows[0].Status != "CLOSED" {
+		t.Fatalf("paper trader_positions closed rows = %#v, err=%v", closedRows, err)
 	}
 	want := first.Performance()
 

@@ -85,6 +85,14 @@ func CanContinueWithCachedPaperMarks(err error) bool {
 	return errors.As(err, &warning)
 }
 
+func isValidPaperMarkPrice(price float64) bool {
+	return price > 0 && !math.IsNaN(price) && !math.IsInf(price, 0)
+}
+
+func isFinitePaperNumber(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0)
+}
+
 type PaperFundingSource interface {
 	GetFundingHistory(symbol string, startTime, endTime int64) ([]market.FundingEvent, error)
 	GetFundingSnapshot(symbol string) (*market.FundingSnapshot, error)
@@ -234,10 +242,17 @@ type PaperBroker struct {
 	fundingHistoryReady     map[string]bool
 	fundingHistoryRetry     map[string]bool
 	fundingHistoryCheckedAt map[string]time.Time
-	fundingPollMu           sync.Mutex
-	ledger                  PaperLedger
-	traderID                string
-	closeRecorder           PaperCloseRecorder
+	// Quarantined historical state is retained for diagnostics but is never
+	// included in margin, equity, or risk processing. This lets one malformed
+	// legacy protection record fail closed without blocking the whole trader.
+	quarantinedPositions map[string]PaperPosition
+	quarantinedOrders    map[int64]PaperPendingOrder
+	restoreWarnings      []string
+	fundingPollMu        sync.Mutex
+	ledger               PaperLedger
+	traderID             string
+	closeRecorder        PaperCloseRecorder
+	pendingCloseRecords  []PaperClosedTrade
 }
 
 type PaperLedger interface {
@@ -252,8 +267,11 @@ type PaperCloseRecorder interface {
 	RecordPaperClose(close PaperClosedTrade, traderID string) error
 }
 
-// paperTradeRecorder persists simulated closes into the trader_positions table
-// so the AI's recent-trades context includes paper history.
+// paperTradeRecorder persists only simulated closes into trader_positions so
+// the AI's recent-trades context includes paper history. Runtime paper OPEN
+// positions intentionally remain in paper_account_states.state_json; writing
+// them here would make the exchange-position reconciliation path treat a
+// virtual position as a live exchange position.
 type paperTradeRecorder struct {
 	store    *store.Store
 	exchange string
@@ -261,6 +279,11 @@ type paperTradeRecorder struct {
 
 func newPaperTradeRecorder(st *store.Store, exchange string) *paperTradeRecorder {
 	return &paperTradeRecorder{store: st, exchange: exchange}
+}
+
+// NewPaperTradeRecorder is used by stopped-trader recovery paths.
+func NewPaperTradeRecorder(st *store.Store, exchange string) PaperCloseRecorder {
+	return newPaperTradeRecorder(st, exchange)
 }
 
 func (r *paperTradeRecorder) RecordPaperClose(close PaperClosedTrade, traderID string) error {
@@ -272,13 +295,14 @@ func (r *paperTradeRecorder) RecordPaperClose(close PaperClosedTrade, traderID s
 		TraderID:           traderID,
 		ExchangeID:         "paper",
 		ExchangeType:       r.exchange,
-		ExchangePositionID: fmt.Sprintf("paper_%s_%s_%d", close.Symbol, close.Side, close.ExitTime.UnixNano()),
+		ExchangePositionID: fmt.Sprintf("paper_%s_%s_%d", close.Symbol, close.Side, close.ExitOrderID),
 		Symbol:             close.Symbol,
 		Side:               close.Side,
 		Quantity:           close.Quantity,
 		EntryPrice:         close.EntryPrice,
 		EntryTime:          close.EntryTime.UnixMilli(),
 		ExitPrice:          close.ExitPrice,
+		ExitOrderID:        strconv.FormatInt(close.ExitOrderID, 10),
 		ExitTime:           nowMs,
 		RealizedPnL:        close.RealizedPnL,
 		Fee:                close.Fee,
@@ -295,23 +319,30 @@ func (r *paperTradeRecorder) RecordPaperClose(close PaperClosedTrade, traderID s
 }
 
 type paperBrokerState struct {
-	InitialBalance   float64                       `json:"initial_balance"`
-	Balance          float64                       `json:"balance"`
-	Positions        map[string]PaperPosition      `json:"positions"`
-	PendingOrders    map[int64]PaperPendingOrder   `json:"pending_orders,omitempty"`
-	OrderEvents      []PaperOrderEvent             `json:"order_events,omitempty"`
-	Fills            []PaperFill                   `json:"fills"`
-	Marks            map[string]float64            `json:"marks"`
-	MarkTimes        map[string]time.Time          `json:"mark_times,omitempty"`
-	TotalFees        float64                       `json:"total_fees"`
-	ClosedTrades     int                           `json:"closed_trades"`
-	Wins             int                           `json:"wins"`
-	PeakEquity       float64                       `json:"peak_equity"`
-	MaxDrawdown      float64                       `json:"max_drawdown"`
-	NextID           int64                         `json:"next_id"`
-	FundingPayments  []PaperFundingPayment         `json:"funding_payments,omitempty"`
-	LastFundingTimes map[string]int64              `json:"last_funding_times,omitempty"`
-	FundingStatuses  map[string]PaperFundingStatus `json:"funding_statuses,omitempty"`
+	InitialBalance          float64                       `json:"initial_balance"`
+	Balance                 float64                       `json:"balance"`
+	Positions               map[string]PaperPosition      `json:"positions"`
+	PendingOrders           map[int64]PaperPendingOrder   `json:"pending_orders,omitempty"`
+	OrderEvents             []PaperOrderEvent             `json:"order_events,omitempty"`
+	Fills                   []PaperFill                   `json:"fills"`
+	PendingCloseRecords     []PaperClosedTrade            `json:"pending_close_records,omitempty"`
+	Marks                   map[string]float64            `json:"marks"`
+	MarkTimes               map[string]time.Time          `json:"mark_times,omitempty"`
+	TotalFees               float64                       `json:"total_fees"`
+	ClosedTrades            int                           `json:"closed_trades"`
+	Wins                    int                           `json:"wins"`
+	PeakEquity              float64                       `json:"peak_equity"`
+	MaxDrawdown             float64                       `json:"max_drawdown"`
+	NextID                  int64                         `json:"next_id"`
+	FundingPayments         []PaperFundingPayment         `json:"funding_payments,omitempty"`
+	LastFundingTimes        map[string]int64              `json:"last_funding_times,omitempty"`
+	FundingStatuses         map[string]PaperFundingStatus `json:"funding_statuses,omitempty"`
+	FundingHistoryReady     map[string]bool               `json:"funding_history_ready,omitempty"`
+	FundingHistoryRetry     map[string]bool               `json:"funding_history_retry,omitempty"`
+	FundingHistoryCheckedAt map[string]time.Time          `json:"funding_history_checked_at,omitempty"`
+	QuarantinedPositions    map[string]PaperPosition      `json:"quarantined_positions,omitempty"`
+	QuarantinedOrders       map[int64]PaperPendingOrder   `json:"quarantined_orders,omitempty"`
+	RestoreWarnings         []string                      `json:"restore_warnings,omitempty"`
 }
 
 func NewPaperBroker(config PaperBrokerConfig, prices PaperPriceSource) (*PaperBroker, error) {
@@ -361,6 +392,8 @@ func NewPaperBroker(config PaperBrokerConfig, prices PaperPriceSource) (*PaperBr
 		fundingHistoryReady:     make(map[string]bool),
 		fundingHistoryRetry:     make(map[string]bool),
 		fundingHistoryCheckedAt: make(map[string]time.Time),
+		quarantinedPositions:    make(map[string]PaperPosition),
+		quarantinedOrders:       make(map[int64]PaperPendingOrder),
 	}, nil
 }
 
@@ -393,7 +426,9 @@ func NewPersistentPaperBroker(config PaperBrokerConfig, prices PaperPriceSource,
 				return nil, fmt.Errorf("persist migrated paper state: %w", err)
 			}
 		}
+		broker.syncHistoricalClosedTrades()
 	}
+	broker.flushPendingCloseRecords()
 	return broker, nil
 }
 
@@ -432,6 +467,7 @@ func (b *PaperBroker) ExecuteDecision(decision *kernel.Decision) (PaperFill, err
 		if err := b.persistLocked(); err != nil {
 			return PaperFill{}, err
 		}
+		b.flushPendingCloseRecordsLocked()
 		return fill, nil
 	}
 	if decision.Action != "open_long" && decision.Action != "open_short" {
@@ -462,6 +498,9 @@ func (b *PaperBroker) ExecuteDecision(decision *kernel.Decision) (PaperFill, err
 	if decision.Action == "open_short" {
 		side = "short"
 		fillPrice = marketPrice * (1 - slippage)
+	}
+	if err := validatePaperExitPrices(decision.Action, fillPrice, decision.StopLoss, decision.TakeProfit); err != nil {
+		return PaperFill{}, err
 	}
 	quantity := decision.PositionSizeUSD / fillPrice
 	fee := decision.PositionSizeUSD * b.config.TakerFeeBPS / 10_000
@@ -511,6 +550,10 @@ func (b *PaperBroker) ExecuteDecision(decision *kernel.Decision) (PaperFill, err
 }
 
 func (b *PaperBroker) updateProtection(decision *kernel.Decision) (PaperFill, error) {
+	currentPrice, err := b.GetMarketPrice(decision.Symbol)
+	if err != nil {
+		return PaperFill{}, fmt.Errorf("paper current market price: %w", err)
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -526,6 +569,16 @@ func (b *PaperBroker) updateProtection(decision *kernel.Decision) (PaperFill, er
 	}
 	if key == "" {
 		return PaperFill{}, fmt.Errorf("paper position not found for %s", decision.Symbol)
+	}
+	newStop, newTakeProfit := position.StopLoss, position.TakeProfit
+	if decision.NewStopLoss > 0 {
+		newStop = decision.NewStopLoss
+	}
+	if decision.NewTakeProfit > 0 {
+		newTakeProfit = decision.NewTakeProfit
+	}
+	if err := validatePaperUpdateExitPrices("open_"+strings.ToLower(position.Side), currentPrice, newStop, newTakeProfit); err != nil {
+		return PaperFill{}, err
 	}
 
 	now := b.now()
@@ -629,6 +682,9 @@ func (b *PaperBroker) placeMakerOpen(decision *kernel.Decision) (PaperFill, erro
 	limitPrice, err := firstPaperDepthPrice(levels)
 	if err != nil {
 		return PaperFill{}, fmt.Errorf("paper maker %s price: %w", decision.Symbol, err)
+	}
+	if err := validatePaperExitPrices(decision.Action, limitPrice, decision.StopLoss, decision.TakeProfit); err != nil {
+		return PaperFill{}, err
 	}
 	quantity := decision.PositionSizeUSD / limitPrice
 	requiredMargin := decision.PositionSizeUSD / float64(decision.Leverage)
@@ -752,21 +808,46 @@ func (b *PaperBroker) pollFunding(now time.Time, forceHistory bool) (PaperFundin
 			settlementErrors = append(settlementErrors, fmt.Errorf("paper funding snapshot %s: %w", position.Symbol, snapshotErr))
 		} else if fundingSnapshot != nil {
 			b.mu.Lock()
-			status := PaperFundingStatus{
-				Symbol: fundingSnapshot.Symbol, Rate: fundingSnapshot.Rate,
-				MarkPrice: fundingSnapshot.MarkPrice, IndexPrice: fundingSnapshot.IndexPrice,
-				NextFundingTime: fundingSnapshot.NextFundingTime, UpdatedAt: now,
-				LastAttemptAt: now,
-			}
-			b.fundingStatuses[position.Symbol] = status
-			if fundingSnapshot.MarkPrice > 0 && !math.IsNaN(fundingSnapshot.MarkPrice) && !math.IsInf(fundingSnapshot.MarkPrice, 0) {
+			status := b.fundingStatuses[position.Symbol]
+			status.Symbol = position.Symbol
+			status.UpdatedAt = now
+			status.LastAttemptAt = now
+			status.NextFundingTime = fundingSnapshot.NextFundingTime
+			var invalidSnapshotErr error
+			if isValidPaperMarkPrice(fundingSnapshot.MarkPrice) {
+				status.MarkPrice = fundingSnapshot.MarkPrice
 				b.marks[position.Symbol] = fundingSnapshot.MarkPrice
 				b.markTimes[position.Symbol] = now
+			} else {
+				invalidSnapshotErr = fmt.Errorf("paper funding snapshot %s has invalid mark price", position.Symbol)
 			}
+			if isFinitePaperNumber(fundingSnapshot.Rate) {
+				status.Rate = fundingSnapshot.Rate
+			} else if invalidSnapshotErr == nil {
+				invalidSnapshotErr = fmt.Errorf("paper funding snapshot %s has invalid funding rate", position.Symbol)
+			}
+			if isFinitePaperNumber(fundingSnapshot.IndexPrice) {
+				status.IndexPrice = fundingSnapshot.IndexPrice
+			} else if invalidSnapshotErr == nil {
+				invalidSnapshotErr = fmt.Errorf("paper funding snapshot %s has invalid index price", position.Symbol)
+			}
+			if invalidSnapshotErr != nil {
+				status.Stale = true
+				status.Warning = invalidSnapshotErr.Error()
+			} else {
+				status.Stale = false
+				if !status.HistoryPending {
+					status.Warning = ""
+				}
+			}
+			b.fundingStatuses[position.Symbol] = status
 			if err := b.persistLocked(); err != nil {
 				settlementErrors = append(settlementErrors, err)
 			}
 			b.mu.Unlock()
+			if invalidSnapshotErr != nil {
+				settlementErrors = append(settlementErrors, invalidSnapshotErr)
+			}
 		}
 
 		if !b.shouldQueryFundingHistory(key, position.Symbol, now, forceHistory) {
@@ -800,23 +881,27 @@ func (b *PaperBroker) settleFundingHistoryForPosition(key string, position Paper
 		return 0, errors.Join(resultErrors...)
 	}
 	var resultErrors []error
-	if persistErr := b.recordFundingHistoryResult(key, position.Symbol, now, nil); persistErr != nil {
-		resultErrors = append(resultErrors, persistErr)
-	}
 	applied := 0
 	for _, event := range events {
 		if event.FundingTime <= position.EntryTime.UnixMilli() || event.FundingTime > now.UnixMilli() || event.FundingTime <= lastApplied {
 			continue
 		}
-		if event.MarkPrice <= 0 || math.IsNaN(event.MarkPrice) || math.IsInf(event.MarkPrice, 0) {
+		if !isValidPaperMarkPrice(event.MarkPrice) {
 			eventErr := fmt.Errorf("paper funding event %s at %d has invalid mark price", position.Symbol, event.FundingTime)
-			if persistErr := b.recordFundingHistoryResult(key, position.Symbol, now, eventErr); persistErr != nil {
-				resultErrors = append(resultErrors, persistErr)
-			}
+			resultErrors = append(resultErrors, eventErr)
+			break
+		}
+		if !isFinitePaperNumber(event.Rate) {
+			eventErr := fmt.Errorf("paper funding event %s at %d has invalid funding rate", position.Symbol, event.FundingTime)
 			resultErrors = append(resultErrors, eventErr)
 			break
 		}
 		payment := math.Abs(position.Quantity) * event.MarkPrice * event.Rate
+		if !isFinitePaperNumber(payment) {
+			eventErr := fmt.Errorf("paper funding event %s at %d has invalid payment", position.Symbol, event.FundingTime)
+			resultErrors = append(resultErrors, eventErr)
+			break
+		}
 		walletDelta := -payment
 		if position.Side == "short" {
 			walletDelta = payment
@@ -844,6 +929,9 @@ func (b *PaperBroker) settleFundingHistoryForPosition(key string, position Paper
 			break
 		}
 		b.mu.Unlock()
+	}
+	if persistErr := b.recordFundingHistoryResult(key, position.Symbol, now, errors.Join(resultErrors...)); persistErr != nil {
+		resultErrors = append(resultErrors, persistErr)
 	}
 	return applied, errors.Join(resultErrors...)
 }
@@ -978,9 +1066,11 @@ func (b *PaperBroker) RefreshOpenPositions() error {
 			continue
 		}
 		if b.riskExitTriggered(symbol, price) {
+			// Funding history is best-effort. A failed settlement remains pending
+			// for retry, but must never suppress SL/liquidation (or non-maker TP)
+			// evaluation against this valid market price.
 			if _, err := b.SettleFundingBeforeRiskExit(symbol, now); err != nil {
 				refreshErrors = append(refreshErrors, fmt.Errorf("settle paper funding before risk exit %s: %w", symbol, err))
-				continue
 			}
 		}
 		if _, err := b.ProcessPrice(symbol, price, now); err != nil {
@@ -1027,7 +1117,7 @@ func (b *PaperBroker) freshCachedMarkAge(symbol string, now time.Time) (time.Dur
 	defer b.mu.RUnlock()
 	mark, markExists := b.marks[symbol]
 	markedAt, timeExists := b.markTimes[symbol]
-	if !markExists || mark <= 0 || !timeExists || markedAt.IsZero() || now.Before(markedAt) {
+	if !markExists || !isValidPaperMarkPrice(mark) || !timeExists || markedAt.IsZero() || now.Before(markedAt) {
 		return 0, false
 	}
 	age := now.Sub(markedAt)
@@ -1037,7 +1127,7 @@ func (b *PaperBroker) freshCachedMarkAge(symbol string, now time.Time) (time.Dur
 // ProcessPrice marks virtual positions and produces synthetic market fills
 // when a configured take-profit level is crossed.
 func (b *PaperBroker) ProcessPrice(symbol string, price float64, at time.Time) ([]PaperFill, error) {
-	if price <= 0 {
+	if !isValidPaperMarkPrice(price) {
 		return nil, fmt.Errorf("paper market price for %s is invalid", symbol)
 	}
 	if at.IsZero() {
@@ -1065,6 +1155,7 @@ func (b *PaperBroker) ProcessPrice(symbol string, price float64, at time.Time) (
 	if err := b.persistLocked(); err != nil {
 		return nil, err
 	}
+	b.flushPendingCloseRecordsLocked()
 	return exits, nil
 }
 
@@ -1107,9 +1198,14 @@ func (b *PaperBroker) stateLocked() paperBrokerState {
 		Positions: b.positions, Fills: b.fills, Marks: b.marks, MarkTimes: b.markTimes,
 		PendingOrders: b.pendingOrders, OrderEvents: b.orderEvents,
 		TotalFees: b.totalFees, ClosedTrades: b.closedTrades, Wins: b.wins,
-		PeakEquity: b.peakEquity, MaxDrawdown: b.maxDrawdown, NextID: b.nextID,
+		PendingCloseRecords: b.pendingCloseRecords,
+		PeakEquity:          b.peakEquity, MaxDrawdown: b.maxDrawdown, NextID: b.nextID,
 		FundingPayments: b.fundingPayments, LastFundingTimes: b.lastFundingTimes,
-		FundingStatuses: b.fundingStatuses,
+		FundingStatuses:     b.fundingStatuses,
+		FundingHistoryReady: b.fundingHistoryReady, FundingHistoryRetry: b.fundingHistoryRetry,
+		FundingHistoryCheckedAt: b.fundingHistoryCheckedAt,
+		QuarantinedPositions:    b.quarantinedPositions, QuarantinedOrders: b.quarantinedOrders,
+		RestoreWarnings: b.restoreWarnings,
 	}
 }
 
@@ -1125,10 +1221,24 @@ func (b *PaperBroker) restoreState(state paperBrokerState) (bool, error) {
 		b.pendingOrders = make(map[int64]PaperPendingOrder)
 	}
 	b.orderEvents = state.OrderEvents
+	b.quarantinedPositions = state.QuarantinedPositions
+	if b.quarantinedPositions == nil {
+		b.quarantinedPositions = make(map[string]PaperPosition)
+	}
+	b.quarantinedOrders = state.QuarantinedOrders
+	if b.quarantinedOrders == nil {
+		b.quarantinedOrders = make(map[int64]PaperPendingOrder)
+	}
+	b.restoreWarnings = append([]string(nil), state.RestoreWarnings...)
 	migrated := false
 	for key, position := range b.positions {
-		if position.Leverage <= 0 {
-			return false, fmt.Errorf("restore paper position %s: leverage must be greater than zero", key)
+		if err := validateRestoredPaperPosition(position); err != nil {
+			warning := fmt.Sprintf("restore paper position %s: quarantined invalid historical state: %v", key, err)
+			b.quarantinedPositions[key] = position
+			delete(b.positions, key)
+			b.restoreWarnings = append(b.restoreWarnings, warning)
+			migrated = true
+			continue
 		}
 		if position.InitialMargin <= 0 {
 			position.InitialMargin = position.EntryPrice * position.Quantity / float64(position.Leverage)
@@ -1136,7 +1246,34 @@ func (b *PaperBroker) restoreState(state paperBrokerState) (bool, error) {
 			migrated = true
 		}
 	}
+	for orderID, order := range b.pendingOrders {
+		if order.ReduceOnly {
+			if !paperIsTakeProfitAction(order.Action) {
+				continue
+			}
+			position, ok := b.positions[order.Symbol+":"+strings.ToLower(order.Side)]
+			if !ok {
+				continue
+			}
+			if err := validatePaperExitPrices("open_"+strings.ToLower(position.Side), position.EntryPrice, 0, order.LimitPrice); err != nil {
+				warning := fmt.Sprintf("restore paper pending take-profit %d: quarantined invalid historical state: %v", orderID, err)
+				b.quarantinedOrders[orderID] = order
+				delete(b.pendingOrders, orderID)
+				b.restoreWarnings = append(b.restoreWarnings, warning)
+				migrated = true
+			}
+			continue
+		}
+		if err := validatePaperExitPrices(order.Action, order.LimitPrice, order.StopLoss, order.TakeProfit); err != nil {
+			warning := fmt.Sprintf("restore paper pending entry %d: quarantined invalid historical state: %v", orderID, err)
+			b.quarantinedOrders[orderID] = order
+			delete(b.pendingOrders, orderID)
+			b.restoreWarnings = append(b.restoreWarnings, warning)
+			migrated = true
+		}
+	}
 	b.fills = state.Fills
+	b.pendingCloseRecords = state.PendingCloseRecords
 	b.marks = state.Marks
 	if b.marks == nil {
 		b.marks = make(map[string]float64)
@@ -1159,6 +1296,18 @@ func (b *PaperBroker) restoreState(state paperBrokerState) (bool, error) {
 	b.fundingStatuses = state.FundingStatuses
 	if b.fundingStatuses == nil {
 		b.fundingStatuses = make(map[string]PaperFundingStatus)
+	}
+	b.fundingHistoryReady = state.FundingHistoryReady
+	if b.fundingHistoryReady == nil {
+		b.fundingHistoryReady = make(map[string]bool)
+	}
+	b.fundingHistoryRetry = state.FundingHistoryRetry
+	if b.fundingHistoryRetry == nil {
+		b.fundingHistoryRetry = make(map[string]bool)
+	}
+	b.fundingHistoryCheckedAt = state.FundingHistoryCheckedAt
+	if b.fundingHistoryCheckedAt == nil {
+		b.fundingHistoryCheckedAt = make(map[string]time.Time)
 	}
 	if b.nextID <= 0 {
 		b.nextID = 1
@@ -1194,6 +1343,39 @@ func (b *PaperBroker) hasPendingTakeProfitLocked(symbol, side string) bool {
 	return false
 }
 
+func validateRestoredPaperPosition(position PaperPosition) error {
+	if position.Side != "long" && position.Side != "short" {
+		return fmt.Errorf("unsupported position side %q", position.Side)
+	}
+	if !isFinitePositive(position.Quantity) {
+		return fmt.Errorf("quantity must be a finite positive value, got %.8f", position.Quantity)
+	}
+	if position.Leverage <= 0 {
+		return fmt.Errorf("leverage must be greater than zero")
+	}
+	return validatePaperExitPrices("open_"+position.Side, position.EntryPrice, position.StopLoss, position.TakeProfit)
+}
+
+// RestoreWarnings reports historical records that were quarantined during
+// startup. Quarantined records are preserved in paper state for diagnostics,
+// but are not active positions or orders and therefore cannot create an
+// unprotected risk path.
+func (b *PaperBroker) RestoreWarnings() []string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return append([]string(nil), b.restoreWarnings...)
+}
+
+func (b *PaperBroker) QuarantinedPositions() map[string]PaperPosition {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	positions := make(map[string]PaperPosition, len(b.quarantinedPositions))
+	for key, position := range b.quarantinedPositions {
+		positions[key] = position
+	}
+	return positions
+}
+
 func (b *PaperBroker) closePositionLocked(position PaperPosition, action string, marketPrice float64, at time.Time) PaperFill {
 	slippage := b.config.SlippageBPS / 10_000
 	fillPrice := marketPrice * (1 - slippage)
@@ -1218,22 +1400,20 @@ func (b *PaperBroker) closePositionLocked(position PaperPosition, action string,
 	}
 	b.nextID++
 	b.fills = append(b.fills, fill)
-	b.recordCloseLocked(position, fillPrice, at, netTradePnL, exitFee)
+	b.recordCloseLocked(position, fill, at, netTradePnL, exitFee)
 	return fill
 }
 
 // recordCloseLocked notifies the close recorder (if any) that a simulated
 // position was fully closed, so it can be persisted as a completed trade.
-func (b *PaperBroker) recordCloseLocked(position PaperPosition, exitPrice float64, at time.Time, realizedPnL, fee float64) {
-	if b.closeRecorder == nil {
-		return
-	}
+func (b *PaperBroker) recordCloseLocked(position PaperPosition, fill PaperFill, at time.Time, realizedPnL, fee float64) {
 	rec := PaperClosedTrade{
 		Symbol:      position.Symbol,
 		Side:        position.Side,
 		Quantity:    position.Quantity,
 		EntryPrice:  position.EntryPrice,
-		ExitPrice:   exitPrice,
+		ExitOrderID: fill.OrderID,
+		ExitPrice:   fill.Price,
 		EntryTime:   position.EntryTime,
 		ExitTime:    at,
 		RealizedPnL: realizedPnL,
@@ -1241,13 +1421,61 @@ func (b *PaperBroker) recordCloseLocked(position PaperPosition, exitPrice float6
 		Leverage:    position.Leverage,
 		CloseReason: "paper",
 	}
-	// Record outside the lock to avoid deadlocks if the recorder talks to a DB.
-	go func() {
+	b.pendingCloseRecords = append(b.pendingCloseRecords, rec)
+}
+
+func (b *PaperBroker) flushPendingCloseRecords() {
+	if b.closeRecorder == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.flushPendingCloseRecordsLocked()
+}
+
+func (b *PaperBroker) flushPendingCloseRecordsLocked() {
+	if b.closeRecorder == nil {
+		return
+	}
+	for len(b.pendingCloseRecords) > 0 {
+		rec := b.pendingCloseRecords[0]
 		if err := b.closeRecorder.RecordPaperClose(rec, b.traderID); err != nil {
-			// Best-effort: a failed history sync must never break trading.
-			fmt.Printf("paper close recorder failed for %s %s: %v\n", position.Symbol, position.Side, err)
+			fmt.Printf("paper close recorder failed for %s %s: %v\n", rec.Symbol, rec.Side, err)
+			return
 		}
-	}()
+		b.pendingCloseRecords = b.pendingCloseRecords[1:]
+		if err := b.persistLocked(); err != nil {
+			b.pendingCloseRecords = append([]PaperClosedTrade{rec}, b.pendingCloseRecords...)
+			fmt.Printf("paper close recorder state update failed for %s %s: %v\n", rec.Symbol, rec.Side, err)
+			return
+		}
+	}
+}
+
+// syncHistoricalClosedTrades repairs the derived position history from the
+// paper ledger. Fills are intentionally interpreted by the same performance
+// reconstruction used by the runtime; opening fills are never recorded.
+func (b *PaperBroker) syncHistoricalClosedTrades() {
+	if b.closeRecorder == nil {
+		return
+	}
+	b.mu.RLock()
+	fills := append([]PaperFill(nil), b.fills...)
+	initialBalance := b.initialBalance
+	b.mu.RUnlock()
+	for _, closed := range reconstructPaperPerformance(fills, initialBalance).ClosedTrades {
+		if closed.ExitOrderID <= 0 {
+			b.mu.Lock()
+			b.restoreWarnings = append(b.restoreWarnings, fmt.Sprintf("paper historical close %s %s skipped: missing exit order ID", closed.Symbol, closed.Side))
+			b.mu.Unlock()
+			continue
+		}
+		if err := b.closeRecorder.RecordPaperClose(closed, b.traderID); err != nil {
+			b.mu.Lock()
+			b.restoreWarnings = append(b.restoreWarnings, fmt.Sprintf("paper historical close %s %s not recorded: %v", closed.Symbol, closed.Side, err))
+			b.mu.Unlock()
+		}
+	}
 }
 
 func (b *PaperBroker) Snapshot() PaperSnapshot {
@@ -1416,6 +1644,7 @@ func (b *PaperBroker) applyTakerCloseFallback(order PaperPendingOrder, marketPri
 	if err := b.persistLocked(); err != nil {
 		return PaperFill{}, err
 	}
+	b.flushPendingCloseRecordsLocked()
 	return fill, nil
 }
 
@@ -1787,6 +2016,7 @@ func (b *PaperBroker) closeBySide(symbol, side, action string) (map[string]inter
 	if err := b.persistLocked(); err != nil {
 		return nil, err
 	}
+	b.flushPendingCloseRecordsLocked()
 	return map[string]interface{}{"orderId": fill.OrderID, "avgPrice": fill.Price, "executedQty": fill.Quantity, "status": "FILLED"}, nil
 }
 
@@ -1849,10 +2079,41 @@ func (b *PaperBroker) setExitLevel(symbol, side string, value float64, stop bool
 	if !ok {
 		return fmt.Errorf("paper position not found")
 	}
+	newStop, newTakeProfit := position.StopLoss, position.TakeProfit
+	if stop {
+		newStop = value
+	} else {
+		newTakeProfit = value
+	}
+	if err := validatePaperExitPrices("open_"+strings.ToLower(position.Side), position.EntryPrice, newStop, newTakeProfit); err != nil {
+		return err
+	}
 	if stop {
 		position.StopLoss = value
 	} else {
 		position.TakeProfit = value
+		if b.config.MakerFirst {
+			for orderID, order := range b.pendingOrders {
+				if strings.EqualFold(order.Symbol, position.Symbol) && order.Side == position.Side && paperIsTakeProfitAction(order.Action) {
+					delete(b.pendingOrders, orderID)
+					order.UpdatedAt = b.now()
+					b.recordOrderEventLocked(order, "CANCELED", "protection_replaced", 0, 0)
+				}
+			}
+			if value > 0 {
+				now := b.now()
+				order := PaperPendingOrder{
+					OrderID: b.nextID, Symbol: position.Symbol,
+					Action: paperTakeProfitAction(position.Side), Side: position.Side,
+					LimitPrice: value, Quantity: position.Quantity,
+					RemainingQuantity: position.Quantity, Leverage: position.Leverage,
+					ReduceOnly: true, Status: "NEW", CreatedAt: now, UpdatedAt: now,
+				}
+				b.nextID++
+				b.pendingOrders[order.OrderID] = order
+				b.recordOrderEventLocked(order, "NEW", "protection_set", 0, 0)
+			}
+		}
 	}
 	b.positions[key] = position
 	return b.persistLocked()

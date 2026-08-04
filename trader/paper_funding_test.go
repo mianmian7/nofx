@@ -2,7 +2,9 @@ package trader
 
 import (
 	"errors"
+	"math"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -599,6 +601,150 @@ func TestPaperFundingInvalidMarkIsRetriedAndNotMarkedApplied(t *testing.T) {
 		t.Fatalf("retry SettleFunding: %v", err)
 	}
 	assertPaperFloat(t, "retried wallet", broker.Snapshot().Balance, 999)
+}
+
+func TestPaperFundingHistoryRetryStateSurvivesRestart(t *testing.T) {
+	st, err := store.New(filepath.Join(t.TempDir(), "paper-funding-retry-state.db"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	entryTime := time.Date(2026, 7, 22, 0, 0, 0, 0, time.UTC)
+	now := entryTime
+	funding := &scheduledPaperFundingSource{
+		snapshot:   &market.FundingSnapshot{Symbol: "MUUSDT", MarkPrice: 100, IndexPrice: 100},
+		historyErr: errors.New("temporary funding history outage"),
+	}
+	config := PaperBrokerConfig{InitialBalance: 1_000, FundingSource: funding, Clock: func() time.Time { return now }}
+	first, err := NewPersistentPaperBroker(config, fixedPaperPriceSource{"MUUSDT": 100}, st.Paper(), "retry-state", newPaperTradeRecorder(st, "paper"))
+	if err != nil {
+		t.Fatalf("first broker: %v", err)
+	}
+	if _, err := first.ExecuteDecision(&kernel.Decision{Symbol: "MUUSDT", Action: "open_long", PositionSizeUSD: 300, Leverage: 3}); err != nil {
+		t.Fatalf("open_long: %v", err)
+	}
+	if err := first.SettleFunding(now); err == nil {
+		t.Fatal("initial funding error = nil")
+	}
+
+	funding.historyErr = nil
+	restored, err := NewPersistentPaperBroker(config, fixedPaperPriceSource{"MUUSDT": 100}, st.Paper(), "retry-state", newPaperTradeRecorder(st, "paper"))
+	if err != nil {
+		t.Fatalf("restored broker: %v", err)
+	}
+	if statuses := restored.FundingStatuses(); len(statuses) != 1 || !statuses[0].HistoryPending {
+		t.Fatalf("restored funding status = %#v, want history pending retry", statuses)
+	}
+	if _, err := restored.PollFunding(now.Add(time.Minute)); err != nil {
+		t.Fatalf("restored retry: %v", err)
+	}
+	if got := funding.historyCalls.Load(); got != 2 {
+		t.Fatalf("history calls = %d, want initial failure plus restored retry", got)
+	}
+}
+
+func TestRiskExitContinuesWhenFundingEventMarkIsInvalid(t *testing.T) {
+	entryTime := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	now := entryTime
+	dueTime := entryTime.Add(time.Hour)
+	funding := &scheduledPaperFundingSource{snapshot: &market.FundingSnapshot{
+		Symbol: "MUUSDT", MarkPrice: 100, IndexPrice: 100, NextFundingTime: dueTime.UnixMilli(),
+	}}
+	prices := &mutablePaperPriceSource{price: 100}
+	broker, err := NewPaperBroker(PaperBrokerConfig{
+		InitialBalance: 1_000, FundingSource: funding, Clock: func() time.Time { return now },
+	}, prices)
+	if err != nil {
+		t.Fatalf("NewPaperBroker: %v", err)
+	}
+	if _, err := broker.ExecuteDecision(&kernel.Decision{
+		Symbol: "MUUSDT", Action: "open_long", PositionSizeUSD: 300, Leverage: 3, TakeProfit: 110,
+	}); err != nil {
+		t.Fatalf("open_long: %v", err)
+	}
+	if _, err := broker.CatchUpFunding(now); err != nil {
+		t.Fatalf("startup catch-up: %v", err)
+	}
+
+	now = dueTime
+	funding.events = []market.FundingEvent{{
+		Symbol: "MUUSDT", Rate: 0.001, FundingTime: dueTime.UnixMilli(), MarkPrice: math.NaN(),
+	}}
+	prices.Set(110)
+	err = broker.RefreshOpenPositions()
+	if err == nil || !strings.Contains(err.Error(), "invalid mark price") {
+		t.Fatalf("risk refresh error = %v, want invalid funding mark diagnostic", err)
+	}
+	if snapshot := broker.Snapshot(); snapshot.OpenPositions != 0 {
+		t.Fatalf("open positions = %d, want risk exit despite funding error", snapshot.OpenPositions)
+	}
+	if payments := broker.RecentFundingPayments(10); len(payments) != 0 {
+		t.Fatalf("invalid funding event was applied: %#v", payments)
+	}
+	fills := broker.RecentFills(10)
+	if len(fills) == 0 || fills[len(fills)-1].Action != "take_profit" || fills[len(fills)-1].Price != 110 {
+		t.Fatalf("fills = %#v, want current valid mark take_profit", fills)
+	}
+}
+
+func TestRiskExitContinuesWhenFundingHistoryIsUnavailable(t *testing.T) {
+	entryTime := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	now := entryTime
+	dueTime := entryTime.Add(time.Hour)
+	funding := &scheduledPaperFundingSource{
+		snapshot:   &market.FundingSnapshot{Symbol: "MUUSDT", MarkPrice: 100, IndexPrice: 100, NextFundingTime: dueTime.UnixMilli()},
+		historyErr: errors.New("history temporarily unavailable"),
+	}
+	prices := &mutablePaperPriceSource{price: 100}
+	broker, err := NewPaperBroker(PaperBrokerConfig{
+		InitialBalance: 1_000, FundingSource: funding, Clock: func() time.Time { return now },
+	}, prices)
+	if err != nil {
+		t.Fatalf("NewPaperBroker: %v", err)
+	}
+	if _, err := broker.ExecuteDecision(&kernel.Decision{
+		Symbol: "MUUSDT", Action: "open_long", PositionSizeUSD: 300, Leverage: 3, StopLoss: 90,
+	}); err != nil {
+		t.Fatalf("open_long: %v", err)
+	}
+	if _, err := broker.CatchUpFunding(now); err == nil {
+		t.Fatal("startup history error = nil")
+	}
+
+	now = dueTime
+	prices.Set(89)
+	err = broker.RefreshOpenPositions()
+	if err == nil || !strings.Contains(err.Error(), "history temporarily unavailable") {
+		t.Fatalf("risk refresh error = %v, want funding history diagnostic", err)
+	}
+	if snapshot := broker.Snapshot(); snapshot.OpenPositions != 0 {
+		t.Fatalf("open positions = %d, want stop-loss risk exit", snapshot.OpenPositions)
+	}
+	fills := broker.RecentFills(10)
+	if len(fills) == 0 || fills[len(fills)-1].Action != "stop_loss" {
+		t.Fatalf("fills = %#v, want stop_loss despite funding history error", fills)
+	}
+}
+
+func TestInvalidFundingSnapshotDoesNotBecomeEffectiveMark(t *testing.T) {
+	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	funding := &scheduledPaperFundingSource{snapshot: &market.FundingSnapshot{
+		Symbol: "MUUSDT", MarkPrice: math.Inf(1), IndexPrice: 100,
+	}}
+	broker, err := NewPaperBroker(PaperBrokerConfig{
+		InitialBalance: 1_000, FundingSource: funding, Clock: func() time.Time { return now },
+	}, fixedPaperPriceSource{"MUUSDT": 100})
+	if err != nil {
+		t.Fatalf("NewPaperBroker: %v", err)
+	}
+	if _, err := broker.ExecuteDecision(&kernel.Decision{Symbol: "MUUSDT", Action: "open_long", PositionSizeUSD: 300, Leverage: 3}); err != nil {
+		t.Fatalf("open_long: %v", err)
+	}
+	if _, err := broker.CatchUpFunding(now); err == nil || !strings.Contains(err.Error(), "invalid mark price") {
+		t.Fatalf("invalid snapshot error = %v, want fail-closed diagnostic", err)
+	}
+	if status := broker.FundingStatuses(); len(status) != 1 || status[0].MarkPrice != 0 || !status[0].Stale || status[0].HistoryPending {
+		t.Fatalf("invalid snapshot status = %#v, want no invalid effective mark", status)
+	}
 }
 
 func TestPaperFundingOneSymbolFailureDoesNotBlockOthers(t *testing.T) {
