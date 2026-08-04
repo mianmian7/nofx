@@ -32,3 +32,11 @@ type AIClient interface {
 	// (LLMResponse.ToolCalls), but not both.
 	CallWithRequestFull(req *Request) (*LLMResponse, error)
 }
+
+// CorrelatedAIClient is an optional extension implemented by clients that can
+// carry one logical call's metadata through provider retries. It is separate
+// from AIClient so existing test doubles and third-party clients remain source
+// compatible; callers should fall back to CallWithMessages when it is absent.
+type CorrelatedAIClient interface {
+	CallWithMessagesWithMetadata(metadata CallMetadata, systemPrompt, userPrompt string) (string, error)
+}

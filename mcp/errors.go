@@ -1,9 +1,13 @@
 package mcp
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
+	"regexp"
 	"strings"
 )
 
@@ -19,6 +23,7 @@ const (
 	ErrorKindNetworkUnavailable  ErrorKind = "network_unavailable"
 	ErrorKindModelNotFound       ErrorKind = "model_not_found"
 	ErrorKindContextLimit        ErrorKind = "context_limit_exceeded"
+	ErrorKindInvalidRequest      ErrorKind = "invalid_request"
 )
 
 // APIError preserves the HTTP status and a bounded response summary so callers
@@ -43,6 +48,16 @@ func ErrorKindOf(err error) ErrorKind {
 	if errors.As(err, &apiError) {
 		return apiError.Kind
 	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return ErrorKindNetworkUnavailable
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) && networkError.Timeout() {
+		return ErrorKindNetworkUnavailable
+	}
+	if errors.Is(err, io.EOF) {
+		return ErrorKindNetworkUnavailable
+	}
 
 	lowerMessage := strings.ToLower(err.Error())
 	switch {
@@ -62,7 +77,7 @@ func ErrorKindOf(err error) ErrorKind {
 
 // NewAPIError creates a typed error from an unsuccessful provider response.
 func NewAPIError(statusCode int, responseBody string) *APIError {
-	message := strings.TrimSpace(responseBody)
+	message := redactSensitiveText(strings.TrimSpace(responseBody))
 	if len(message) > 1024 {
 		message = message[:1024] + "..."
 	}
@@ -76,6 +91,12 @@ func NewAPIError(statusCode int, responseBody string) *APIError {
 
 func classifyAPIError(statusCode int, message string) ErrorKind {
 	lowerMessage := strings.ToLower(message)
+	if strings.Contains(lowerMessage, "context limit") ||
+		strings.Contains(lowerMessage, "context_length") ||
+		strings.Contains(lowerMessage, "context window") ||
+		strings.Contains(lowerMessage, "maximum context") {
+		return ErrorKindContextLimit
+	}
 
 	if strings.Contains(lowerMessage, "auth_unavailable") ||
 		strings.Contains(lowerMessage, "authentication unavailable") ||
@@ -92,11 +113,44 @@ func classifyAPIError(statusCode int, message string) ErrorKind {
 		}
 	case http.StatusTooManyRequests:
 		return ErrorKindRateLimited
-	case http.StatusBadGateway, http.StatusServiceUnavailable, 520, 524:
+	case http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout,
+		522, 520, 524:
 		return ErrorKindProviderUnavailable
+	}
+	if statusCode >= 400 && statusCode < 500 {
+		return ErrorKindInvalidRequest
 	}
 
 	return ErrorKindUnknown
+}
+
+// APIStatusCodeOf returns the HTTP status carried by an APIError, if any.
+// It deliberately uses errors.As so wrapped provider errors remain inspectable.
+func APIStatusCodeOf(err error) int {
+	if err == nil {
+		return 0
+	}
+	var apiError *APIError
+	if errors.As(err, &apiError) {
+		return apiError.StatusCode
+	}
+	return 0
+}
+
+var sensitiveTextPattern = regexp.MustCompile(`(?i)("?(?:api[_ -]?key|authorization|x-api-key|token|secret|password|access[_ -]?token|refresh[_ -]?token)"?\s*[:=]\s*)["']?[^\s,"'}]+`)
+
+// redactSensitiveText bounds the amount of provider text that can reach logs
+// or wrapped errors and removes common credential-shaped fields. It is not a
+// parser for arbitrary provider payloads; callers must still avoid logging
+// prompts and response bodies directly.
+func redactSensitiveText(message string) string {
+	message = sensitiveTextPattern.ReplaceAllString(message, `${1}[REDACTED]`)
+	message = strings.ReplaceAll(message, "Bearer ", "Bearer [REDACTED]")
+	message = strings.ReplaceAll(message, "bearer ", "bearer [REDACTED]")
+	return message
 }
 
 // IsFailoverEligible reports whether another configured model should be tried.

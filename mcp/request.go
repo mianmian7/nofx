@@ -6,11 +6,11 @@ import "context"
 // Supports plain messages (Role+Content), assistant tool-call messages (ToolCalls),
 // and tool result messages (Role="tool", ToolCallID, Content).
 type Message struct {
-	Role             string     `json:"role"`                            // "system", "user", "assistant", "tool"
-	Content          string     `json:"content,omitempty"`               // Text content (omitted when ToolCalls present)
-	ReasoningContent string     `json:"reasoning_content,omitempty"`     // Thinking-model reasoning (must be echoed back in multi-turn)
-	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`            // Set by assistant when calling tools
-	ToolCallID       string     `json:"tool_call_id,omitempty"`          // Set on role="tool" result messages
+	Role             string     `json:"role"`                        // "system", "user", "assistant", "tool"
+	Content          string     `json:"content,omitempty"`           // Text content (omitted when ToolCalls present)
+	ReasoningContent string     `json:"reasoning_content,omitempty"` // Thinking-model reasoning (must be echoed back in multi-turn)
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`        // Set by assistant when calling tools
+	ToolCallID       string     `json:"tool_call_id,omitempty"`      // Set on role="tool" result messages
 }
 
 // ToolCall is a single function call requested by the LLM.
@@ -51,9 +51,9 @@ type FunctionDef struct {
 // Request AI API request (supports advanced features)
 type Request struct {
 	// Basic fields
-	Model    string    `json:"model"`              // Model name
-	Messages []Message `json:"messages"`           // Conversation message list
-	Stream   bool      `json:"stream,omitempty"`   // Whether to stream response
+	Model    string    `json:"model"`            // Model name
+	Messages []Message `json:"messages"`         // Conversation message list
+	Stream   bool      `json:"stream,omitempty"` // Whether to stream response
 
 	// Optional parameters (for fine-grained control)
 	Temperature      *float64 `json:"temperature,omitempty"`       // Temperature (0-2), controls randomness
@@ -69,6 +69,10 @@ type Request struct {
 
 	// Context for cancellation; not serialized.
 	Ctx context.Context `json:"-"`
+
+	// Metadata correlates retries with an upper-layer decision without sending
+	// diagnostic fields to the provider.
+	Metadata CallMetadata `json:"-"`
 }
 
 // NewMessage creates a message

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"net/http"
 	"nofx/security"
 	"strings"
@@ -28,6 +29,7 @@ var (
 
 	retryableErrors = []string{
 		"EOF",
+		"context deadline exceeded",
 		"timeout",
 		"connection reset",
 		"connection refused",
@@ -38,9 +40,12 @@ var (
 		"status 429",     // Rate limit / upstream gateway throttling
 		"rate_limit_error",
 		"upstream_empty_output",
+		"status 500", // Internal Server Error
 		"status 502", // Bad Gateway
 		"status 503", // Service Unavailable
+		"status 504", // Gateway Timeout
 		"status 520", // Cloudflare origin error
+		"status 522", // Cloudflare connection timeout
 		"status 524", // Cloudflare timeout
 	}
 
@@ -182,47 +187,118 @@ func (client *Client) ConfigureCustomURL(rawURL string) error {
 	return nil
 }
 
-// CallWithMessages template method - fixed retry flow (cannot be overridden)
+// CallWithMessages template method - fixed retry flow (cannot be overridden).
 func (client *Client) CallWithMessages(systemPrompt, userPrompt string) (string, error) {
+	return client.CallWithMessagesWithMetadata(CallMetadata{}, systemPrompt, userPrompt)
+}
+
+// CallWithMessagesWithMetadata is the correlated variant used by the kernel.
+// It keeps AIClient source compatibility while allowing an upper layer to
+// associate retry logs and decision records with the same logical call.
+func (client *Client) CallWithMessagesWithMetadata(metadata CallMetadata, systemPrompt, userPrompt string) (string, error) {
 	if client.APIKey == "" {
 		return "", fmt.Errorf("AI API key not set, please call SetAPIKey first")
 	}
 
-	// Fixed retry flow
+	metadata = normalizeCallMetadata(metadata)
+	if metadata.Provider == "" {
+		metadata.Provider = client.Provider
+	}
+	if metadata.Model == "" {
+		metadata.Model = client.Model
+	}
+	maxAttempts := client.maxAttempts()
+	totalStart := time.Now()
 	var lastErr error
-	maxRetries := client.Cfg.MaxRetries
 
-	for attempt := 1; attempt <= maxRetries; attempt++ {
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		attemptStart := time.Now()
 		if attempt > 1 {
-			client.Log.Warnf("⚠️  AI API call failed, retrying (%d/%d)...", attempt, maxRetries)
+			// Keep the established warning contract while the structured event
+			// below carries the detailed retry diagnostics.
+			client.Log.Warnf("⚠️  AI API call failed, retrying (%d/%d)...", attempt, maxAttempts)
 		}
-
-		// Call the fixed single-call flow
+		client.logAttemptStart(metadata, attempt, maxAttempts)
 		result, err := client.Hooks.Call(systemPrompt, userPrompt)
+		attemptDuration := time.Since(attemptStart)
+		totalDuration := time.Since(totalStart)
 		if err == nil {
-			if attempt > 1 {
-				client.Log.Infof("✓ AI API retry succeeded")
-			}
+			client.logAttemptSuccess(metadata, attempt, maxAttempts, attemptDuration, totalDuration)
 			return result, nil
 		}
 
 		lastErr = err
-		// Check if error is retryable via hooks (supports custom retry strategy)
-		if !client.Hooks.IsRetryableError(err) {
-			return "", err
+		retryable := client.Hooks.IsRetryableError(err)
+		willRetry := retryable && attempt < maxAttempts
+		client.logAttemptFailure(metadata, attempt, maxAttempts, attemptDuration, totalDuration, err, retryable, willRetry)
+		if !retryable {
+			return "", client.wrapFinalCallError(attempt, totalDuration, err)
+		}
+		if !willRetry {
+			return "", client.wrapFinalCallError(attempt, totalDuration, lastErr)
 		}
 
-		// Wait before retry
-		if attempt < maxRetries {
-			waitTime := retryWaitDuration(client.Cfg.RetryWaitBase, attempt, err)
-			client.Log.Infof("⏳ Waiting %v before retry...", waitTime)
-			if err := sleepWithContext(context.Background(), waitTime); err != nil {
-				return "", err
-			}
+		waitTime := retryWaitDuration(client.Cfg.RetryWaitBase, attempt, err)
+		client.Log.Infof("ai_call_retry_wait call_id=%s provider=%s model=%s attempt=%d max_attempts=%d wait_ms=%d",
+			metadata.CallID, boundedLogValue(metadata.Provider, 96), boundedLogValue(metadata.Model, 96), attempt, maxAttempts, waitTime.Milliseconds())
+		if err := sleepWithContext(context.Background(), waitTime); err != nil {
+			totalDuration = time.Since(totalStart)
+			client.logAttemptFailure(metadata, attempt, maxAttempts, attemptDuration, totalDuration, err, false, false)
+			return "", client.wrapFinalCallError(attempt, totalDuration, err)
 		}
 	}
 
-	return "", fmt.Errorf("still failed after %d retries: %w", maxRetries, lastErr)
+	return "", client.wrapFinalCallError(maxAttempts, time.Since(totalStart), lastErr)
+}
+
+func (client *Client) maxAttempts() int {
+	if client.Cfg != nil && client.Cfg.MaxAttempts > 0 {
+		return client.Cfg.MaxAttempts
+	}
+	if client.Cfg != nil && client.Cfg.MaxRetries > 0 {
+		return client.Cfg.MaxRetries
+	}
+	return 1
+}
+
+func (client *Client) logAttemptStart(metadata CallMetadata, attempt, maxAttempts int) {
+	client.Log.Infof("ai_call_attempt call_id=%s trader_id=%s strategy_id=%s provider=%s model=%s attempt=%d max_attempts=%d error_kind=none http_status=none retryable=false outcome=started",
+		metadata.CallID, boundedLogValue(metadata.TraderID, 96), boundedLogValue(metadata.StrategyID, 96),
+		boundedLogValue(metadata.Provider, 96), boundedLogValue(metadata.Model, 96), attempt, maxAttempts)
+}
+
+func (client *Client) logAttemptSuccess(metadata CallMetadata, attempt, maxAttempts int, attemptDuration, totalDuration time.Duration) {
+	client.Log.Infof("ai_call_success call_id=%s trader_id=%s strategy_id=%s provider=%s model=%s attempt=%d max_attempts=%d retries=%d attempt_duration_ms=%d total_duration_ms=%d error_kind=none http_status=none retryable=false outcome=success",
+		metadata.CallID, boundedLogValue(metadata.TraderID, 96), boundedLogValue(metadata.StrategyID, 96),
+		boundedLogValue(metadata.Provider, 96), boundedLogValue(metadata.Model, 96), attempt, maxAttempts, attempt-1,
+		attemptDuration.Milliseconds(), totalDuration.Milliseconds())
+}
+
+func (client *Client) logAttemptFailure(metadata CallMetadata, attempt, maxAttempts int, attemptDuration, totalDuration time.Duration, err error, retryable, willRetry bool) {
+	outcome := "final_failure"
+	level := client.Log.Errorf
+	if willRetry {
+		outcome = "retrying"
+		level = client.Log.Warnf
+	}
+	level("ai_call_failure call_id=%s trader_id=%s strategy_id=%s provider=%s model=%s attempt=%d max_attempts=%d retries=%d attempt_duration_ms=%d total_duration_ms=%d error_kind=%s http_status=%s retryable=%t outcome=%s error=%q",
+		metadata.CallID, boundedLogValue(metadata.TraderID, 96), boundedLogValue(metadata.StrategyID, 96),
+		boundedLogValue(metadata.Provider, 96), boundedLogValue(metadata.Model, 96), attempt, maxAttempts, attempt-1,
+		attemptDuration.Milliseconds(), totalDuration.Milliseconds(), ErrorKindOf(err), formatHTTPStatus(APIStatusCodeOf(err)), retryable, outcome, safeErrorSummary(err))
+}
+
+func (client *Client) wrapFinalCallError(attempts int, totalDuration time.Duration, err error) error {
+	if err == nil {
+		return fmt.Errorf("AI API call failed after %d attempts (%d retries, total_duration=%s)", attempts, max(0, attempts-1), totalDuration)
+	}
+	return fmt.Errorf("AI API call failed after %d attempts (%d retries, total_duration=%s): %w", attempts, max(0, attempts-1), totalDuration, err)
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func (client *Client) SetAuthHeader(reqHeader http.Header) {
@@ -404,10 +480,10 @@ func sleepWithContext(ctx context.Context, d time.Duration) error {
 // Call single AI API call (fixed flow, cannot be overridden)
 func (client *Client) Call(systemPrompt, userPrompt string) (string, error) {
 	// Print current AI configuration
-	client.Log.Infof("📡 [%s] Request AI Server: BaseURL: %s", client.String(), client.BaseURL)
+	client.Log.Infof("📡 [%s] Request AI Server: BaseURL: %s", client.String(), sanitizeURL(client.BaseURL))
 	client.Log.Debugf("[%s] UseFullURL: %v", client.String(), client.UseFullURL)
-	if len(client.APIKey) > 8 {
-		client.Log.Debugf("[%s]   API Key: %s...%s", client.String(), client.APIKey[:4], client.APIKey[len(client.APIKey)-4:])
+	if client.APIKey != "" {
+		client.Log.Debugf("[%s]   API Key: configured", client.String())
 	}
 
 	// Step 1: Build request body (via hooks for dynamic dispatch)
@@ -421,7 +497,7 @@ func (client *Client) Call(systemPrompt, userPrompt string) (string, error) {
 
 	// Step 3: Build URL (via hooks for dynamic dispatch)
 	url := client.Hooks.BuildUrl()
-	client.Log.Infof("📡 [MCP %s] Request URL: %s", client.String(), url)
+	client.Log.Infof("📡 [MCP %s] Request URL: %s", client.String(), sanitizeURL(url))
 
 	// Step 4: Create HTTP request (fixed logic)
 	req, err := client.Hooks.BuildRequest(url, jsonData)
@@ -466,24 +542,47 @@ func (c *Client) BaseClient() *Client { return c }
 
 // IsRetryableError determines if error is retryable (network errors, timeouts, etc.)
 func (client *Client) IsRetryableError(err error) bool {
-	var apiError *APIError
-	if errors.As(err, &apiError) {
-		switch apiError.Kind {
-		case ErrorKindAuthUnavailable,
-			ErrorKindRateLimited,
-			ErrorKindProviderUnavailable:
+	if err == nil {
+		return false
+	}
+	// A provider HTTP error is authoritative. Never let arbitrary response
+	// text (for example a 400 body containing the word "timeout") widen the
+	// retry policy for permanent client errors.
+	if status := APIStatusCodeOf(err); status > 0 {
+		if status == http.StatusTooManyRequests || status >= 500 || status == 520 || status == 522 || status == 524 {
 			return true
-		case ErrorKindInvalidCredentials,
-			ErrorKindModelNotFound,
-			ErrorKindContextLimit:
-			return false
 		}
+		return false
+	}
+	// Typed deadline and net.Error timeouts are retryable regardless of the
+	// configured text matching list. Plain error strings remain governed by the
+	// configured list for backward compatibility.
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) && networkError.Timeout() {
+		return true
+	}
+	switch ErrorKindOf(err) {
+	case ErrorKindAuthUnavailable,
+		ErrorKindRateLimited,
+		ErrorKindProviderUnavailable:
+		return true
+	case ErrorKindInvalidCredentials,
+		ErrorKindModelNotFound,
+		ErrorKindContextLimit:
+		return false
 	}
 
 	errStr := err.Error()
+	lowerErrStr := strings.ToLower(errStr)
 	// Network errors, timeouts, EOF, etc. can be retried
+	if client.Cfg == nil {
+		return false
+	}
 	for _, retryable := range client.Cfg.RetryableErrors {
-		if strings.Contains(errStr, retryable) {
+		if strings.Contains(lowerErrStr, strings.ToLower(retryable)) {
 			return true
 		}
 	}
@@ -516,47 +615,56 @@ func (client *Client) CallWithRequest(req *Request) (string, error) {
 	if client.APIKey == "" {
 		return "", fmt.Errorf("AI API key not set, please call SetAPIKey first")
 	}
+	if req == nil {
+		return "", fmt.Errorf("AI API request is nil")
+	}
 
 	// If Model is not set in Request, use Client's Model
 	if req.Model == "" {
 		req.Model = client.Model
 	}
 
-	// Fixed retry flow
+	metadata := normalizeCallMetadata(req.Metadata)
+	if metadata.Provider == "" {
+		metadata.Provider = client.Provider
+	}
+	if metadata.Model == "" {
+		metadata.Model = req.Model
+	}
+	req.Metadata = metadata
+	maxAttempts := client.maxAttempts()
+	totalStart := time.Now()
 	var lastErr error
-	maxRetries := client.Cfg.MaxRetries
-
-	for attempt := 1; attempt <= maxRetries; attempt++ {
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		attemptStart := time.Now()
 		if attempt > 1 {
-			client.Log.Warnf("⚠️  AI API call failed, retrying (%d/%d)...", attempt, maxRetries)
+			client.Log.Warnf("⚠️  AI API call failed, retrying (%d/%d)...", attempt, maxAttempts)
 		}
-
-		// Call single request
+		client.logAttemptStart(metadata, attempt, maxAttempts)
 		result, err := client.callWithRequest(req)
+		attemptDuration := time.Since(attemptStart)
+		totalDuration := time.Since(totalStart)
 		if err == nil {
-			if attempt > 1 {
-				client.Log.Infof("✓ AI API retry succeeded")
-			}
+			client.logAttemptSuccess(metadata, attempt, maxAttempts, attemptDuration, totalDuration)
 			return result, nil
 		}
-
 		lastErr = err
-		// Check if error is retryable
-		if !client.Hooks.IsRetryableError(err) {
-			return "", err
+		retryable := client.Hooks.IsRetryableError(err)
+		willRetry := retryable && attempt < maxAttempts
+		client.logAttemptFailure(metadata, attempt, maxAttempts, attemptDuration, totalDuration, err, retryable, willRetry)
+		if !willRetry {
+			return "", client.wrapFinalCallError(attempt, totalDuration, err)
 		}
-
-		// Wait before retry
-		if attempt < maxRetries {
-			waitTime := retryWaitDuration(client.Cfg.RetryWaitBase, attempt, err)
-			client.Log.Infof("⏳ Waiting %v before retry...", waitTime)
-			if err := sleepWithContext(contextFromRequest(req), waitTime); err != nil {
-				return "", err
-			}
+		waitTime := retryWaitDuration(client.Cfg.RetryWaitBase, attempt, err)
+		client.Log.Infof("ai_call_retry_wait call_id=%s provider=%s model=%s attempt=%d max_attempts=%d wait_ms=%d",
+			metadata.CallID, boundedLogValue(metadata.Provider, 96), boundedLogValue(metadata.Model, 96), attempt, maxAttempts, waitTime.Milliseconds())
+		if err := sleepWithContext(contextFromRequest(req), waitTime); err != nil {
+			totalDuration = time.Since(totalStart)
+			client.logAttemptFailure(metadata, attempt, maxAttempts, attemptDuration, totalDuration, err, false, false)
+			return "", client.wrapFinalCallError(attempt, totalDuration, err)
 		}
 	}
-
-	return "", fmt.Errorf("still failed after %d retries: %w", maxRetries, lastErr)
+	return "", client.wrapFinalCallError(maxAttempts, time.Since(totalStart), lastErr)
 }
 
 // CallWithRequestFull calls the AI API and returns both text content and tool calls.
@@ -564,37 +672,59 @@ func (client *Client) CallWithRequestFull(req *Request) (*LLMResponse, error) {
 	if client.APIKey == "" {
 		return nil, fmt.Errorf("AI API key not set, please call SetAPIKey first")
 	}
+	if req == nil {
+		return nil, fmt.Errorf("AI API request is nil")
+	}
 	if req.Model == "" {
 		req.Model = client.Model
 	}
 
+	metadata := normalizeCallMetadata(req.Metadata)
+	if metadata.Provider == "" {
+		metadata.Provider = client.Provider
+	}
+	if metadata.Model == "" {
+		metadata.Model = req.Model
+	}
+	req.Metadata = metadata
+	maxAttempts := client.maxAttempts()
+	totalStart := time.Now()
 	var lastErr error
-	maxRetries := client.Cfg.MaxRetries
-	for attempt := 1; attempt <= maxRetries; attempt++ {
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		attemptStart := time.Now()
 		if attempt > 1 {
-			client.Log.Warnf("⚠️  AI API call failed, retrying (%d/%d)...", attempt, maxRetries)
+			client.Log.Warnf("⚠️  AI API call failed, retrying (%d/%d)...", attempt, maxAttempts)
 		}
+		client.logAttemptStart(metadata, attempt, maxAttempts)
 		result, err := client.callWithRequestFull(req)
+		attemptDuration := time.Since(attemptStart)
+		totalDuration := time.Since(totalStart)
 		if err == nil {
+			client.logAttemptSuccess(metadata, attempt, maxAttempts, attemptDuration, totalDuration)
 			return result, nil
 		}
 		lastErr = err
-		if !client.Hooks.IsRetryableError(err) {
-			return nil, err
+		retryable := client.Hooks.IsRetryableError(err)
+		willRetry := retryable && attempt < maxAttempts
+		client.logAttemptFailure(metadata, attempt, maxAttempts, attemptDuration, totalDuration, err, retryable, willRetry)
+		if !willRetry {
+			return nil, client.wrapFinalCallError(attempt, totalDuration, err)
 		}
-		if attempt < maxRetries {
-			waitTime := retryWaitDuration(client.Cfg.RetryWaitBase, attempt, err)
-			if err := sleepWithContext(contextFromRequest(req), waitTime); err != nil {
-				return nil, err
-			}
+		waitTime := retryWaitDuration(client.Cfg.RetryWaitBase, attempt, err)
+		client.Log.Infof("ai_call_retry_wait call_id=%s provider=%s model=%s attempt=%d max_attempts=%d wait_ms=%d",
+			metadata.CallID, boundedLogValue(metadata.Provider, 96), boundedLogValue(metadata.Model, 96), attempt, maxAttempts, waitTime.Milliseconds())
+		if err := sleepWithContext(contextFromRequest(req), waitTime); err != nil {
+			totalDuration = time.Since(totalStart)
+			client.logAttemptFailure(metadata, attempt, maxAttempts, attemptDuration, totalDuration, err, false, false)
+			return nil, client.wrapFinalCallError(attempt, totalDuration, err)
 		}
 	}
-	return nil, fmt.Errorf("still failed after %d retries: %w", maxRetries, lastErr)
+	return nil, client.wrapFinalCallError(maxAttempts, time.Since(totalStart), lastErr)
 }
 
 // callWithRequestFull single call that returns LLMResponse (content + tool calls).
 func (client *Client) callWithRequestFull(req *Request) (*LLMResponse, error) {
-	client.Log.Infof("📡 [%s] Request AI Server (full): BaseURL: %s", client.String(), client.BaseURL)
+	client.Log.Infof("📡 [%s] Request AI Server (full): BaseURL: %s", client.String(), sanitizeURL(client.BaseURL))
 
 	requestBody := client.Hooks.BuildRequestBodyFromRequest(req)
 	jsonData, err := client.Hooks.MarshalRequestBody(requestBody)
@@ -628,7 +758,7 @@ func (client *Client) callWithRequestFull(req *Request) (*LLMResponse, error) {
 // callWithRequest single AI API call (using Request object)
 func (client *Client) callWithRequest(req *Request) (string, error) {
 	// Print current AI configuration
-	client.Log.Infof("📡 [%s] Request AI Server with Builder: BaseURL: %s", client.String(), client.BaseURL)
+	client.Log.Infof("📡 [%s] Request AI Server with Builder: BaseURL: %s", client.String(), sanitizeURL(client.BaseURL))
 	client.Log.Debugf("[%s] Messages count: %d", client.String(), len(req.Messages))
 
 	requestBody := client.Hooks.BuildRequestBodyFromRequest(req)
@@ -639,7 +769,7 @@ func (client *Client) callWithRequest(req *Request) (string, error) {
 	}
 
 	url := client.Hooks.BuildUrl()
-	client.Log.Infof("📡 [MCP %s] Request URL: %s", client.String(), url)
+	client.Log.Infof("📡 [MCP %s] Request URL: %s", client.String(), sanitizeURL(url))
 
 	httpReq, err := client.buildHTTPRequestWithContext(contextFromRequest(req), url, jsonData)
 	if err != nil {
