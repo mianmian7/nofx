@@ -1,6 +1,7 @@
 package trader
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"nofx/kernel"
@@ -23,9 +24,12 @@ const (
 	// position size so a price move between sizing and execution cannot
 	// trigger an insufficient-margin rejection.
 	positionSizeSafetyFactor = 0.98
+
+	// Unified hard stop boundary, expressed as Margin/Position PnL percent.
+	// The execution layer converts it to a price using the final leverage.
+	unifiedMarginStopLossPct = kernel.HardStopMarginPositionPnLPct
 )
 
-// executeDecisionWithRecord executes AI decision and records detailed information
 func (at *AutoTrader) executeDecisionWithRecord(decision *kernel.Decision, actionRecord *store.DecisionAction) error {
 	if decision.Action == "open_long" || decision.Action == "open_short" {
 		if provider, ok := at.trader.(leverageLimitProvider); ok {
@@ -36,10 +40,30 @@ func (at *AutoTrader) executeDecisionWithRecord(decision *kernel.Decision, actio
 		}
 	}
 	if at.executionMode == ExecutionModePaper && (decision.Action == "open_long" || decision.Action == "open_short") {
-		if _, err := at.validateOpenMarket(decision.Symbol); err != nil {
+		availability, err := at.validateOpenMarket(decision.Symbol)
+		if err != nil {
 			return err
 		}
-		if err := at.enforceOpenRiskBudget(decision); err != nil {
+		if at.paperBroker == nil {
+			return fmt.Errorf("paper broker is not configured")
+		}
+		entryPrice := 0.0
+		if availability != nil {
+			entryPrice = availability.Price
+		}
+		if entryPrice <= 0 {
+			entryPrice, err = at.paperBroker.GetMarketPrice(decision.Symbol)
+			if err != nil {
+				return fmt.Errorf("failed to get current price for %s: %w", decision.Symbol, err)
+			}
+		}
+		if err := at.normalizeStopLossAtEntry(decision, entryPrice); err != nil {
+			return err
+		}
+		if err := validateOpenProtection(decision.Action, entryPrice, decision.StopLoss, decision.TakeProfit); err != nil {
+			return err
+		}
+		if err := at.enforceOpenRiskBudget(decision, entryPrice); err != nil {
 			return err
 		}
 	}
@@ -95,13 +119,35 @@ type managedPosition struct {
 	stopLoss, takeProfit float64
 }
 
+// protectionUpdateRejectedError marks a decision that reached the position
+// protection validator but violated a backend risk invariant. Keeping this
+// distinct from exchange/network errors lets the decision loop log an
+// expected model rejection at warning level while retaining its reason in the
+// persisted action error and execution log.
+type protectionUpdateRejectedError struct {
+	err error
+}
+
+func (e *protectionUpdateRejectedError) Error() string {
+	return fmt.Sprintf("protection_update_rejected: %v", e.err)
+}
+
+func (e *protectionUpdateRejectedError) Unwrap() error {
+	return e.err
+}
+
+func isProtectionUpdateRejected(err error) bool {
+	var rejection *protectionUpdateRejectedError
+	return errors.As(err, &rejection)
+}
+
 func (at *AutoTrader) executeUpdatePositionWithRecord(decision *kernel.Decision, actionRecord *store.DecisionAction) error {
 	position, err := at.loadManagedPosition(decision.Symbol)
 	if err != nil {
 		return err
 	}
 	if err := validateProtectionUpdate(position, decision); err != nil {
-		return err
+		return &protectionUpdateRejectedError{err: err}
 	}
 
 	actionRecord.Action = decision.Action
@@ -207,7 +253,11 @@ func (at *AutoTrader) loadManagedPosition(symbol string) (managedPosition, error
 }
 
 func validateProtectionUpdate(position managedPosition, decision *kernel.Decision) error {
+	unchangedTakeProfit := normalizeProtectionUpdate(position, decision)
 	if decision.NewStopLoss <= 0 && decision.NewTakeProfit <= 0 {
+		if unchangedTakeProfit {
+			return nil
+		}
 		return fmt.Errorf("update_position requires new_stop_loss or new_take_profit")
 	}
 	long := strings.EqualFold(position.side, "long")
@@ -268,6 +318,18 @@ func validateProtectionUpdate(position managedPosition, decision *kernel.Decisio
 		}
 	}
 	return nil
+}
+
+// normalizeProtectionUpdate removes a repeated target emitted by a model that
+// intends to keep the existing take-profit unchanged. A target equal to the
+// current exchange protection is not an extension and must not enter the
+// extension-only validation branch.
+func normalizeProtectionUpdate(position managedPosition, decision *kernel.Decision) bool {
+	if decision.NewTakeProfit > 0 && position.takeProfit > 0 && decision.NewTakeProfit == position.takeProfit {
+		decision.NewTakeProfit = 0
+		return true
+	}
+	return false
 }
 
 func (at *AutoTrader) replaceStopLoss(position managedPosition, positionSide string, requested float64) error {
@@ -334,12 +396,199 @@ func numericBalanceField(balance map[string]interface{}, key string) float64 {
 	return 0
 }
 
+// marginPnLStopPrice converts a margin/position PnL threshold into an exchange
+// trigger price. thresholdPct is the leveraged return on margin, e.g. -20 at
+// 20x means a 1% adverse price move. Fees, slippage, and funding are handled by
+// the existing execution/risk layers; the trigger itself represents the
+// configured margin-PnL boundary before exchange tick-size normalization.
+func marginPnLStopPrice(action string, entryPrice float64, leverage int, thresholdPct float64) (float64, error) {
+	if entryPrice <= 0 || leverage <= 0 {
+		return 0, fmt.Errorf("margin-PnL stop conversion requires positive entry price and leverage")
+	}
+	if thresholdPct >= 0 {
+		return 0, fmt.Errorf("stop-loss threshold must be negative, got %.4f", thresholdPct)
+	}
+	priceMove := (thresholdPct / 100) / float64(leverage)
+	switch action {
+	case "open_long":
+		return entryPrice * (1 + priceMove), nil
+	case "open_short":
+		return entryPrice * (1 - priceMove), nil
+	default:
+		return 0, fmt.Errorf("unsupported opening action %q for margin-PnL stop conversion", action)
+	}
+}
+
+// marginPnLTakeProfitPrice converts a positive Margin/Position PnL target into
+// the absolute exchange trigger price. Decision.TakeProfit and
+// Decision.NewTakeProfit always carry this resulting price; a percentage must
+// never be sent to an exchange or PaperBroker as if it were a price.
+func marginPnLTakeProfitPrice(action string, entryPrice float64, leverage int, targetPct float64) (float64, error) {
+	if entryPrice <= 0 || leverage <= 0 {
+		return 0, fmt.Errorf("margin-PnL take-profit conversion requires positive entry price and leverage")
+	}
+	if targetPct <= 0 {
+		return 0, fmt.Errorf("take-profit threshold must be positive, got %.4f", targetPct)
+	}
+	priceMove := (targetPct / 100) / float64(leverage)
+	switch action {
+	case "open_long":
+		return entryPrice * (1 + priceMove), nil
+	case "open_short":
+		return entryPrice * (1 - priceMove), nil
+	default:
+		return 0, fmt.Errorf("unsupported opening action %q for margin-PnL take-profit conversion", action)
+	}
+}
+
+// clampStopLossToMarginRisk tightens a model-provided stop to the configured
+// margin/position PnL loss boundary, never loosening an already tighter stop.
+func clampStopLossToMarginRisk(action string, entryPrice float64, leverage int, stopLoss float64, thresholdPct float64) (float64, bool, error) {
+	limit, err := marginPnLStopPrice(action, entryPrice, leverage, thresholdPct)
+	if err != nil {
+		return 0, false, err
+	}
+	if stopLoss <= 0 {
+		return limit, true, nil
+	}
+	switch action {
+	case "open_long":
+		if stopLoss < limit {
+			return limit, true, nil
+		}
+	case "open_short":
+		if stopLoss > limit {
+			return limit, true, nil
+		}
+	}
+	return stopLoss, false, nil
+}
+
 func calculateMaximumAffordableNotional(availableMarginBudget float64, leverage int) float64 {
 	if availableMarginBudget <= 0 || leverage <= 0 {
 		return 0
 	}
 	marginFactor := marginOverheadFactor/float64(leverage) + takerFeeRate
 	return availableMarginBudget / marginFactor
+}
+
+// normalizeStopLossAtEntry applies the unified Margin/Position PnL stop boundary
+// immediately before execution, after the effective leverage and current entry
+// price are known. Existing tighter model stops are preserved.
+//
+// The normalization is intentionally execution-time: the exchange may clamp
+// leverage before this function runs, and the trigger price must use that final
+// leverage rather than the model's original request.
+func (at *AutoTrader) normalizeStopLossAtEntry(decision *kernel.Decision, entryPrice float64) error {
+	if decision == nil || (decision.Action != "open_long" && decision.Action != "open_short") {
+		return nil
+	}
+	stop, changed, err := clampStopLossToMarginRisk(decision.Action, entryPrice, decision.Leverage, decision.StopLoss, unifiedMarginStopLossPct)
+	if err != nil {
+		return err
+	}
+	if changed {
+		logger.Infof("  ⚠️ [RISK CONTROL] tightened %s stop to %.8f for %.1f%% Margin/Position PnL at %dx (Price PnL boundary %.4f%%)", decision.Symbol, stop, unifiedMarginStopLossPct, decision.Leverage, unifiedMarginStopLossPct/float64(decision.Leverage))
+		decision.StopLoss = stop
+	}
+	return nil
+}
+
+// validateOpenProtection rejects malformed protective levels before an entry
+// order is sent. The model must provide a stop and target on the profitable
+// side of the entry for both directions; this check is independent of
+// risk_usd so a missing risk budget cannot bypass directional safety.
+func validateOpenProtection(action string, entryPrice, stopLoss, takeProfit float64) error {
+	if action != "open_long" && action != "open_short" {
+		return nil
+	}
+	if !isFinitePositive(entryPrice) {
+		return fmt.Errorf("%s requires a positive current entry price, got %.8f", action, entryPrice)
+	}
+	if !isFinitePositive(stopLoss) || !isFinitePositive(takeProfit) {
+		return fmt.Errorf("%s requires positive stop loss and take profit prices, got stop %.8f take profit %.8f", action, stopLoss, takeProfit)
+	}
+
+	switch action {
+	case "open_long":
+		if stopLoss >= entryPrice {
+			return fmt.Errorf("long stop loss %.8f must be below current entry price %.8f", stopLoss, entryPrice)
+		}
+		if takeProfit <= entryPrice {
+			return fmt.Errorf("long take profit %.8f must be above current entry price %.8f", takeProfit, entryPrice)
+		}
+	case "open_short":
+		if stopLoss <= entryPrice {
+			return fmt.Errorf("short stop loss %.8f must be above current entry price %.8f", stopLoss, entryPrice)
+		}
+		if takeProfit >= entryPrice {
+			return fmt.Errorf("short take profit %.8f must be below current entry price %.8f", takeProfit, entryPrice)
+		}
+	}
+	return nil
+}
+
+// validatePaperExitPrices guards the PaperBroker's lower-level Trader API. It
+// accepts optional protections for funding/ledger tests, but any supplied TP
+// or SL must already be an absolute price on the correct side of entry.
+func validatePaperExitPrices(action string, entryPrice, stopLoss, takeProfit float64) error {
+	if !isFinitePositive(entryPrice) {
+		return fmt.Errorf("%s requires a positive entry price", action)
+	}
+	if (stopLoss != 0 && !isFinitePositive(stopLoss)) || (takeProfit != 0 && !isFinitePositive(takeProfit)) {
+		return fmt.Errorf("%s requires supplied stop-loss/take-profit values to be finite positive absolute prices", action)
+	}
+	switch action {
+	case "open_long":
+		if stopLoss > 0 && stopLoss >= entryPrice {
+			return fmt.Errorf("paper long stop-loss price %.8f must be below entry price %.8f", stopLoss, entryPrice)
+		}
+		if takeProfit > 0 && takeProfit <= entryPrice {
+			return fmt.Errorf("paper long take-profit price %.8f must be above entry price %.8f; PnL percentages must be converted before PaperBroker execution", takeProfit, entryPrice)
+		}
+	case "open_short":
+		if stopLoss > 0 && stopLoss <= entryPrice {
+			return fmt.Errorf("paper short stop-loss price %.8f must be above entry price %.8f", stopLoss, entryPrice)
+		}
+		if takeProfit > 0 && takeProfit >= entryPrice {
+			return fmt.Errorf("paper short take-profit price %.8f must be below entry price %.8f; PnL percentages must be converted before PaperBroker execution", takeProfit, entryPrice)
+		}
+	}
+	return nil
+}
+
+// validatePaperUpdateExitPrices validates protections against the current mark
+// rather than the entry price. An already profitable position may move its stop
+// beyond entry, but the stop/target must remain on the safe side of the live
+// price so the update cannot immediately cross the market.
+func validatePaperUpdateExitPrices(action string, currentPrice, stopLoss, takeProfit float64) error {
+	if !isFinitePositive(currentPrice) {
+		return fmt.Errorf("%s requires a positive current price", action)
+	}
+	if (stopLoss != 0 && !isFinitePositive(stopLoss)) || (takeProfit != 0 && !isFinitePositive(takeProfit)) {
+		return fmt.Errorf("%s requires supplied stop-loss/take-profit values to be finite positive absolute prices", action)
+	}
+	switch action {
+	case "open_long":
+		if stopLoss > 0 && stopLoss >= currentPrice {
+			return fmt.Errorf("paper long stop-loss price %.8f must be below current price %.8f", stopLoss, currentPrice)
+		}
+		if takeProfit > 0 && takeProfit <= currentPrice {
+			return fmt.Errorf("paper long take-profit price %.8f must be above current price %.8f", takeProfit, currentPrice)
+		}
+	case "open_short":
+		if stopLoss > 0 && stopLoss <= currentPrice {
+			return fmt.Errorf("paper short stop-loss price %.8f must be above current price %.8f", stopLoss, currentPrice)
+		}
+		if takeProfit > 0 && takeProfit >= currentPrice {
+			return fmt.Errorf("paper short take-profit price %.8f must be below current price %.8f", takeProfit, currentPrice)
+		}
+	}
+	return nil
+}
+
+func isFinitePositive(value float64) bool {
+	return value > 0 && !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
 func calculateRiskLimitedNotional(
@@ -652,6 +901,12 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 	if availability != nil {
 		marketData.CurrentPrice = availability.Price
 	}
+	if err := at.normalizeStopLossAtEntry(decision, marketData.CurrentPrice); err != nil {
+		return err
+	}
+	if err := validateOpenProtection(decision.Action, marketData.CurrentPrice, decision.StopLoss, decision.TakeProfit); err != nil {
+		return err
+	}
 
 	// Get balance (needed for multiple checks)
 	balance, err := at.trader.GetBalance()
@@ -742,7 +997,7 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 		logger.Infof("  ⚠ Failed to set stop loss: %v", err)
 	}
 	if err := at.trader.SetTakeProfit(decision.Symbol, "LONG", quantity, decision.TakeProfit); err != nil {
-		logger.Infof("  ⚠ Failed to set take profit: %v", err)
+		logger.Errorf("  ❌ Failed to set take-profit protection order: %v", err)
 	}
 
 	return nil
@@ -781,6 +1036,12 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 	}
 	if availability != nil {
 		marketData.CurrentPrice = availability.Price
+	}
+	if err := at.normalizeStopLossAtEntry(decision, marketData.CurrentPrice); err != nil {
+		return err
+	}
+	if err := validateOpenProtection(decision.Action, marketData.CurrentPrice, decision.StopLoss, decision.TakeProfit); err != nil {
+		return err
 	}
 
 	// Get balance (needed for multiple checks)
@@ -872,7 +1133,7 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 		logger.Infof("  ⚠ Failed to set stop loss: %v", err)
 	}
 	if err := at.trader.SetTakeProfit(decision.Symbol, "SHORT", quantity, decision.TakeProfit); err != nil {
-		logger.Infof("  ⚠ Failed to set take profit: %v", err)
+		logger.Errorf("  ❌ Failed to set take-profit protection order: %v", err)
 	}
 
 	return nil

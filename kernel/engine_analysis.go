@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // MarketDataUnavailableError tells the trader loop that no AI call should be
@@ -73,6 +75,21 @@ func GetFullDecision(ctx *Context, mcpClient mcp.AIClient) (*FullDecision, error
 	return GetFullDecisionWithStrategy(ctx, mcpClient, engine, "")
 }
 
+// callAIWithMetadata prefers the correlated MCP entry point so retries and the
+// resulting FullDecision share one logical CallID. The plain interface remains
+// a compatibility fallback for legacy clients; those clients may create their
+// own provider-local diagnostic ID because they cannot accept metadata.
+func callAIWithMetadata(client mcp.AIClient, metadata mcp.CallMetadata, systemPrompt, userPrompt string) (string, error) {
+	if correlated, ok := client.(mcp.CorrelatedAIClient); ok {
+		return correlated.CallWithMessagesWithMetadata(metadata, systemPrompt, userPrompt)
+	}
+	return client.CallWithMessages(systemPrompt, userPrompt)
+}
+
+func newLogicalCallID() string {
+	return uuid.NewString()
+}
+
 // GetFullDecisionWithStrategy uses StrategyEngine to get AI decision (unified prompt generation)
 func GetFullDecisionWithStrategy(ctx *Context, mcpClient mcp.AIClient, engine *StrategyEngine, variant string) (*FullDecision, error) {
 	if ctx == nil {
@@ -127,18 +144,33 @@ func GetFullDecisionWithStrategy(ctx *Context, mcpClient mcp.AIClient, engine *S
 	// 3. Build User Prompt using strategy engine
 	userPrompt := engine.BuildUserPrompt(ctx)
 
-	// 4. Call AI API
+	// 4. Call AI API. Generate one ID at the logical call boundary and pass it
+	// through MCP retries; do not generate a second ID after the response.
+	callID := newLogicalCallID()
+	metadata := mcp.CallMetadata{
+		CallID:     callID,
+		TraderID:   ctx.TraderID,
+		StrategyID: ctx.StrategyID,
+	}
 	aiCallStart := time.Now()
-	aiResponse, err := mcpClient.CallWithMessages(systemPrompt, userPrompt)
+	aiResponse, err := callAIWithMetadata(mcpClient, metadata, systemPrompt, userPrompt)
 	aiCallDuration := time.Since(aiCallStart)
 	if err != nil {
-		return nil, fmt.Errorf("AI API call failed: %w", err)
+		// Keep the call ID and prompts available to the trader's failure record so
+		// the MCP failure log remains correlated even when no response exists.
+		return &FullDecision{
+			CallID:              callID,
+			SystemPrompt:        systemPrompt,
+			UserPrompt:          userPrompt,
+			AIRequestDurationMs: aiCallDuration.Milliseconds(),
+		}, fmt.Errorf("AI API call failed: %w", err)
 	}
 
 	// 5. Parse AI response
 	decision, err := parseFullDecisionResponse(aiResponse, ctx.Account.TotalEquity, riskConfig)
 
 	if decision != nil {
+		decision.CallID = callID
 		decision.Timestamp = time.Now()
 		decision.SystemPrompt = systemPrompt
 		decision.UserPrompt = userPrompt

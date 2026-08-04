@@ -238,8 +238,8 @@ func buildXYZStockCustomPrompt(symbol string, marginBased ...bool) string {
 	sb.WriteString("- Negative catalyst: earnings miss, guide down, sector weakness, macro headwind.\n\n")
 
 	sb.WriteString("## Risk Guardrails (non-negotiable)\n")
-	sb.WriteString("- Per-trade stop-loss: 1.5-3% from entry. ALWAYS set a numeric `stop_loss`.\n")
-	sb.WriteString("- Take-profit: target at least R/R 2:1; set a numeric `take_profit`.\n")
+	sb.WriteString("- Per-trade stop-loss: target a -20% Margin/Position PnL boundary. Convert it to an actual trigger price using the final leverage: for a long, entry × (1 - 0.20 / leverage); for a short, entry × (1 + 0.20 / leverage). Never send the percentage itself as a price; ALWAYS set a numeric `stop_loss`. Fees, slippage, funding, and exchange tick precision are handled by the execution layer.\n")
+	sb.WriteString("- Take-profit: target at least R/R 2:1. With the unified -20% hard stop, a normal target is about +40% Margin/Position PnL; convert it to the absolute trigger price using the final leverage: long entry × (1 + 0.40 / leverage), short entry × (1 - 0.40 / leverage). `take_profit` is always the resulting price, never the percentage.\n")
 	if dynamicSizing {
 		sb.WriteString("- Position sizing: derive leveraged notional from current available margin and the selected leverage; the backend applies the final fee/overhead ceiling.\n")
 	} else {
@@ -304,14 +304,18 @@ func formatThrottleDuration(minutes int) string {
 
 func writeTradeThrottleGuidance(sb *strings.Builder, throttle store.TradeThrottleConfig) {
 	sb.WriteString("# Trade Throttle (Backend Enforced)\n\n")
-	sb.WriteString(fmt.Sprintf("- Hold each new position for at least %s unless PnL reaches %.1f%% loss or %.1f%% profit.\n", formatThrottleDuration(throttle.MinHoldMinutes), throttle.EarlyCloseStopLossBypassPct, throttle.EarlyCloseTakeProfitBypassPct))
-	sb.WriteString(fmt.Sprintf("- After the minimum hold, avoid small closes inside the %.1f%% to %.1f%% noise band until %s.\n", throttle.NoiseCloseLossFloorPct, throttle.NoiseCloseProfitCeilingPct, formatThrottleDuration(throttle.NoiseCloseHoldMinutes)))
+	sb.WriteString(fmt.Sprintf("- Hold each new position for at least %s unless Margin/Position PnL reaches %.1f%% loss or %.1f%% profit. Price PnL is shown separately and must not be used for this gate.\n", formatThrottleDuration(throttle.MinHoldMinutes), throttle.EarlyCloseStopLossBypassPct, throttle.EarlyCloseTakeProfitBypassPct))
+	sb.WriteString(fmt.Sprintf("- After the minimum hold, avoid small closes inside the %.1f%% to %.1f%% Margin/Position PnL noise band until %s.\n", throttle.NoiseCloseLossFloorPct, throttle.NoiseCloseProfitCeilingPct, formatThrottleDuration(throttle.NoiseCloseHoldMinutes)))
+	sb.WriteString("- Every throttle percentage above is Margin/Position PnL. Convert a positive take-profit threshold to an actual price with entry × (1 + target_pct/100/leverage) for longs or entry × (1 - target_pct/100/leverage) for shorts; Price PnL is display-only.\n")
 	sb.WriteString(fmt.Sprintf("- Wait %s after closing a symbol before re-entry.\n", formatThrottleDuration(throttle.ReentryCooldownMinutes)))
 	sb.WriteString(fmt.Sprintf("- Open no more than %d new positions per hour and %d per decision cycle.\n", throttle.MaxOpensPerHour, throttle.MaxOpensPerCycle))
 	sb.WriteString("- Keep stops beyond thesis invalidation and targets far enough to cover fees; do not scalp noise.\n\n")
 	sb.WriteString("# Open Position Management\n\n")
-	sb.WriteString("- Use `update_position` instead of `hold` when an open position's protection should change. Provide `new_stop_loss`, `new_take_profit`, or both.\n")
+	sb.WriteString("- Use `update_position` instead of `hold` when an open position's protection should change. Provide `new_stop_loss`, `new_take_profit`, or both. Stops and all risk thresholds use Margin/Position PnL; convert every threshold to an actual price using the current leverage.\n")
+	sb.WriteString("- For an existing long position, the protection order is stop < current price < take-profit; for an existing short position, it is take-profit < current price < stop. Apply these directional relationships to every update.\n")
+	sb.WriteString("- When only the stop should move, output `new_stop_loss` only and omit `new_take_profit`. Repeating the current take-profit is treated as no change, not as an extension.\n")
 	sb.WriteString("- Once profit reaches +1R, move the stop to breakeven plus fees when market structure permits. At +2R, trail behind a confirmed 15m swing or volatility support/resistance. Never loosen a stop.\n")
+	sb.WriteString("- The backend determines the fee-inclusive breakeven boundary and rejects a profitable stop that could turn the position into a loss; do not invent or label a stop as breakeven based on an assumed fee rate.\n")
 	sb.WriteString("- For a runaway move: when price has completed most of the path to the existing target and momentum/volume still confirm a breakout, extend the take-profit one step and tighten the stop in the same `update_position` decision.\n")
 	sb.WriteString("- Never move a take-profit farther merely to avoid a likely fill. If momentum weakens, keep the existing target and protect profit with the stop.\n")
 	sb.WriteString("- If no protection level should change, use `hold`.\n\n")
@@ -364,11 +368,13 @@ func writeHardConstraints(sb *strings.Builder, accountEquity, availableBalance f
 			sb.WriteString(fmt.Sprintf("- Trading Leverage: max %dx for every asset\n", riskControl.MaxLeverage))
 		}
 	}
+	sb.WriteString("- Directional protection (mandatory for opening): open_long: stop_loss < entry/current price < take_profit; open_short: take_profit < entry/current price < stop_loss. If this cannot be satisfied, output wait.\n")
+	sb.WriteString("- Unified hard stop boundary: -20% Margin/Position PnL. Convert it to the actual trigger price with the final leverage; do not send the percentage as a price.\n")
+	sb.WriteString("- Take-profit thresholds are gross Margin/Position PnL, not prices; realized net PnL still includes fees, funding, and slippage. For a +40% target use long entry × (1 + 0.40 / leverage) or short entry × (1 - 0.40 / leverage), then send only that absolute price to the execution layer.\n")
+	sb.WriteString(fmt.Sprintf("- Risk-Reward Ratio: ≥1:%.1f. For longs calculate (take_profit - entry_price) / (entry_price - stop_loss); for shorts calculate (entry_price - take_profit) / (stop_loss - entry_price). Both distances must be positive; never use the raw take_profit / stop_loss price ratio.\n", riskControl.MinRiskRewardRatio))
 	if zh {
-		sb.WriteString(fmt.Sprintf("- Risk-Reward Ratio: ≥1:%.1f (take_profit / stop_loss)\n", riskControl.MinRiskRewardRatio))
 		sb.WriteString(fmt.Sprintf("- Min Confidence: ≥%d to open position\n\n", riskControl.MinConfidence))
 	} else {
-		sb.WriteString(fmt.Sprintf("- Risk-Reward Ratio: ≥1:%.1f (take_profit / stop_loss)\n", riskControl.MinRiskRewardRatio))
 		sb.WriteString(fmt.Sprintf("- Min Confidence: ≥%d to open position\n\n", riskControl.MinConfidence))
 	}
 	sb.WriteString("- Do not default to a habitual leverage such as 5x, 8x, or 10x. Select leverage from this setup's stop distance, requested notional, and remaining margin budget.\n")
@@ -484,6 +490,10 @@ func writeOutputFormat(sb *strings.Builder, accountEquity, availableBalance, btc
 		sb.WriteString(fmt.Sprintf("- `confidence`: 0-100 and required for every action. For `wait`, it is the strongest rejected setup's entry confidence and must be below %d, not confidence in waiting.\n", riskControl.MinConfidence))
 		sb.WriteString("- Required when opening: leverage, position_size_usd, stop_loss, take_profit, confidence, risk_usd\n")
 		sb.WriteString("- Required for `update_position`: `new_stop_loss`, `new_take_profit`, or both; include confidence.\n")
+		sb.WriteString("- For `update_position`, output only the fields that change: stop-only protection changes must omit `new_take_profit`; a repeated current take-profit is a no-op.\n")
+		sb.WriteString("- Existing-position direction: long has stop < current price < take-profit; short has take-profit < current price < stop. A take-profit extension must include a tightened stop in the same decision.\n")
+		sb.WriteString("- Opening protection invariants: open_long requires stop_loss < entry/current price < take_profit; open_short requires take_profit < entry/current price < stop_loss. If invalid, output wait.\n")
+		sb.WriteString("- In the single-symbol example, zero protection values are placeholders only; never output zero for an opening decision.\n")
 		sb.WriteString("- **IMPORTANT**: all numeric values must be calculated numbers, NOT formulas/expressions (e.g. use `27.76`, not `3000 * 0.01`)\n")
 		if singleSymbol {
 			sb.WriteString(fmt.Sprintf("- **This strategy trades only %s.** The JSON `symbol` MUST match `%s` exactly — do not write `%s` variants that drop the suffix or add USDT.\n", primarySymbol, primarySymbol, primarySymbol))
@@ -495,6 +505,10 @@ func writeOutputFormat(sb *strings.Builder, accountEquity, availableBalance, btc
 		sb.WriteString(fmt.Sprintf("- `confidence`: 0-100 and required for every action. For `wait`, it is the strongest rejected setup's entry confidence and must be below %d, not confidence in waiting.\n", riskControl.MinConfidence))
 		sb.WriteString("- Required when opening: leverage, position_size_usd, stop_loss, take_profit, confidence, risk_usd\n")
 		sb.WriteString("- Required for `update_position`: `new_stop_loss`, `new_take_profit`, or both; include confidence.\n")
+		sb.WriteString("- For `update_position`, output only the fields that change: stop-only protection changes must omit `new_take_profit`; a repeated current take-profit is a no-op.\n")
+		sb.WriteString("- Existing-position direction: long has stop < current price < take-profit; short has take-profit < current price < stop. A take-profit extension must include a tightened stop in the same decision.\n")
+		sb.WriteString("- Opening protection invariants: open_long requires stop_loss < entry/current price < take_profit; open_short requires take_profit < entry/current price < stop_loss. If invalid, output wait.\n")
+		sb.WriteString("- In the single-symbol example, zero protection values are placeholders only; never output zero for an opening decision.\n")
 		sb.WriteString("- **IMPORTANT**: all numeric values must be calculated numbers, NOT formulas/expressions (e.g. use `27.76`, not `3000 * 0.01`)\n")
 		if singleSymbol {
 			sb.WriteString(fmt.Sprintf("- **This strategy trades only %s.** The JSON `symbol` MUST match `%s` exactly — do not add USDT/USDC suffix variants.\n", primarySymbol, primarySymbol))
@@ -746,9 +760,10 @@ func (e *StrategyEngine) formatPositionInfo(index int, pos PositionInfo, ctx *Co
 		positionValue = -positionValue
 	}
 
-	sb.WriteString(fmt.Sprintf("%d. %s %s | Entry %.4f Current %.4f | Qty %.4f | Position Value %.2f USDT | PnL%+.2f%% | PnL Amount%+.2f USDT | Peak PnL%.2f%% | Stop %.4f | Target %.4f | Leverage %dx | Margin %.0f | Liq Price %.4f%s\n\n",
+	pricePnLPct := formatPricePnLPct(pos)
+	sb.WriteString(fmt.Sprintf("%d. %s %s | Entry %.4f Current %.4f | Qty %.4f | Position Value %.2f USDT | Margin/Position PnL%+.2f%% | Price PnL%+.2f%% | PnL Amount%+.2f USDT | Peak Margin/Position PnL%.2f%% | Stop-loss price %.4f | Take-profit price %.4f | Leverage %dx | Margin %.0f | Liq Price %.4f%s\n\n",
 		index, pos.Symbol, strings.ToUpper(pos.Side),
-		pos.EntryPrice, pos.MarkPrice, pos.Quantity, positionValue, pos.UnrealizedPnLPct, pos.UnrealizedPnL, pos.PeakPnLPct,
+		pos.EntryPrice, pos.MarkPrice, pos.Quantity, positionValue, pos.UnrealizedPnLPct, pricePnLPct, pos.UnrealizedPnL, pos.PeakPnLPct,
 		pos.StopLoss, pos.TakeProfit, pos.Leverage, pos.MarginUsed, pos.LiquidationPrice, holdingDuration))
 
 	if marketData, ok := ctx.MarketDataMap[pos.Symbol]; ok {

@@ -23,20 +23,25 @@ import (
 
 // PositionInfo position information
 type PositionInfo struct {
-	Symbol           string  `json:"symbol"`
-	Side             string  `json:"side"` // "long" or "short"
-	EntryPrice       float64 `json:"entry_price"`
-	MarkPrice        float64 `json:"mark_price"`
-	Quantity         float64 `json:"quantity"`
-	Leverage         int     `json:"leverage"`
-	UnrealizedPnL    float64 `json:"unrealized_pnl"`
+	Symbol        string  `json:"symbol"`
+	Side          string  `json:"side"` // "long" or "short"
+	EntryPrice    float64 `json:"entry_price"`
+	MarkPrice     float64 `json:"mark_price"`
+	Quantity      float64 `json:"quantity"`
+	Leverage      int     `json:"leverage"`
+	UnrealizedPnL float64 `json:"unrealized_pnl"`
+	// UnrealizedPnLPct is Margin/Position PnL: unrealized PnL divided by
+	// initial margin, expressed as a percentage. It is not price PnL.
 	UnrealizedPnLPct float64 `json:"unrealized_pnl_pct"`
-	PeakPnLPct       float64 `json:"peak_pnl_pct"` // Historical peak profit percentage
+	// PricePnLPct is the unlevered price move, shown for context only and never
+	// used for Margin/Position PnL risk gates.
+	PricePnLPct      float64 `json:"price_pnl_pct"`
+	PeakPnLPct       float64 `json:"peak_pnl_pct"` // Historical peak Margin/Position PnL percentage
 	LiquidationPrice float64 `json:"liquidation_price"`
 	MarginUsed       float64 `json:"margin_used"`
-	StopLoss         float64 `json:"stop_loss,omitempty"`
-	TakeProfit       float64 `json:"take_profit,omitempty"`
-	UpdateTime       int64   `json:"update_time"` // Position update timestamp (milliseconds)
+	StopLoss         float64 `json:"stop_loss,omitempty"`   // Absolute exchange trigger price
+	TakeProfit       float64 `json:"take_profit,omitempty"` // Absolute exchange trigger price; not a PnL percentage
+	UpdateTime       int64   `json:"update_time"`           // Position update timestamp (milliseconds)
 }
 
 // AccountInfo account information
@@ -87,6 +92,8 @@ type Context struct {
 	CurrentTime    string                             `json:"current_time"`
 	RuntimeMinutes int                                `json:"runtime_minutes"`
 	CallCount      int                                `json:"call_count"`
+	TraderID       string                             `json:"trader_id"`
+	StrategyID     string                             `json:"strategy_id"`
 	Account        AccountInfo                        `json:"account"`
 	Positions      []PositionInfo                     `json:"positions"`
 	CandidateCoins []CandidateCoin                    `json:"candidate_coins"`
@@ -112,10 +119,10 @@ type Decision struct {
 	// Opening position parameters
 	Leverage        int     `json:"leverage,omitempty"`
 	PositionSizeUSD float64 `json:"position_size_usd,omitempty"`
-	StopLoss        float64 `json:"stop_loss,omitempty"`
-	TakeProfit      float64 `json:"take_profit,omitempty"`
-	NewStopLoss     float64 `json:"new_stop_loss,omitempty"`
-	NewTakeProfit   float64 `json:"new_take_profit,omitempty"`
+	StopLoss        float64 `json:"stop_loss,omitempty"`       // Absolute exchange trigger price
+	TakeProfit      float64 `json:"take_profit,omitempty"`     // Absolute exchange trigger price; not a PnL percentage
+	NewStopLoss     float64 `json:"new_stop_loss,omitempty"`   // Absolute exchange trigger price
+	NewTakeProfit   float64 `json:"new_take_profit,omitempty"` // Absolute exchange trigger price; not a PnL percentage
 
 	// Grid trading parameters
 	Price      float64 `json:"price,omitempty"`       // Limit order price (for grid)
@@ -131,6 +138,7 @@ type Decision struct {
 
 // FullDecision AI's complete decision (including chain of thought)
 type FullDecision struct {
+	CallID              string     `json:"call_id,omitempty"`
 	SystemPrompt        string     `json:"system_prompt"`
 	UserPrompt          string     `json:"user_prompt"`
 	CoTTrace            string     `json:"cot_trace"`

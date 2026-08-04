@@ -118,6 +118,7 @@ func (at *AutoTrader) runCycle() error {
 
 	// Save chain of thought, decisions, and input prompt even if there's an error (for debugging)
 	if aiDecision != nil {
+		record.CallID = aiDecision.CallID
 		record.SystemPrompt = aiDecision.SystemPrompt // Save system prompt
 		record.InputPrompt = aiDecision.UserPrompt
 		record.CoTTrace = aiDecision.CoTTrace
@@ -180,21 +181,11 @@ func (at *AutoTrader) runCycle() error {
 			at.logErrorf("🛡️ Action: Will keep trying AI each cycle. Safe mode auto-deactivates when AI recovers.")
 		}
 
-		// Print system prompt and AI chain of thought (output even with errors for debugging)
-		if aiDecision != nil {
-			logger.Info("\n" + strings.Repeat("=", 70) + "\n")
-			logger.Infof("📋 System prompt (error case)")
-			logger.Info(strings.Repeat("=", 70))
-			logger.Info(aiDecision.SystemPrompt)
-			logger.Info(strings.Repeat("=", 70))
-
-			if aiDecision.CoTTrace != "" {
-				logger.Info("\n" + strings.Repeat("-", 70) + "\n")
-				logger.Info("💭 AI chain of thought analysis (error case):")
-				logger.Info(strings.Repeat("-", 70))
-				logger.Info(aiDecision.CoTTrace)
-				logger.Info(strings.Repeat("-", 70))
-			}
+		// Prompts and chain-of-thought are deliberately not written to the
+		// runtime log on failure. The decision record retains existing data
+		// for authorized debugging, while the call ID links it to MCP logs.
+		if aiDecision != nil && aiDecision.CallID != "" {
+			at.logInfof("AI decision failure correlated with call_id=%s", aiDecision.CallID)
 		}
 
 		if saveErr := at.saveDecision(record); saveErr != nil {
@@ -329,9 +320,14 @@ func (at *AutoTrader) runCycle() error {
 		}
 
 		if err := at.executeDecisionWithRecord(&d, &actionRecord); err != nil {
-			at.logErrorf("❌ Failed to execute decision (%s %s): %v", d.Symbol, d.Action, err)
 			actionRecord.Error = err.Error()
-			record.ExecutionLog = append(record.ExecutionLog, fmt.Sprintf("❌ %s %s failed: %v", d.Symbol, d.Action, err))
+			if isProtectionUpdateRejected(err) {
+				at.logWarnf("⚠️ %s %s rejected by protection policy: %v", d.Symbol, d.Action, err)
+				record.ExecutionLog = append(record.ExecutionLog, fmt.Sprintf("⚠️ %s %s rejected by protection policy: %v", d.Symbol, d.Action, err))
+			} else {
+				at.logErrorf("❌ Failed to execute decision (%s %s): %v", d.Symbol, d.Action, err)
+				record.ExecutionLog = append(record.ExecutionLog, fmt.Sprintf("❌ %s %s failed: %v", d.Symbol, d.Action, err))
+			}
 		} else {
 			actionRecord.Success = true
 			record.ExecutionLog = append(record.ExecutionLog, formatDecisionSuccessLog(d, at.entryConfidenceThreshold()))
@@ -550,16 +546,16 @@ func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 		unrealizedPnl := pos["unRealizedProfit"].(float64)
 		liquidationPrice := pos["liquidationPrice"].(float64)
 
-		// Calculate margin used (estimated)
-		leverage := 10 // Default value, should actually be fetched from position info
-		if lev, ok := pos["leverage"].(float64); ok {
-			leverage = int(lev)
-		}
-		marginUsed := (quantity * markPrice) / float64(leverage)
+		// Calculate the actual position-margin denominator. Providers that
+		// expose initial margin are authoritative; otherwise use entry notional
+		// rather than the moving mark notional.
+		leverage := positionLeverageFromMap(pos)
+		marginUsed := positionInitialMargin(pos, entryPrice, markPrice, quantity, leverage)
 		totalMarginUsed += marginUsed
 
 		// Calculate P&L percentage (based on margin, considering leverage)
 		pnlPct := calculatePnLPercentage(unrealizedPnl, marginUsed)
+		pricePnLPct := calculatePricePnLPct(entryPrice, markPrice, side)
 
 		// Get position open time from exchange (preferred) or fallback to local tracking
 		posKey := symbol + "_" + side
@@ -602,6 +598,7 @@ func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 			Leverage:         leverage,
 			UnrealizedPnL:    unrealizedPnl,
 			UnrealizedPnLPct: pnlPct,
+			PricePnLPct:      pricePnLPct,
 			PeakPnLPct:       peakPnlPct,
 			LiquidationPrice: liquidationPrice,
 			MarginUsed:       marginUsed,
@@ -658,6 +655,8 @@ func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 		CurrentTime:            time.Now().UTC().Format("2006-01-02 15:04:05 UTC"),
 		RuntimeMinutes:         int(time.Since(at.startTime).Minutes()),
 		CallCount:              callCount,
+		TraderID:               at.id,
+		StrategyID:             at.config.StrategyID,
 		RequireFreshMarketData: at.executionMode == ExecutionModeLive,
 		Account: kernel.AccountInfo{
 			TotalEquity:      totalEquity,

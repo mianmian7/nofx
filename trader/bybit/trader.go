@@ -32,8 +32,10 @@ type BybitTrader struct {
 	positionsCacheMutex sync.RWMutex
 
 	// Trading pair precision cache (symbol -> qtyStep)
-	qtyStepCache      map[string]float64
-	qtyStepCacheMutex sync.RWMutex
+	qtyStepCache        map[string]float64
+	qtyStepCacheMutex   sync.RWMutex
+	priceTickCache      map[string]float64
+	priceTickCacheMutex sync.RWMutex
 
 	// Cache duration (15 seconds)
 	cacheDuration time.Duration
@@ -65,16 +67,60 @@ func NewBybitTrader(apiKey, secretKey string) *BybitTrader {
 	}
 
 	trader := &BybitTrader{
-		client:        client,
-		apiKey:        apiKey,
-		secretKey:     secretKey,
-		cacheDuration: 15 * time.Second,
-		qtyStepCache:  make(map[string]float64),
+		client:         client,
+		apiKey:         apiKey,
+		secretKey:      secretKey,
+		cacheDuration:  15 * time.Second,
+		qtyStepCache:   make(map[string]float64),
+		priceTickCache: make(map[string]float64),
 	}
 
 	logger.Infof("🔵 [Bybit] Trader initialized")
 
 	return trader
+}
+
+// getPriceTick retrieves the exchange price tick used by protective triggers.
+func (t *BybitTrader) getPriceTick(symbol string) float64 {
+	t.priceTickCacheMutex.RLock()
+	if tick, ok := t.priceTickCache[symbol]; ok {
+		t.priceTickCacheMutex.RUnlock()
+		return tick
+	}
+	t.priceTickCacheMutex.RUnlock()
+
+	url := fmt.Sprintf("https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=%s", symbol)
+	resp, err := http.Get(url)
+	if err != nil {
+		logger.Infof("⚠️ [Bybit] Failed to get price tick for %s: %v", symbol, err)
+		return 0
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0
+	}
+	var result struct {
+		RetCode int `json:"retCode"`
+		Result  struct {
+			List []struct {
+				PriceFilter struct {
+					TickSize string `json:"tickSize"`
+				} `json:"priceFilter"`
+			} `json:"list"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(body, &result) != nil || result.RetCode != 0 || len(result.Result.List) == 0 {
+		return 0
+	}
+	tick, _ := strconv.ParseFloat(result.Result.List[0].PriceFilter.TickSize, 64)
+	if tick <= 0 {
+		return 0
+	}
+	t.priceTickCacheMutex.Lock()
+	t.priceTickCache[symbol] = tick
+	t.priceTickCacheMutex.Unlock()
+	return tick
 }
 
 // headerRoundTripper HTTP RoundTripper for adding custom headers

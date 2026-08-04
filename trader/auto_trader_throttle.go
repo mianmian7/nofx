@@ -49,14 +49,36 @@ func openActionSide(action string) string {
 	}
 }
 
-// positionPricePnLPct converts the margin-based UnrealizedPnLPct reported for
-// a position into the underlying price-move percentage, so throttle gates are
-// comparable across different leverage levels.
+// positionMarginPnLPct returns the leveraged return on the position margin.
+// UnrealizedPnLPct is defined by the kernel as margin/position PnL, so throttle
+// thresholds must compare against it directly. Price PnL is a separate display
+// metric and must not be used for risk exits.
+func positionMarginPnLPct(pos *kernel.PositionInfo) float64 {
+	if pos == nil {
+		return 0
+	}
+	return pos.UnrealizedPnLPct
+}
+
+// positionPricePnLPct is intentionally display-only. It must not be used for
+// margin-PnL risk gates.
 func positionPricePnLPct(pos *kernel.PositionInfo) float64 {
 	if pos == nil {
 		return 0
 	}
+	if pos.EntryPrice > 0 && pos.MarkPrice > 0 {
+		move := (pos.MarkPrice - pos.EntryPrice) / pos.EntryPrice * 100
+		if strings.EqualFold(pos.Side, "short") {
+			move = -move
+		}
+		return move
+	}
+	if pos.PricePnLPct != 0 {
+		return pos.PricePnLPct
+	}
 	if pos.Leverage > 1 {
+		// Compatibility fallback for contexts that only carry the margin PnL
+		// field. New contexts should always provide entry and mark prices.
 		return pos.UnrealizedPnLPct / float64(pos.Leverage)
 	}
 	return pos.UnrealizedPnLPct
@@ -131,10 +153,12 @@ func (at *AutoTrader) closeThrottleReason(decision kernel.Decision, ctx *kernel.
 	}
 
 	pos := findContextPosition(at.exchange, ctx, symbol, side)
-	pnlPct := 0.0
+	marginPnLPct := 0.0
+	pricePnLPct := 0.0
 	entryTime := int64(0)
 	if pos != nil {
-		pnlPct = positionPricePnLPct(pos)
+		marginPnLPct = positionMarginPnLPct(pos)
+		pricePnLPct = positionPricePnLPct(pos)
 		entryTime = pos.UpdateTime
 	}
 
@@ -153,18 +177,19 @@ func (at *AutoTrader) closeThrottleReason(decision kernel.Decision, ctx *kernel.
 	minHold := time.Duration(throttle.MinHoldMinutes) * time.Minute
 	if heldFor >= minHold {
 		if heldFor >= noiseCloseHold ||
-			pnlPct <= throttle.NoiseCloseLossFloorPct ||
-			pnlPct >= throttle.NoiseCloseProfitCeilingPct {
+			marginPnLPct <= throttle.NoiseCloseLossFloorPct ||
+			marginPnLPct >= throttle.NoiseCloseProfitCeilingPct {
 			return ""
 		}
 
 		remaining := noiseCloseHold - heldFor
 		return fmt.Sprintf(
-			"trade throttle: %s %s has been held for %s with price PnL %.2f%%; it is still inside the noise band %.1f%% to %.1f%%, so wait about %s before a flat/small close",
+			"trade throttle: %s %s has been held for %s with Margin/Position PnL %.2f%% (Price PnL %.2f%%); it is still inside the noise band %.1f%% to %.1f%% Margin/Position PnL, so wait about %s before a flat/small close",
 			symbol,
 			side,
 			roundDuration(heldFor),
-			pnlPct,
+			marginPnLPct,
+			pricePnLPct,
 			throttle.NoiseCloseLossFloorPct,
 			throttle.NoiseCloseProfitCeilingPct,
 			roundDuration(remaining),
@@ -172,17 +197,18 @@ func (at *AutoTrader) closeThrottleReason(decision kernel.Decision, ctx *kernel.
 	}
 
 	// Do not block true risk exits or unusually strong take-profit exits.
-	if pnlPct <= throttle.EarlyCloseStopLossBypassPct || pnlPct >= throttle.EarlyCloseTakeProfitBypassPct {
+	if marginPnLPct <= throttle.EarlyCloseStopLossBypassPct || marginPnLPct >= throttle.EarlyCloseTakeProfitBypassPct {
 		return ""
 	}
 
 	remaining := minHold - heldFor
 	return fmt.Sprintf(
-		"trade throttle: %s %s has only been held for %s with price PnL %.2f%%; min AI-managed hold is %s unless price loss <= %.1f%% or price profit >= %.1f%%",
+		"trade throttle: %s %s has only been held for %s with Margin/Position PnL %.2f%% (Price PnL %.2f%%); min AI-managed hold is %s unless Margin/Position PnL loss <= %.1f%% or profit >= %.1f%%",
 		symbol,
 		side,
 		roundDuration(heldFor),
-		pnlPct,
+		marginPnLPct,
+		pricePnLPct,
 		roundDuration(minHold),
 		throttle.EarlyCloseStopLossBypassPct,
 		throttle.EarlyCloseTakeProfitBypassPct,

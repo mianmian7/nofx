@@ -3,11 +3,39 @@ package bitget
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"nofx/logger"
 	"nofx/trader/types"
 	"strconv"
 	"strings"
 )
+
+// normalizeTakeProfitTriggerPrice aligns an absolute Bitget trigger to the
+// contract's decimal price grid without moving the target farther away.
+func normalizeTakeProfitTriggerPrice(price float64, pricePlace int, positionSide string) float64 {
+	if price <= 0 || pricePlace < 0 {
+		return price
+	}
+	scale := math.Pow10(pricePlace)
+	if strings.EqualFold(positionSide, "SHORT") {
+		return math.Ceil(price*scale-1e-9) / scale
+	}
+	return math.Floor(price*scale+1e-9) / scale
+}
+
+// normalizeStopLossTriggerPrice rounds an absolute Bitget stop toward the
+// current market so tick conversion cannot loosen protection: long stops ceil,
+// short stops floor. The PnL-to-price conversion happens before this helper.
+func normalizeStopLossTriggerPrice(price float64, pricePlace int, positionSide string) float64 {
+	if price <= 0 || pricePlace < 0 {
+		return price
+	}
+	scale := math.Pow10(pricePlace)
+	if strings.EqualFold(positionSide, "SHORT") {
+		return math.Floor(price*scale+1e-9) / scale
+	}
+	return math.Ceil(price*scale-1e-9) / scale
+}
 
 // OpenLong opens long position
 func (t *BitgetTrader) OpenLong(symbol string, quantity float64, leverage int) (map[string]interface{}, error) {
@@ -256,6 +284,11 @@ func (t *BitgetTrader) CloseShort(symbol string, quantity float64) (map[string]i
 func (t *BitgetTrader) SetStopLoss(symbol string, positionSide string, quantity, stopPrice float64) error {
 	// Bitget V2 uses plan order for stop loss
 	symbol = t.convertSymbol(symbol)
+	contract, err := t.getContract(symbol)
+	if err != nil {
+		return fmt.Errorf("failed to get contract precision for stop loss: %w", err)
+	}
+	stopPrice = normalizeStopLossTriggerPrice(stopPrice, contract.PricePlace, positionSide)
 
 	side := "sell"
 	holdSide := "long"
@@ -282,7 +315,7 @@ func (t *BitgetTrader) SetStopLoss(symbol string, positionSide string, quantity,
 		"clientOid":    genBitgetClientOid(),
 	}
 
-	_, err := t.doRequest("POST", "/api/v2/mix/order/place-plan-order", body)
+	_, err = t.doRequest("POST", "/api/v2/mix/order/place-plan-order", body)
 	if err != nil {
 		return fmt.Errorf("failed to set stop loss: %w", err)
 	}
@@ -295,6 +328,11 @@ func (t *BitgetTrader) SetStopLoss(symbol string, positionSide string, quantity,
 func (t *BitgetTrader) SetTakeProfit(symbol string, positionSide string, quantity, takeProfitPrice float64) error {
 	// Bitget V2 uses plan order for take profit
 	symbol = t.convertSymbol(symbol)
+	contract, err := t.getContract(symbol)
+	if err != nil {
+		return fmt.Errorf("failed to get contract precision for take profit: %w", err)
+	}
+	takeProfitPrice = normalizeTakeProfitTriggerPrice(takeProfitPrice, contract.PricePlace, positionSide)
 
 	side := "sell"
 	holdSide := "long"
@@ -321,7 +359,7 @@ func (t *BitgetTrader) SetTakeProfit(symbol string, positionSide string, quantit
 		"clientOid":    genBitgetClientOid(),
 	}
 
-	_, err := t.doRequest("POST", "/api/v2/mix/order/place-plan-order", body)
+	_, err = t.doRequest("POST", "/api/v2/mix/order/place-plan-order", body)
 	if err != nil {
 		return fmt.Errorf("failed to set take profit: %w", err)
 	}

@@ -14,6 +14,9 @@ func throttleContext(symbol, side string, heldFor time.Duration, pnlPct float64)
 			{
 				Symbol:           symbol,
 				Side:             side,
+				EntryPrice:       100,
+				MarkPrice:        99,
+				Leverage:         20,
 				UnrealizedPnLPct: pnlPct,
 				UpdateTime:       time.Now().Add(-heldFor).UnixMilli(),
 			},
@@ -21,19 +24,34 @@ func throttleContext(symbol, side string, heldFor time.Duration, pnlPct float64)
 	}
 }
 
+func TestTradeThrottleUsesMarginPositionPnLForEarlyRiskExit(t *testing.T) {
+	at := &AutoTrader{}
+	// A 1% long price loss at 20x is -20% Margin/Position PnL.
+	ctx := throttleContext("xyz:INTC", "long", 20*time.Minute, -20.0)
+
+	if reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "close_long"}, ctx, 0); reason != "" {
+		t.Fatalf("margin-PnL hard stop should bypass minimum hold, got %q", reason)
+	}
+}
+
 func TestTradeThrottleBlocksEarlyNoiseClose(t *testing.T) {
 	at := &AutoTrader{}
+	// -0.3% Margin/Position PnL is only -0.015% Price PnL at 20x.
 	ctx := throttleContext("xyz:INTC", "long", 20*time.Minute, -0.3)
 
 	reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "close_long"}, ctx, 0)
 	if !strings.Contains(reason, "min AI-managed hold") {
 		t.Fatalf("expected early close to be blocked by min hold, got %q", reason)
 	}
+	if !strings.Contains(reason, "Margin/Position PnL") || !strings.Contains(reason, "Price PnL") {
+		t.Fatalf("expected both PnL units in throttle reason, got %q", reason)
+	}
 }
 
 func TestTradeThrottleAllowsEarlyHardStop(t *testing.T) {
 	at := &AutoTrader{}
-	ctx := throttleContext("xyz:INTC", "long", 20*time.Minute, -3.0)
+	// -20% Margin/Position PnL at 20x is only -1% Price PnL.
+	ctx := throttleContext("xyz:INTC", "long", 20*time.Minute, -20.0)
 
 	reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "close_long"}, ctx, 0)
 	if reason != "" {
@@ -53,11 +71,24 @@ func TestTradeThrottleBlocksFlatCloseInsideNoiseWindow(t *testing.T) {
 
 func TestTradeThrottleAllowsConfirmedLossAfterMinimumHold(t *testing.T) {
 	at := &AutoTrader{}
-	ctx := throttleContext("xyz:INTC", "long", 60*time.Minute, -1.2)
+	ctx := throttleContext("xyz:INTC", "long", 60*time.Minute, -6.0)
 
 	reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "close_long"}, ctx, 0)
 	if reason != "" {
 		t.Fatalf("expected confirmed loss after min hold to pass, got %q", reason)
+	}
+}
+
+func TestTradeThrottleUsesMarginPnLForEarlyTakeProfitBypass(t *testing.T) {
+	at := &AutoTrader{}
+	ctx := throttleContext("xyz:INTC", "long", 20*time.Minute, 40.0)
+	if reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "close_long"}, ctx, 0); reason != "" {
+		t.Fatalf("+40%% Margin/Position PnL should bypass minimum hold, got %q", reason)
+	}
+
+	ctx = throttleContext("xyz:INTC", "long", 20*time.Minute, 12.0)
+	if reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "close_long"}, ctx, 0); !strings.Contains(reason, "Margin/Position PnL") {
+		t.Fatalf("+12%% margin PnL should not be treated as the migrated +40%% target, got %q", reason)
 	}
 }
 
@@ -70,6 +101,16 @@ func TestTradeThrottleAllowsLongShortPairInCycle(t *testing.T) {
 	reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "open_short"}, ctx, 1)
 	if reason != "" {
 		t.Fatalf("expected the second (short) open in cycle to be allowed, got %q", reason)
+	}
+}
+
+func TestPositionPnLMetricsKeepMarginAndPriceUnitsExplicit(t *testing.T) {
+	pos := &kernel.PositionInfo{UnrealizedPnLPct: -18, Leverage: 20}
+	if got := positionMarginPnLPct(pos); got != -18 {
+		t.Fatalf("margin/position PnL = %.2f, want -18.00", got)
+	}
+	if got := positionPricePnLPct(pos); got != -0.9 {
+		t.Fatalf("price PnL = %.2f, want -0.90", got)
 	}
 }
 

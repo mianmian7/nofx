@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"mime/multipart"
 	"net/http"
 	"nofx/logger"
@@ -747,6 +748,23 @@ func (t *LighterTraderV2) SetMarginMode(symbol string, isCrossMargin bool) error
 	return nil
 }
 
+func normalizeTriggerPriceToUnits(triggerPrice, priceScale float64, isAsk bool, takeProfit bool) uint32 {
+	if triggerPrice <= 0 || priceScale <= 0 {
+		return 0
+	}
+	steps := triggerPrice * priceScale
+	if takeProfit {
+		if isAsk {
+			return uint32(math.Floor(steps + 1e-9))
+		}
+		return uint32(math.Ceil(steps - 1e-9))
+	}
+	if isAsk {
+		return uint32(math.Ceil(steps - 1e-9))
+	}
+	return uint32(math.Floor(steps + 1e-9))
+}
+
 // CreateStopOrder Create stop-loss or take-profit order with TriggerPrice
 // Order types: "stop_loss" (type=2), "take_profit" (type=4)
 func (t *LighterTraderV2) CreateStopOrder(symbol string, isAsk bool, quantity float64, triggerPrice float64, orderType string) (map[string]interface{}, error) {
@@ -773,8 +791,11 @@ func (t *LighterTraderV2) CreateStopOrder(symbol string, isAsk bool, quantity fl
 	// Convert quantity to base amount using dynamic precision
 	baseAmount := int64(quantity * float64(pow10(marketInfo.SizeDecimals)))
 
-	// TriggerPrice: use dynamic price precision from API
-	triggerPriceValue := uint32(triggerPrice * float64(pow10(marketInfo.PriceDecimals)))
+	// TriggerPrice: use dynamic price precision from API. Protective rounding
+	// keeps a TP no farther away (long floor / short ceil) and an SL no looser
+	// (long ceil / short floor); all inputs are absolute prices, never PnL %.
+	priceScale := float64(pow10(marketInfo.PriceDecimals))
+	triggerPriceValue := normalizeTriggerPriceToUnits(triggerPrice, priceScale, isAsk, orderType == "take_profit")
 
 	// For stop orders, Price should be set to a reasonable execution price
 	// Stop-loss sell: price slightly below trigger (95% of trigger)

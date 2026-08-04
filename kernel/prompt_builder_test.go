@@ -46,6 +46,9 @@ func TestPromptBuilder(t *testing.T) {
 			"symbol",
 			"action",
 			"reasoning",
+			"-20% Margin/Position PnL",
+			"+20% Margin/Position PnL",
+			"never send a PnL percentage here",
 		}
 
 		for _, keyword := range mustContain {
@@ -86,6 +89,9 @@ func TestPromptBuilder(t *testing.T) {
 			"symbol",
 			"action",
 			"reasoning",
+			"-20% Margin/Position PnL",
+			"+20% Margin/Position PnL",
+			"never send a PnL percentage here",
 		}
 
 		for _, keyword := range mustContain {

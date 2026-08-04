@@ -11,6 +11,31 @@ import (
 	"time"
 )
 
+func normalizeTakeProfitTriggerPrice(price, tickSize float64, positionSide string) float64 {
+	if price <= 0 || tickSize <= 0 {
+		return price
+	}
+	steps := price / tickSize
+	if strings.EqualFold(positionSide, "SHORT") {
+		return math.Ceil(steps-1e-9) * tickSize
+	}
+	return math.Floor(steps+1e-9) * tickSize
+}
+
+// normalizeStopLossTriggerPrice rounds an absolute stop toward the market so
+// tick conversion cannot loosen protection: long stops ceil, short stops
+// floor. The PnL-to-price conversion happens before this helper.
+func normalizeStopLossTriggerPrice(price, tickSize float64, positionSide string) float64 {
+	if price <= 0 || tickSize <= 0 {
+		return price
+	}
+	steps := price / tickSize
+	if strings.EqualFold(positionSide, "SHORT") {
+		return math.Floor(steps+1e-9) * tickSize
+	}
+	return math.Ceil(steps-1e-9) * tickSize
+}
+
 // OpenLong opens long position
 func (t *KuCoinTrader) OpenLong(symbol string, quantity float64, leverage int) (map[string]interface{}, error) {
 	// Cancel old orders
@@ -341,6 +366,11 @@ func (t *KuCoinTrader) GetMarketPrice(symbol string) (float64, error) {
 // SetStopLoss sets stop loss order
 func (t *KuCoinTrader) SetStopLoss(symbol string, positionSide string, quantity, stopPrice float64) error {
 	kcSymbol := t.convertSymbol(symbol)
+	contract, err := t.getContract(symbol)
+	if err != nil {
+		return fmt.Errorf("failed to get contract precision for stop loss: %w", err)
+	}
+	stopPrice = normalizeStopLossTriggerPrice(stopPrice, contract.TickSize, positionSide)
 
 	// Convert quantity to lots
 	lots, err := t.quantityToLots(symbol, quantity)
@@ -381,6 +411,11 @@ func (t *KuCoinTrader) SetStopLoss(symbol string, positionSide string, quantity,
 // SetTakeProfit sets take profit order
 func (t *KuCoinTrader) SetTakeProfit(symbol string, positionSide string, quantity, takeProfitPrice float64) error {
 	kcSymbol := t.convertSymbol(symbol)
+	contract, err := t.getContract(symbol)
+	if err != nil {
+		return fmt.Errorf("failed to get contract precision for take profit: %w", err)
+	}
+	takeProfitPrice = normalizeTakeProfitTriggerPrice(takeProfitPrice, contract.TickSize, positionSide)
 
 	// Convert quantity to lots
 	lots, err := t.quantityToLots(symbol, quantity)

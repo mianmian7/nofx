@@ -769,8 +769,51 @@ func (at *AutoTrader) GetStore() *store.Store {
 	return at.store
 }
 
-// calculatePnLPercentage calculates P&L percentage (based on margin, automatically considers leverage)
-// Return rate = Unrealized P&L / Margin x 100%
+// positionLeverageFromMap returns the final leverage reported by an exchange or
+// paper position, with the historical 10x fallback for providers that omit it.
+func positionLeverageFromMap(position map[string]interface{}) int {
+	leverage := int(numericBalanceField(position, "leverage"))
+	if leverage <= 0 {
+		return 10
+	}
+	return leverage
+}
+
+// positionInitialMargin returns the margin denominator for Margin/Position PnL.
+// Prefer the provider's actual initial margin, then the explicit margin_used
+// field. The entry notional fallback avoids the mark-price denominator drift
+// that would otherwise make long and short PnL percentages directionally
+// inconsistent as price moves.
+func positionInitialMargin(position map[string]interface{}, entryPrice, markPrice, quantity float64, leverage int) float64 {
+	if margin := numericBalanceField(position, "initial_margin"); margin > 0 {
+		return margin
+	}
+	if margin := numericBalanceField(position, "margin_used"); margin > 0 {
+		return margin
+	}
+	if entryPrice > 0 && quantity > 0 && leverage > 0 {
+		return entryPrice * quantity / float64(leverage)
+	}
+	if markPrice > 0 && quantity > 0 && leverage > 0 {
+		return markPrice * quantity / float64(leverage)
+	}
+	return 0
+}
+
+func calculatePricePnLPct(entryPrice, markPrice float64, side string) float64 {
+	if entryPrice <= 0 || markPrice <= 0 {
+		return 0
+	}
+	move := (markPrice - entryPrice) / entryPrice * 100
+	if strings.EqualFold(side, "short") {
+		move = -move
+	}
+	return move
+}
+
+// calculatePnLPercentage calculates Margin/Position PnL percentage.
+// Return rate = Unrealized P&L / initial position margin × 100%; it is not the
+// unlevered price move percentage.
 func calculatePnLPercentage(unrealizedPnl, marginUsed float64) float64 {
 	if marginUsed > 0 {
 		return (unrealizedPnl / marginUsed) * 100

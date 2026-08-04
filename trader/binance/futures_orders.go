@@ -703,16 +703,20 @@ func (t *FuturesTrader) SetStopLoss(symbol string, positionSide string, quantity
 	var side futures.SideType
 	var posSide futures.PositionSideType
 
-	if positionSide == "LONG" {
+	if strings.EqualFold(positionSide, "LONG") {
 		side = futures.SideTypeSell
 		posSide = futures.PositionSideTypeLong
 	} else {
 		side = futures.SideTypeBuy
 		posSide = futures.PositionSideTypeShort
 	}
+	stopPrice, err := t.normalizeStopLossPrice(symbol, stopPrice, positionSide)
+	if err != nil {
+		return fmt.Errorf("failed to normalize stop-loss price: %w", err)
+	}
 
 	// Use new Algo Order API
-	_, err := t.client.NewCreateAlgoOrderService().
+	_, err = t.client.NewCreateAlgoOrderService().
 		Symbol(symbol).
 		Side(side).
 		PositionSide(posSide).
@@ -737,16 +741,20 @@ func (t *FuturesTrader) SetTakeProfit(symbol string, positionSide string, quanti
 	var side futures.SideType
 	var posSide futures.PositionSideType
 
-	if positionSide == "LONG" {
+	if strings.EqualFold(positionSide, "LONG") {
 		side = futures.SideTypeSell
 		posSide = futures.PositionSideTypeLong
 	} else {
 		side = futures.SideTypeBuy
 		posSide = futures.PositionSideTypeShort
 	}
+	takeProfitPrice, err := t.normalizeTakeProfitPrice(symbol, takeProfitPrice, positionSide)
+	if err != nil {
+		return fmt.Errorf("failed to normalize take-profit price: %w", err)
+	}
 
 	// Use new Algo Order API
-	_, err := t.client.NewCreateAlgoOrderService().
+	_, err = t.client.NewCreateAlgoOrderService().
 		Symbol(symbol).
 		Side(side).
 		PositionSide(posSide).

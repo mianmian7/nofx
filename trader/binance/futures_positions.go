@@ -60,6 +60,12 @@ func (t *FuturesTrader) GetPositions() ([]map[string]interface{}, error) {
 		posMap["unRealizedProfit"], _ = strconv.ParseFloat(pos.UnRealizedProfit, 64)
 		posMap["leverage"], _ = strconv.ParseFloat(pos.Leverage, 64)
 		posMap["liquidationPrice"], _ = strconv.ParseFloat(pos.LiquidationPrice, 64)
+		leverage, _ := strconv.ParseFloat(pos.Leverage, 64)
+		entryPrice, _ := strconv.ParseFloat(pos.EntryPrice, 64)
+		if leverage > 0 && entryPrice > 0 {
+			posMap["initial_margin"] = math.Abs(posAmt) * entryPrice / leverage
+			posMap["margin_used"] = posMap["initial_margin"]
+		}
 		// Note: Binance SDK doesn't expose updateTime field, will fallback to local tracking
 
 		// Determine direction
@@ -480,4 +486,87 @@ func (t *FuturesTrader) FormatPrice(symbol string, price float64) (string, error
 
 	format := fmt.Sprintf("%%.%df", precision)
 	return fmt.Sprintf(format, price), nil
+}
+
+// normalizeTakeProfitTriggerPrice rounds an absolute target to a protective
+// Binance tick. Long targets round down and short targets round up so tick
+// conversion cannot silently move the target farther away.
+func normalizeTakeProfitTriggerPrice(price, tickSize float64, positionSide string) float64 {
+	if price <= 0 || tickSize <= 0 {
+		return price
+	}
+	steps := price / tickSize
+	if strings.EqualFold(positionSide, "SHORT") {
+		return math.Ceil(steps-1e-9) * tickSize
+	}
+	return math.Floor(steps+1e-9) * tickSize
+}
+
+// normalizeStopLossTriggerPrice rounds an absolute stop to Binance's price
+// grid without loosening protection: long stops round up toward the market and
+// short stops round down toward the market. The PnL-to-price conversion happens
+// before this helper.
+func normalizeStopLossTriggerPrice(price, tickSize float64, positionSide string) float64 {
+	if price <= 0 || tickSize <= 0 {
+		return price
+	}
+	steps := price / tickSize
+	if strings.EqualFold(positionSide, "SHORT") {
+		return math.Floor(steps+1e-9) * tickSize
+	}
+	return math.Ceil(steps-1e-9) * tickSize
+}
+
+func (t *FuturesTrader) normalizeTakeProfitPrice(symbol string, price float64, positionSide string) (float64, error) {
+	info, err := t.getExchangeInfo()
+	if err != nil {
+		return 0, err
+	}
+	for _, instrument := range info.Symbols {
+		if instrument.Symbol != symbol {
+			continue
+		}
+		for _, filter := range instrument.Filters {
+			if filter["filterType"] != "PRICE_FILTER" {
+				continue
+			}
+			tick, ok := filter["tickSize"].(string)
+			if !ok {
+				return price, nil
+			}
+			tickSize, parseErr := strconv.ParseFloat(tick, 64)
+			if parseErr != nil {
+				return 0, fmt.Errorf("invalid Binance tick size %q for %s: %w", tick, symbol, parseErr)
+			}
+			return normalizeTakeProfitTriggerPrice(price, tickSize, positionSide), nil
+		}
+	}
+	return price, nil
+}
+
+func (t *FuturesTrader) normalizeStopLossPrice(symbol string, price float64, positionSide string) (float64, error) {
+	info, err := t.getExchangeInfo()
+	if err != nil {
+		return 0, err
+	}
+	for _, instrument := range info.Symbols {
+		if instrument.Symbol != symbol {
+			continue
+		}
+		for _, filter := range instrument.Filters {
+			if filter["filterType"] != "PRICE_FILTER" {
+				continue
+			}
+			tick, ok := filter["tickSize"].(string)
+			if !ok {
+				return price, nil
+			}
+			tickSize, parseErr := strconv.ParseFloat(tick, 64)
+			if parseErr != nil {
+				return 0, fmt.Errorf("invalid Binance tick size %q for %s: %w", tick, symbol, parseErr)
+			}
+			return normalizeStopLossTriggerPrice(price, tickSize, positionSide), nil
+		}
+	}
+	return price, nil
 }

@@ -331,22 +331,24 @@ func (t *AsterTrader) CloseShort(symbol string, quantity float64) (map[string]in
 // SetStopLoss Set stop loss
 func (t *AsterTrader) SetStopLoss(symbol string, positionSide string, quantity, stopPrice float64) error {
 	side := "SELL"
-	if positionSide == "SHORT" {
+	if strings.EqualFold(positionSide, "SHORT") {
 		side = "BUY"
-	}
-
-	// Format price and quantity to correct precision
-	formattedPrice, err := t.formatPrice(symbol, stopPrice)
-	if err != nil {
-		return err
-	}
-	formattedQty, err := t.formatQuantity(symbol, quantity)
-	if err != nil {
-		return err
 	}
 
 	// Get precision information
 	prec, err := t.getPrecision(symbol)
+	if err != nil {
+		return err
+	}
+	// Stop rounding is direction-aware: long stops ceil and short stops floor
+	// so tick/precision conversion cannot move protection farther away.
+	formattedPrice := stopPrice
+	if prec.TickSize > 0 {
+		formattedPrice = roundStopLossToTickSize(formattedPrice, prec.TickSize, positionSide)
+	} else {
+		formattedPrice = roundStopLossToPrecision(formattedPrice, prec.PricePrecision, positionSide)
+	}
+	formattedQty, err := t.formatQuantity(symbol, quantity)
 	if err != nil {
 		return err
 	}
@@ -372,22 +374,23 @@ func (t *AsterTrader) SetStopLoss(symbol string, positionSide string, quantity, 
 // SetTakeProfit Set take profit
 func (t *AsterTrader) SetTakeProfit(symbol string, positionSide string, quantity, takeProfitPrice float64) error {
 	side := "SELL"
-	if positionSide == "SHORT" {
+	if strings.EqualFold(positionSide, "SHORT") {
 		side = "BUY"
 	}
 
-	// Format price and quantity to correct precision
-	formattedPrice, err := t.formatPrice(symbol, takeProfitPrice)
+	// Format price and quantity to correct precision. TP rounding is
+	// direction-aware: a long target floors and a short target ceils.
+	prec, err := t.getPrecision(symbol)
 	if err != nil {
 		return err
+	}
+	formattedPrice := takeProfitPrice
+	if prec.TickSize > 0 {
+		formattedPrice = roundTakeProfitToTickSize(formattedPrice, prec.TickSize, positionSide)
+	} else {
+		formattedPrice = roundTakeProfitToPrecision(formattedPrice, prec.PricePrecision, positionSide)
 	}
 	formattedQty, err := t.formatQuantity(symbol, quantity)
-	if err != nil {
-		return err
-	}
-
-	// Get precision information
-	prec, err := t.getPrecision(symbol)
 	if err != nil {
 		return err
 	}

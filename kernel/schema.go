@@ -9,6 +9,11 @@ package kernel
 
 const (
 	SchemaVersion = "1.0.0"
+
+	// HardStopMarginPositionPnLPct is the unified hard-stop boundary in
+	// Margin/Position PnL percentage. Execution layers convert this percentage
+	// to an exchange trigger price using the final effective leverage.
+	HardStopMarginPositionPnLPct = -20.0
 )
 
 // Language represents the language type
@@ -124,13 +129,13 @@ var DataDictionary = map[string]map[string]BilingualFieldDef{
 			DescEN:    "Actual profit/loss of closed trades including fees. Positive=profit, Negative=loss",
 		},
 		"PnL%": {
-			NameZH:    "PnL Percentage",
-			NameEN:    "PnL Percentage",
+			NameZH:    "Realized Margin/Position PnL Percentage",
+			NameEN:    "Realized Margin/Position PnL Percentage",
 			Unit:      "%",
-			FormulaZH: "(Exit - Entry) / Entry × Leverage × 100",
-			FormulaEN: "(Exit - Entry) / Entry × Leverage × 100",
-			DescZH:    "Return on a closed trade, +6.71% means 6.71% profit",
-			DescEN:    "Return on closed trade, +6.71% means 6.71% profit",
+			FormulaZH: "Net Realized PnL / Initial Position Margin × 100",
+			FormulaEN: "Net Realized PnL / Initial Position Margin × 100",
+			DescZH:    "已平仓交易的保证金/仓位收益率，已包含费用；不是未加杠杆价格变动",
+			DescEN:    "Return on a closed position's margin, including fees; not the unlevered price move",
 		},
 		"HoldDuration": {
 			NameZH: "Holding Duration",
@@ -143,29 +148,38 @@ var DataDictionary = map[string]map[string]BilingualFieldDef{
 
 	"PositionMetrics": {
 		"UnrealizedPnL%": {
-			NameZH:    "Unrealized PnL Percentage",
-			NameEN:    "Unrealized PnL Percentage",
+			NameZH:    "Unrealized Margin/Position PnL Percentage",
+			NameEN:    "Unrealized Margin/Position PnL Percentage",
 			Unit:      "%",
-			FormulaZH: "(Current Price - Entry Price) / Entry Price × Leverage × 100",
-			FormulaEN: "(Current Price - Entry Price) / Entry Price × Leverage × 100",
-			DescZH:    "Floating P&L of the current position, fluctuating until closed",
-			DescEN:    "Floating P&L of current position, not realized until closed",
+			FormulaZH: "Signed Unrealized PnL / Initial Position Margin × 100",
+			FormulaEN: "Signed Unrealized PnL / Initial Position Margin × 100",
+			DescZH:    "浮动保证金/仓位 PnL 百分比；不是未加杠杆的价格 PnL，平仓前会持续变化",
+			DescEN:    "Floating Margin/Position PnL percentage; not unlevered Price PnL, and it changes until closed",
+		},
+		"PricePnL%": {
+			NameZH:    "Unlevered Price PnL Percentage",
+			NameEN:    "Unlevered Price PnL Percentage",
+			Unit:      "%",
+			FormulaZH: "(Current Price - Entry Price) / Entry Price × 100",
+			FormulaEN: "(Current Price - Entry Price) / Entry Price × 100",
+			DescZH:    "仅用于展示的未加杠杆价格变动，不用于 Margin/Position PnL 风控门槛",
+			DescEN:    "Display-only unlevered price move; never use it for Margin/Position PnL risk gates",
 		},
 		"PeakPnL%": {
-			NameZH: "Peak PnL Percentage",
-			NameEN: "Peak PnL Percentage",
+			NameZH: "Peak Margin/Position PnL Percentage",
+			NameEN: "Peak Margin/Position PnL Percentage",
 			Unit:   "%",
-			DescZH: "Highest unrealized P&L this position has reached. Used to decide whether to take profit",
-			DescEN: "Historical max unrealized PnL for this position. Used for take-profit decisions",
+			DescZH: "该仓位达到过的最高未实现 Margin/Position PnL，用于判断是否止盈",
+			DescEN: "Historical max unrealized Margin/Position PnL for this position. Used for take-profit decisions",
 		},
 		"Drawdown": {
 			NameZH:    "Drawdown from Peak",
 			NameEN:    "Drawdown from Peak",
 			Unit:      "%",
-			FormulaZH: "Current PnL% - Peak PnL%",
-			FormulaEN: "Current PnL% - Peak PnL%",
-			DescZH:    "Negative value means pulling back. E.g., Peak +5%, Current +3%, Drawdown = -2%",
-			DescEN:    "Negative = pulling back. E.g., Peak +5%, Current +3%, Drawdown = -2%",
+			FormulaZH: "Current Margin/Position PnL% - Peak Margin/Position PnL%",
+			FormulaEN: "Current Margin/Position PnL% - Peak Margin/Position PnL%",
+			DescZH:    "Negative value means pulling back. E.g., Peak Margin/Position PnL +50%, Current +35%, Drawdown = -15 percentage points",
+			DescEN:    "Negative = pulling back. E.g., Peak Margin/Position PnL +50%, Current +35%, Drawdown = -15 percentage points",
 		},
 		"Leverage": {
 			NameZH: "Leverage",
@@ -262,9 +276,9 @@ var TradingRules = struct {
 			ReasonEN: "Avoid overriding the account's real available margin with a stale fixed percentage",
 		},
 		"MaxPositionLoss": {
-			Value:    -0.05,
-			DescZH:   "Must stop-loss when single position loss reaches -5%",
-			DescEN:   "Must stop-loss when single position loss reaches -5%",
+			Value:    HardStopMarginPositionPnLPct / 100,
+			DescZH:   "规则值为比例 -0.20（即 -20%）时，单仓位 Margin/Position PnL 必须止损",
+			DescEN:   "Rule value is the fraction -0.20 (that is -20%): stop a single position at -20% Margin/Position PnL",
 			ReasonZH: "Prevent excessive loss from single trade",
 			ReasonEN: "Prevent excessive loss from single trade",
 		},
@@ -306,15 +320,22 @@ var TradingRules = struct {
 			Value:    0.30,
 			DescZH:   "Close position when PnL pulls back 30% from peak",
 			DescEN:   "Close position when PnL pulls back 30% from peak",
-			ReasonZH: "Lock in most profits, avoid profit giveback. E.g., Peak +5%, close at +3.5%",
-			ReasonEN: "Lock in most profits, avoid profit giveback. E.g., Peak +5%, close at +3.5%",
+			ReasonZH: "Lock in most profits, avoid profit giveback. E.g., Peak Margin/Position PnL +50%, close at +35%",
+			ReasonEN: "Lock in most profits, avoid profit giveback. E.g., Peak Margin/Position PnL +50%, close at +35%",
 		},
 		"StopLoss": {
-			Value:    -0.05,
-			DescZH:   "Hard stop-loss at -5%",
-			DescEN:   "Hard stop-loss at -5%",
+			Value:    HardStopMarginPositionPnLPct / 100,
+			DescZH:   "规则值为比例 -0.20（即 -20% Margin/Position PnL）的硬止损",
+			DescEN:   "Hard stop at rule fraction -0.20 (that is -20% Margin/Position PnL)",
 			ReasonZH: "Strictly control maximum single-trade loss",
 			ReasonEN: "Strictly control maximum single-trade loss",
+		},
+		"TakeProfit": {
+			Value:    0.40,
+			DescZH:   "规则值为比例 0.40（即 +40% Margin/Position PnL，针对 -20% 硬止损为 2R）；按最终杠杆换算绝对价格",
+			DescEN:   "Rule value is fraction 0.40 (that is +40% Margin/Position PnL, 2R against the -20% hard stop); convert with final leverage to an absolute price",
+			ReasonZH: "Cover fees, funding and slippage while preserving at least 2:1 risk/reward",
+			ReasonEN: "Cover fees, funding and slippage while preserving at least 2:1 risk/reward",
 		},
 	},
 
@@ -328,12 +349,12 @@ var TradingRules = struct {
 		},
 		"ScaleOut": {
 			Value: []map[string]interface{}{
-				{"pnl": 0.03, "close_pct": 0.33},
-				{"pnl": 0.05, "close_pct": 0.50},
-				{"pnl": 0.08, "close_pct": 1.00},
+				{"pnl": 0.20, "close_pct": 0.33},
+				{"pnl": 0.30, "close_pct": 0.50},
+				{"pnl": 0.40, "close_pct": 1.00},
 			},
-			DescZH:   "Scale-out: Close 33% at +3%, 50% at +5%, 100% at +8%",
-			DescEN:   "Scale-out: Close 33% at +3%, 50% at +5%, 100% at +8%",
+			DescZH:   "Scale-out Margin/Position PnL: Close 33% at +20%, 50% at +30%, 100% at +40%; convert thresholds to actual prices with final leverage",
+			DescEN:   "Scale-out Margin/Position PnL: Close 33% at +20%, 50% at +30%, 100% at +40%; convert thresholds to actual prices with final leverage",
 			ReasonZH: "Lock profits while letting winners run",
 			ReasonEN: "Lock profits while letting winners run",
 		},
@@ -419,16 +440,16 @@ var CommonMistakes = []CommonMistake{
 		ErrorEN:   "Ignoring leverage's impact on P&L",
 		ExampleZH: "Price up 1%, thinking profit is 1%",
 		ExampleEN: "Price up 1%, thinking profit is 1%",
-		CorrectZH: "With 3x leverage, 1% price move = ~3% P&L",
-		CorrectEN: "With 3x leverage, 1% price move = ~3% P&L",
+		CorrectZH: "With 3x leverage, a 1% favorable price move is about +3% Margin/Position PnL before fees",
+		CorrectEN: "With 3x leverage, a 1% favorable price move is about +3% Margin/Position PnL before fees",
 	},
 	{
-		ErrorZH:   "Not understanding Peak PnL's importance",
-		ErrorEN:   "Not understanding Peak PnL's importance",
+		ErrorZH:   "Not understanding Peak Margin/Position PnL's importance",
+		ErrorEN:   "Not understanding Peak Margin/Position PnL's importance",
 		ExampleZH: "Only watching current PnL, ignoring drawdown",
 		ExampleEN: "Only watching current PnL, ignoring drawdown",
-		CorrectZH: "When current PnL near Peak PnL, consider taking profit to lock in gains",
-		CorrectEN: "When current PnL near Peak PnL, consider taking profit to lock in gains",
+		CorrectZH: "When current Margin/Position PnL pulls back from its peak, consider taking profit to lock in gains",
+		CorrectEN: "When current Margin/Position PnL pulls back from its peak, consider taking profit to lock in gains",
 	},
 	{
 		ErrorZH:   "Ignoring Open Interest changes",

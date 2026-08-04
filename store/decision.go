@@ -37,6 +37,10 @@ func (DecisionRecordDB) TableName() string { return "decision_records" }
 
 // DecisionRecord decision record (external API struct)
 type DecisionRecord struct {
+	// CallID correlates this API record with the MCP retry/diagnostic logs. It is
+	// intentionally not added to DecisionRecordDB: existing deployments must
+	// keep their decision_records schema unchanged and older rows remain valid.
+	CallID              string             `json:"call_id,omitempty"`
 	ID                  int64              `json:"id"`
 	TraderID            string             `json:"trader_id"`
 	CycleNumber         int                `json:"cycle_number"`

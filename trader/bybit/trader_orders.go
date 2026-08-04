@@ -5,12 +5,38 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"nofx/logger"
 	"nofx/trader/types"
 	"strconv"
 	"strings"
 )
+
+func normalizeTakeProfitTriggerPrice(price, tickSize float64, positionSide string) float64 {
+	if price <= 0 || tickSize <= 0 {
+		return price
+	}
+	steps := price / tickSize
+	if strings.EqualFold(positionSide, "SHORT") {
+		return math.Ceil(steps-1e-9) * tickSize
+	}
+	return math.Floor(steps+1e-9) * tickSize
+}
+
+// normalizeStopLossTriggerPrice rounds an absolute stop toward the market so
+// tick conversion cannot loosen protection: long stops ceil, short stops
+// floor. The PnL-to-price conversion happens before this helper.
+func normalizeStopLossTriggerPrice(price, tickSize float64, positionSide string) float64 {
+	if price <= 0 || tickSize <= 0 {
+		return price
+	}
+	steps := price / tickSize
+	if strings.EqualFold(positionSide, "SHORT") {
+		return math.Floor(steps+1e-9) * tickSize
+	}
+	return math.Ceil(steps-1e-9) * tickSize
+}
 
 // OpenLong opens a long position
 func (t *BybitTrader) OpenLong(symbol string, quantity float64, leverage int) (map[string]interface{}, error) {
@@ -281,7 +307,7 @@ func (t *BybitTrader) GetMarketPrice(symbol string) (float64, error) {
 // SetStopLoss sets stop loss order
 func (t *BybitTrader) SetStopLoss(symbol string, positionSide string, quantity, stopPrice float64) error {
 	side := "Sell" // LONG stop loss uses Sell
-	if positionSide == "SHORT" {
+	if strings.EqualFold(positionSide, "SHORT") {
 		side = "Buy" // SHORT stop loss uses Buy
 	}
 
@@ -289,6 +315,9 @@ func (t *BybitTrader) SetStopLoss(symbol string, positionSide string, quantity, 
 	currentPrice, err := t.GetMarketPrice(symbol)
 	if err != nil {
 		return err
+	}
+	if tickSize := t.getPriceTick(symbol); tickSize > 0 {
+		stopPrice = normalizeStopLossTriggerPrice(stopPrice, tickSize, positionSide)
 	}
 
 	triggerDirection := 2 // Price fall trigger (default long stop loss)
@@ -327,7 +356,7 @@ func (t *BybitTrader) SetStopLoss(symbol string, positionSide string, quantity, 
 // SetTakeProfit sets take profit order
 func (t *BybitTrader) SetTakeProfit(symbol string, positionSide string, quantity, takeProfitPrice float64) error {
 	side := "Sell" // LONG take profit uses Sell
-	if positionSide == "SHORT" {
+	if strings.EqualFold(positionSide, "SHORT") {
 		side = "Buy" // SHORT take profit uses Buy
 	}
 
@@ -335,6 +364,9 @@ func (t *BybitTrader) SetTakeProfit(symbol string, positionSide string, quantity
 	currentPrice, err := t.GetMarketPrice(symbol)
 	if err != nil {
 		return err
+	}
+	if tickSize := t.getPriceTick(symbol); tickSize > 0 {
+		takeProfitPrice = normalizeTakeProfitTriggerPrice(takeProfitPrice, tickSize, positionSide)
 	}
 
 	triggerDirection := 1 // Price rise trigger (default long take profit)

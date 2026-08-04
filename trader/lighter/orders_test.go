@@ -108,6 +108,24 @@ func TestGetActiveOrders_ParseResponse(t *testing.T) {
 	assert.True(t, order3.ReduceOnly)
 }
 
+func TestNormalizeTriggerPriceToUnitsUsesTakeProfitDirection(t *testing.T) {
+	if got := normalizeTriggerPriceToUnits(99.06, 10, true, true); got != 990 {
+		t.Fatalf("long TP units = %d, want 990", got)
+	}
+	if got := normalizeTriggerPriceToUnits(100.04, 10, false, true); got != 1001 {
+		t.Fatalf("short TP units = %d, want 1001", got)
+	}
+}
+
+func TestNormalizeTriggerPriceToUnitsUsesStopLossDirection(t *testing.T) {
+	if got := normalizeTriggerPriceToUnits(99.06, 10, true, false); got != 991 {
+		t.Fatalf("long SL units = %d, want 991", got)
+	}
+	if got := normalizeTriggerPriceToUnits(100.04, 10, false, false); got != 1000 {
+		t.Fatalf("short SL units = %d, want 1000", got)
+	}
+}
+
 // TestGetActiveOrders_EmptyResponse tests handling of empty orders
 func TestGetActiveOrders_EmptyResponse(t *testing.T) {
 	mockResponse := `{

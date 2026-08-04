@@ -449,10 +449,16 @@ func GetGridDecisions(ctx *GridContext, mcpClient mcp.AIClient, config *store.Gr
 
 	logger.Infof("🤖 [Grid] Calling AI for grid decisions...")
 
-	// Call AI
-	response, err := mcpClient.CallWithMessages(systemPrompt, userPrompt)
+	// Call AI through the same correlated entry point as the main strategy
+	// engine, so grid FullDecision records use one logical call ID as well.
+	callID := newLogicalCallID()
+	response, err := callAIWithMetadata(mcpClient, mcp.CallMetadata{CallID: callID}, systemPrompt, userPrompt)
 	if err != nil {
-		return nil, fmt.Errorf("AI call failed: %w", err)
+		return &FullDecision{
+			CallID:       callID,
+			SystemPrompt: systemPrompt,
+			UserPrompt:   userPrompt,
+		}, fmt.Errorf("AI call failed: %w", err)
 	}
 
 	// Parse decisions from response
@@ -475,6 +481,7 @@ func GetGridDecisions(ctx *GridContext, mcpClient mcp.AIClient, config *store.Gr
 	cotTrace := extractCoTTrace(response)
 
 	return &FullDecision{
+		CallID:              callID,
 		SystemPrompt:        systemPrompt,
 		UserPrompt:          userPrompt,
 		CoTTrace:            cotTrace,

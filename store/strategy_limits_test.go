@@ -78,7 +78,7 @@ func TestNormalizeProductSchemaKeepsLegacySizingExplicit(t *testing.T) {
 
 func TestTradeThrottleProfilesAndLegacyFallback(t *testing.T) {
 	legacy := (RiskControlConfig{}).EffectiveTradeThrottle()
-	if legacy.MinHoldMinutes != 60 || legacy.NoiseCloseHoldMinutes != 90 || legacy.MaxOpensPerCycle != 6 {
+	if legacy.PnLUnit != TradeThrottleMarginPositionPnLUnit || legacy.EarlyCloseTakeProfitBypassPct != 40 || legacy.NoiseCloseProfitCeilingPct != 10 || legacy.MinHoldMinutes != 60 || legacy.NoiseCloseHoldMinutes != 90 || legacy.MaxOpensPerCycle != 6 {
 		t.Fatalf("legacy throttle fallback = %+v", legacy)
 	}
 
@@ -90,6 +90,9 @@ func TestTradeThrottleProfilesAndLegacyFallback(t *testing.T) {
 	want := BigMoveTradeThrottleConfig()
 	if got != want {
 		t.Fatalf("default throttle = %+v, want %+v", got, want)
+	}
+	if want.PnLUnit != TradeThrottleMarginPositionPnLUnit || want.EarlyCloseTakeProfitBypassPct != 40 {
+		t.Fatalf("default take-profit profile = %+v, want explicit Margin/Position PnL +40%%", want)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"nofx/logger"
 	"strconv"
+	"strings"
 
 	"github.com/elliottech/lighter-go/types"
 )
@@ -21,8 +22,13 @@ func (t *LighterTraderV2) SetStopLoss(symbol string, positionSide string, quanti
 
 	logger.Infof("🛑 LIGHTER Setting stop-loss: %s %s qty=%.4f, trigger=%.2f", symbol, positionSide, quantity, stopPrice)
 
-	// Determine order direction (long position uses sell order, short position uses buy order)
-	isAsk := (positionSide == "LONG" || positionSide == "long")
+	// Determine order direction (long position uses sell order, short position uses buy order).
+	// Reject unknown sides rather than defaulting to a buy protection order.
+	side := strings.ToUpper(positionSide)
+	if side != "LONG" && side != "SHORT" {
+		return fmt.Errorf("unsupported Lighter position side %q", positionSide)
+	}
+	isAsk := side == "LONG"
 
 	// Create stop-loss order with TriggerPrice (type=2: StopLossOrder)
 	_, err := t.CreateStopOrder(symbol, isAsk, quantity, stopPrice, "stop_loss")
@@ -43,8 +49,13 @@ func (t *LighterTraderV2) SetTakeProfit(symbol string, positionSide string, quan
 
 	logger.Infof("🎯 LIGHTER Setting take-profit: %s %s qty=%.4f, trigger=%.2f", symbol, positionSide, quantity, takeProfitPrice)
 
-	// Determine order direction (long position uses sell order, short position uses buy order)
-	isAsk := (positionSide == "LONG" || positionSide == "long")
+	// Determine order direction (long position uses sell order, short position uses buy order).
+	// Reject unknown sides rather than defaulting to a buy protection order.
+	side := strings.ToUpper(positionSide)
+	if side != "LONG" && side != "SHORT" {
+		return fmt.Errorf("unsupported Lighter position side %q", positionSide)
+	}
+	isAsk := side == "LONG"
 
 	// Create take-profit order with TriggerPrice (type=4: TakeProfitOrder)
 	_, err := t.CreateStopOrder(symbol, isAsk, quantity, takeProfitPrice, "take_profit")

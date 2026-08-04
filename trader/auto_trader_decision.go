@@ -216,6 +216,11 @@ func (at *AutoTrader) GetAccountInfo() (map[string]interface{}, error) {
 		logger.Infof("⚠️ Initial Balance abnormal: %.2f, cannot calculate P&L percentage", at.initialBalance)
 	}
 
+	// This is an account-level utilization ratio (margin used / total equity),
+	// intentionally distinct from each position's Margin/Position PnL
+	// denominator. Position PnL uses provider initial_margin or the entry
+	// notional fallback in positionInitialMargin; changing this account metric
+	// would alter fees/funding and exchange-specific balance semantics.
 	marginUsedPct := 0.0
 	if totalEquity > 0 {
 		marginUsedPct = (totalMarginUsed / totalEquity) * 100
@@ -261,16 +266,15 @@ func (at *AutoTrader) GetPositions() ([]map[string]interface{}, error) {
 		unrealizedPnl := pos["unRealizedProfit"].(float64)
 		liquidationPrice := pos["liquidationPrice"].(float64)
 
-		leverage := 10
-		if lev, ok := pos["leverage"].(float64); ok {
-			leverage = int(lev)
-		}
+		leverage := positionLeverageFromMap(pos)
 
-		// Calculate margin used
-		marginUsed := (quantity * markPrice) / float64(leverage)
+		// Use actual initial margin when available; otherwise use entry notional
+		// so Margin/Position PnL is not biased by the current mark price.
+		marginUsed := positionInitialMargin(pos, entryPrice, markPrice, quantity, leverage)
 
 		// Calculate P&L percentage (based on margin)
 		pnlPct := calculatePnLPercentage(unrealizedPnl, marginUsed)
+		pricePnLPct := calculatePricePnLPct(entryPrice, markPrice, side)
 
 		result = append(result, map[string]interface{}{
 			"symbol":             symbol,
@@ -281,6 +285,7 @@ func (at *AutoTrader) GetPositions() ([]map[string]interface{}, error) {
 			"leverage":           leverage,
 			"unrealized_pnl":     unrealizedPnl,
 			"unrealized_pnl_pct": pnlPct,
+			"price_pnl_pct":      pricePnLPct,
 			"liquidation_price":  liquidationPrice,
 			"margin_used":        marginUsed,
 		})

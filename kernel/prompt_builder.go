@@ -57,12 +57,12 @@ func (pb *PromptBuilder) buildSystemPromptZH() string {
 
 ### Risk First
 - Opening capacity follows current available margin, selected leverage, and the active strategy/exchange risk controls
-- A single position losing -5% must be stopped out
+- A single position reaching -20% Margin/Position PnL must be stopped out; Price PnL is the unlevered price move and is shown separately
 - Protect capital first, then consider profit
 
 ### Trailing Take-Profit
-- When position PnL retraces 30% from its peak, consider partial or full take-profit
-- For example: Peak PnL +5%, Current PnL +3.5% -> retraced 30%, should take profit
+- When Margin/Position PnL retraces 30% from its peak, consider partial or full take-profit
+- For example: Peak Margin/Position PnL +50%, Current +35% -> retraced 30%, should take profit
 
 ### Trend Following
 - Enter only when multiple timeframes' trends agree
@@ -72,7 +72,8 @@ func (pb *PromptBuilder) buildSystemPromptZH() string {
 
 ### Scaling
 - Scale in: the first open should not exceed 50% of the target position
-- Scale out: at +3% profit close 33%, at +5% close 50%, at +8% close all
+- Scale out: at +20% Margin/Position PnL close 33%, at +30% close 50%, at +40% close all
+- These are Margin/Position PnL thresholds, not prices; convert them to prices with entry × (1 ± target_pct/100/leverage), using + for a long target and − for a short target.
 - Only add to profitable positions, never chase losses
 
 ## Output Format Requirements
@@ -106,8 +107,8 @@ You **must** output decisions in the following JSON format:
   - WAIT: wait, take no action
 - **leverage**: leverage multiple (required when opening a new position)
 - **position_size_usd**: position size (USDT, required when opening a new position)
-- **stop_loss**: stop-loss price (recommended when opening a new position)
-- **take_profit**: take-profit price (recommended when opening a new position)
+- **stop_loss**: absolute stop-loss trigger price (recommended when opening a new position)
+- **take_profit**: absolute take-profit trigger price (recommended when opening a new position); never send a PnL percentage here
 - **confidence**: confidence level (0-100)
 - **reasoning**: reasoning (required, must explain the decision basis in detail)
 
@@ -115,7 +116,7 @@ You **must** output decisions in the following JSON format:
 
 1. **Never** confuse realized PnL with unrealized PnL
 2. **Always remember** to account for leverage amplifying PnL
-3. **Always watch** Peak PnL, the key metric for take-profit decisions
+3. **Always watch** Peak Margin/Position PnL, the key metric for take-profit decisions
 4. **Always combine** open interest (OI) change to judge trend authenticity
 5. **Always follow** risk management rules; protecting capital comes first
 
@@ -158,17 +159,17 @@ func (pb *PromptBuilder) getDecisionRequirementsZH() string {
     "symbol": "PIPPINUSDT",
     "action": "PARTIAL_CLOSE",
     "confidence": 85,
-    "reasoning": "Current PnL +2.96%, close to the all-time peak +2.99% (only 0.03% retracement). Recommend partial close to lock in profit because: 1) holding time is only 11 minutes with 3% gain already; 2) the 5-minute candle shows price near short-term resistance; 3) volume is starting to shrink and upward momentum is weakening. Recommend closing 50%, with the remaining position set to a trailing take-profit at 20% retracement from peak."
+    "reasoning": "Current Margin/Position PnL +29.6%, close to the all-time peak +29.9% (only 0.3 percentage-point retracement). Recommend partial close to lock in profit because: 1) holding time is only 11 minutes; 2) the 5-minute candle shows price near short-term resistance; 3) volume is starting to shrink and upward momentum is weakening. Recommend closing 50%, with the remaining position set to a trailing take-profit at 20% retracement from peak."
   },
   {
     "symbol": "HUSDT",
     "action": "OPEN_NEW",
     "leverage": 3,
     "position_size_usd": 500,
-    "stop_loss": 0.1560,
-    "take_profit": 0.1720,
+    "stop_loss": 0.1521,
+    "take_profit": 0.1847,
     "confidence": 75,
-    "reasoning": "HUSDT broke the key resistance 0.1630 on the 5-minute timeframe, open interest increased +1.57M (+0.89%) within 1 hour, together with a price rise of +4.92%, matching the strong bullish 'OI up + price up' pattern. Both the 15-minute and 1-hour timeframes show an uptrend, multi-period resonance. Recommend opening long, with stop-loss set 5% below the breakout point and take-profit target +8%."
+    "reasoning": "HUSDT broke the key resistance 0.1630 on the 5-minute timeframe, open interest increased +1.57M (+0.89%) within 1 hour, together with a price rise of +4.92%, matching the strong bullish 'OI up + price up' pattern. Both the 15-minute and 1-hour timeframes show an uptrend, multi-period resonance. Recommend opening long at 3x, with -20% Margin/Position PnL stop converted to price 0.1521 and +40% Margin/Position PnL target converted to price 0.1847."
   }
 ]
 ` + "```" + `
@@ -192,12 +193,12 @@ func (pb *PromptBuilder) buildSystemPromptEN() string {
 
 ### Risk First
 - Opening capacity follows current available margin, selected leverage, and the active strategy/exchange risk controls
-- Must stop-loss when single position loss reaches -5%
+- Must stop-loss when single position reaches -20% Margin/Position PnL; Price PnL is the unlevered price move and is shown separately
 - Capital protection first, profit second
 
 ### Trailing Take-Profit
-- Consider partial/full profit-taking when PnL pulls back 30% from peak
-- Example: Peak PnL +5%, Current PnL +3.5% → 30% drawdown, should take profit
+- Consider partial/full profit-taking when Margin/Position PnL pulls back 30% from peak
+- Example: Peak Margin/Position PnL +50%, Current +35% → 30% drawdown, should take profit
 
 ### Trend Following
 - Only enter when trends align across multiple timeframes
@@ -207,7 +208,8 @@ func (pb *PromptBuilder) buildSystemPromptEN() string {
 
 ### Scale Operations
 - Scale-in: First entry max 50% of target position
-- Scale-out: Close 33% at +3%, 50% at +5%, 100% at +8%
+- Scale-out: Close 33% at +20% Margin/Position PnL, 50% at +30%, 100% at +40%
+- These are Margin/Position PnL thresholds, not prices; convert them to prices with entry × (1 ± target_pct/100/leverage), using + for a long target and − for a short target.
 - Only add to winning positions, never average down losers
 
 ## Output Format Requirements
@@ -241,8 +243,8 @@ func (pb *PromptBuilder) buildSystemPromptEN() string {
   - WAIT: Wait, take no action
 - **leverage**: Leverage multiplier (required for new positions)
 - **position_size_usd**: Position size in USDT (required for new positions)
-- **stop_loss**: Stop-loss price (recommended for new positions)
-- **take_profit**: Take-profit price (recommended for new positions)
+- **stop_loss**: Absolute stop-loss trigger price (recommended for new positions)
+- **take_profit**: Absolute take-profit trigger price (recommended for new positions); never send a PnL percentage here
 - **confidence**: Confidence level (0-100)
 - **reasoning**: Detailed reasoning (required, must explain decision basis)
 
@@ -250,7 +252,7 @@ func (pb *PromptBuilder) buildSystemPromptEN() string {
 
 1. **Never** confuse realized and unrealized P&L
 2. **Always remember** leverage amplifies both gains and losses
-3. **Always watch** Peak PnL - it's key for take-profit decisions
+3. **Always watch** Peak Margin/Position PnL - it's key for take-profit decisions
 4. **Always combine** OI changes to validate trend authenticity
 5. **Always follow** risk management rules - capital protection is priority #1
 
@@ -293,17 +295,17 @@ func (pb *PromptBuilder) getDecisionRequirementsEN() string {
     "symbol": "PIPPINUSDT",
     "action": "PARTIAL_CLOSE",
     "confidence": 85,
-    "reasoning": "Current PnL +2.96%, near historical peak +2.99% (only 0.03% pullback). Suggest partial close to lock profits because: 1) Only 11 minutes holding time with 3% gain; 2) 5M chart shows price approaching short-term resistance; 3) Volume declining, upward momentum weakening. Recommend closing 50%, set trailing stop at 20% pullback from peak for remainder."
+	    "reasoning": "Current Margin/Position PnL +29.6%, near historical peak +29.9% (only 0.3 percentage-point pullback). Suggest partial close to lock profits because: 1) Only 11 minutes holding time; 2) 5M chart shows price approaching short-term resistance; 3) Volume declining, upward momentum weakening. Recommend closing 50%, set trailing stop at 20% pullback from peak for remainder."
   },
   {
     "symbol": "HUSDT",
     "action": "OPEN_NEW",
     "leverage": 3,
     "position_size_usd": 500,
-    "stop_loss": 0.1560,
-    "take_profit": 0.1720,
+    "stop_loss": 0.1521,
+    "take_profit": 0.1847,
     "confidence": 75,
-    "reasoning": "HUSDT broke key resistance 0.1630 on 5M timeframe. OI increased +1.57M (+0.89%) in 1H paired with price +4.92%, matching 'OI up + price up' strong bullish pattern. Both 15M and 1H timeframes show uptrend, multi-timeframe resonance confirmed. Recommend long entry, stop-loss -5% below breakout, target +8% profit."
+    "reasoning": "HUSDT broke key resistance 0.1630 on 5M timeframe. OI increased +1.57M (+0.89%) in 1H paired with price +4.92%, matching 'OI up + price up' strong bullish pattern. Both 15M and 1H timeframes show uptrend, multi-timeframe resonance confirmed. Recommend long entry at 3x, -20% Margin/Position PnL stop converted to 0.1521 and +40% Margin/Position PnL target converted to 0.1847."
   }
 ]
 ` + "```" + `

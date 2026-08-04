@@ -58,6 +58,7 @@ func (t *OKXTrader) GetPositions() ([]map[string]interface{}, error) {
 		upl, _ := strconv.ParseFloat(pos.Upl, 64)
 		leverage, _ := strconv.ParseFloat(pos.Lever, 64)
 		liqPrice, _ := strconv.ParseFloat(pos.LiqPx, 64)
+		initialMargin, _ := strconv.ParseFloat(pos.Margin, 64)
 
 		// Convert symbol format
 		symbol := t.convertSymbolBack(pos.InstId)
@@ -81,6 +82,9 @@ func (t *OKXTrader) GetPositions() ([]map[string]interface{}, error) {
 			posAmt = contractCount * inst.CtVal
 			logger.Debugf("  📊 OKX position %s: contracts=%.4f, ctVal=%.6f, posAmt=%.6f", symbol, contractCount, inst.CtVal, posAmt)
 		}
+		if initialMargin <= 0 && entryPrice > 0 && posAmt > 0 && leverage > 0 {
+			initialMargin = entryPrice * posAmt / leverage
+		}
 
 		// Parse timestamps
 		cTime, _ := strconv.ParseInt(pos.CTime, 10, 64)
@@ -99,6 +103,8 @@ func (t *OKXTrader) GetPositions() ([]map[string]interface{}, error) {
 			"markPrice":        markPrice,
 			"unRealizedProfit": upl,
 			"leverage":         leverage,
+			"initial_margin":   initialMargin,
+			"margin_used":      initialMargin,
 			"liquidationPrice": liqPrice,
 			"side":             side,
 			"mgnMode":          mgnMode, // Margin mode: "cross" or "isolated"

@@ -8,6 +8,23 @@ import (
 	"time"
 )
 
+func formatPricePnLPct(pos PositionInfo) float64 {
+	if pos.EntryPrice > 0 && pos.MarkPrice > 0 {
+		move := (pos.MarkPrice - pos.EntryPrice) / pos.EntryPrice * 100
+		if strings.EqualFold(pos.Side, "short") {
+			move = -move
+		}
+		return move
+	}
+	if pos.PricePnLPct != 0 {
+		return pos.PricePnLPct
+	}
+	if pos.Leverage > 1 {
+		return pos.UnrealizedPnLPct / float64(pos.Leverage)
+	}
+	return pos.UnrealizedPnLPct
+}
+
 // ============================================================================
 // AI Data Formatter
 // ============================================================================
@@ -226,10 +243,11 @@ func formatCurrentPositionsZH(ctx *Context) string {
 		sb.WriteString(fmt.Sprintf("Entry %.4f Current %.4f | ", pos.EntryPrice, pos.MarkPrice))
 		sb.WriteString(fmt.Sprintf("Quantity %.4f | ", pos.Quantity))
 		sb.WriteString(fmt.Sprintf("Position Value %.2f USDT | ", pos.Quantity*pos.MarkPrice))
-		sb.WriteString(fmt.Sprintf("PnL %+.2f%% | ", pos.UnrealizedPnLPct))
+		pricePnLPct := formatPricePnLPct(pos)
+		sb.WriteString(fmt.Sprintf("Margin/Position PnL %+.2f%% | Price PnL %+.2f%% | ", pos.UnrealizedPnLPct, pricePnLPct))
 		sb.WriteString(fmt.Sprintf("PnL Amount %+.2f USDT | ", pos.UnrealizedPnL))
-		sb.WriteString(fmt.Sprintf("Peak PnL %.2f%% | ", pos.PeakPnLPct))
-		sb.WriteString(fmt.Sprintf("Stop %.4f | Target %.4f | ", pos.StopLoss, pos.TakeProfit))
+		sb.WriteString(fmt.Sprintf("Peak Margin/Position PnL %.2f%% | ", pos.PeakPnLPct))
+		sb.WriteString(fmt.Sprintf("Stop-loss price %.4f | Take-profit price %.4f | ", pos.StopLoss, pos.TakeProfit))
 		sb.WriteString(fmt.Sprintf("Leverage %dx | ", pos.Leverage))
 		sb.WriteString(fmt.Sprintf("Margin %.0f USDT | ", pos.MarginUsed))
 		sb.WriteString(fmt.Sprintf("Liq Price %.4f\n", pos.LiquidationPrice))
@@ -240,8 +258,8 @@ func formatCurrentPositionsZH(ctx *Context) string {
 				pos.PeakPnLPct, pos.UnrealizedPnLPct, (drawdown/pos.PeakPnLPct)*100))
 		}
 
-		if pos.UnrealizedPnLPct < -4.0 {
-			sb.WriteString("   ⚠️ **Stop-Loss Hint**: Loss approaching the -5% stop-loss line, consider stopping out\n")
+		if pos.UnrealizedPnLPct < HardStopMarginPositionPnLPct*0.8 {
+			sb.WriteString("   ⚠️ **Stop-Loss Hint**: Margin/Position PnL approaching the -20% stop-loss line, consider stopping out\n")
 		}
 
 		// Show current price (if market data available)
@@ -456,10 +474,11 @@ func formatCurrentPositionsEN(ctx *Context) string {
 		sb.WriteString(fmt.Sprintf("Entry %.4f Current %.4f | ", pos.EntryPrice, pos.MarkPrice))
 		sb.WriteString(fmt.Sprintf("Qty %.4f | ", pos.Quantity))
 		sb.WriteString(fmt.Sprintf("Value %.2f USDT | ", pos.Quantity*pos.MarkPrice))
-		sb.WriteString(fmt.Sprintf("PnL %+.2f%% | ", pos.UnrealizedPnLPct))
+		pricePnLPct := formatPricePnLPct(pos)
+		sb.WriteString(fmt.Sprintf("Margin/Position PnL %+.2f%% | Price PnL %+.2f%% | ", pos.UnrealizedPnLPct, pricePnLPct))
 		sb.WriteString(fmt.Sprintf("PnL Amount %+.2f USDT | ", pos.UnrealizedPnL))
-		sb.WriteString(fmt.Sprintf("Peak PnL %.2f%% | ", pos.PeakPnLPct))
-		sb.WriteString(fmt.Sprintf("Stop %.4f | Target %.4f | ", pos.StopLoss, pos.TakeProfit))
+		sb.WriteString(fmt.Sprintf("Peak Margin/Position PnL %.2f%% | ", pos.PeakPnLPct))
+		sb.WriteString(fmt.Sprintf("Stop-loss price %.4f | Take-profit price %.4f | ", pos.StopLoss, pos.TakeProfit))
 		sb.WriteString(fmt.Sprintf("Leverage %dx | ", pos.Leverage))
 		sb.WriteString(fmt.Sprintf("Margin %.0f USDT | ", pos.MarginUsed))
 		sb.WriteString(fmt.Sprintf("Liq Price %.4f\n", pos.LiquidationPrice))
@@ -470,8 +489,8 @@ func formatCurrentPositionsEN(ctx *Context) string {
 				pos.PeakPnLPct, pos.UnrealizedPnLPct, (drawdown/pos.PeakPnLPct)*100))
 		}
 
-		if pos.UnrealizedPnLPct < -4.0 {
-			sb.WriteString("   ⚠️ **Stop Loss Alert**: Loss approaching -5% threshold, consider cutting loss\n")
+		if pos.UnrealizedPnLPct < HardStopMarginPositionPnLPct*0.8 {
+			sb.WriteString("   ⚠️ **Stop Loss Alert**: Margin/Position PnL approaching -20% threshold, consider cutting loss\n")
 		}
 
 		if ctx.MarketDataMap != nil {

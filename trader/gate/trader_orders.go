@@ -12,6 +12,31 @@ import (
 	"github.com/gateio/gateapi-go/v6"
 )
 
+func normalizeTakeProfitTriggerPrice(price, tickSize float64, positionSide string) float64 {
+	if price <= 0 || tickSize <= 0 {
+		return price
+	}
+	steps := price / tickSize
+	if strings.EqualFold(positionSide, "SHORT") {
+		return math.Ceil(steps-1e-9) * tickSize
+	}
+	return math.Floor(steps+1e-9) * tickSize
+}
+
+// normalizeStopLossTriggerPrice rounds an absolute stop toward the market so
+// tick conversion cannot loosen protection: long stops ceil, short stops
+// floor. The PnL-to-price conversion happens before this helper.
+func normalizeStopLossTriggerPrice(price, tickSize float64, positionSide string) float64 {
+	if price <= 0 || tickSize <= 0 {
+		return price
+	}
+	steps := price / tickSize
+	if strings.EqualFold(positionSide, "SHORT") {
+		return math.Floor(steps+1e-9) * tickSize
+	}
+	return math.Ceil(steps-1e-9) * tickSize
+}
+
 // SetLeverage sets the leverage for a symbol
 func (t *GateTrader) SetLeverage(symbol string, leverage int) error {
 	symbol = t.convertSymbol(symbol)
@@ -330,6 +355,9 @@ func (t *GateTrader) SetStopLoss(symbol string, positionSide string, quantity, s
 	}
 
 	quantoMultiplier, _ := strconv.ParseFloat(contract.QuantoMultiplier, 64)
+	if tickSize, parseErr := strconv.ParseFloat(contract.OrderPriceRound, 64); parseErr == nil {
+		stopPrice = normalizeStopLossTriggerPrice(stopPrice, tickSize, positionSide)
+	}
 	size := int64(quantity / quantoMultiplier)
 	if size <= 0 {
 		size = 1
@@ -379,6 +407,9 @@ func (t *GateTrader) SetTakeProfit(symbol string, positionSide string, quantity,
 	contract, err := t.getContract(symbol)
 	if err != nil {
 		return err
+	}
+	if tickSize, parseErr := strconv.ParseFloat(contract.OrderPriceRound, 64); parseErr == nil {
+		takeProfitPrice = normalizeTakeProfitTriggerPrice(takeProfitPrice, tickSize, positionSide)
 	}
 
 	quantoMultiplier, _ := strconv.ParseFloat(contract.QuantoMultiplier, 64)

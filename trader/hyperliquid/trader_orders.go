@@ -934,10 +934,10 @@ func (t *HyperliquidTrader) placeXyzTriggerOrder(coin string, isBuy bool, size f
 func (t *HyperliquidTrader) SetStopLoss(symbol string, positionSide string, quantity, stopPrice float64) error {
 	coin := convertSymbolToHyperliquid(symbol)
 
-	isBuy := positionSide == "SHORT" // Short position stop loss = buy, long position stop loss = sell
+	isBuy := strings.EqualFold(positionSide, "SHORT") // Short position stop loss = buy, long position stop loss = sell
 
 	// Price needs to be processed to 5 significant figures
-	roundedStopPrice := t.roundPriceToSigfigs(stopPrice)
+	roundedStopPrice := t.roundStopLossPriceToSigfigs(stopPrice, positionSide)
 
 	// Check if this is an xyz dex asset (stocks, forex, commodities)
 	isXyz := strings.HasPrefix(coin, "xyz:")
@@ -982,10 +982,10 @@ func (t *HyperliquidTrader) SetStopLoss(symbol string, positionSide string, quan
 func (t *HyperliquidTrader) SetTakeProfit(symbol string, positionSide string, quantity, takeProfitPrice float64) error {
 	coin := convertSymbolToHyperliquid(symbol)
 
-	isBuy := positionSide == "SHORT" // Short position take profit = buy, long position take profit = sell
+	isBuy := strings.EqualFold(positionSide, "SHORT") // Short position take profit = buy, long position take profit = sell
 
 	// Price needs to be processed to 5 significant figures
-	roundedTakeProfitPrice := t.roundPriceToSigfigs(takeProfitPrice)
+	roundedTakeProfitPrice := t.roundTakeProfitPriceToSigfigs(takeProfitPrice, positionSide)
 
 	// Check if this is an xyz dex asset (stocks, forex, commodities)
 	isXyz := strings.HasPrefix(coin, "xyz:")

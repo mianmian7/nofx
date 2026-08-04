@@ -136,6 +136,66 @@ func TestBuildSystemPromptDoesNotForceLongOnlyForSingleXYZ(t *testing.T) {
 	}
 }
 
+func TestBuildSystemPromptStatesDirectionalProtectionAndRiskRewardRules(t *testing.T) {
+	cfg := store.GetDefaultStrategyConfig("en")
+	cfg.CoinSource.SourceType = "static"
+	cfg.CoinSource.StaticCoins = []string{"BTCUSDT", "ETHUSDT"}
+
+	prompt := NewStrategyEngine(&cfg).BuildSystemPrompt(100, "balanced", 100)
+	for _, phrase := range []string{
+		"open_long: stop_loss < entry/current price < take_profit",
+		"open_short: take_profit < entry/current price < stop_loss",
+		"(take_profit - entry_price) / (entry_price - stop_loss)",
+		"(entry_price - take_profit) / (stop_loss - entry_price)",
+		"zero protection values are placeholders only",
+		"stop-only protection changes must omit `new_take_profit`",
+		"a repeated current take-profit is a no-op",
+		"backend determines the fee-inclusive breakeven boundary",
+	} {
+		if !strings.Contains(prompt, phrase) {
+			t.Fatalf("prompt missing directional protection rule %q:\n%s", phrase, prompt)
+		}
+	}
+}
+
+func TestBuildSystemPromptUsesUnifiedMarginStopBoundary(t *testing.T) {
+	cfg := store.GetDefaultStrategyConfig("en")
+	cfg.CoinSource.SourceType = "static"
+	cfg.CoinSource.StaticCoins = []string{"BTCUSDT"}
+
+	prompt := NewStrategyEngine(&cfg).BuildSystemPrompt(100, "balanced", 100)
+	prompt += buildXYZStockCustomPrompt("BTCUSDT")
+	for _, phrase := range []string{
+		"Unified hard stop boundary: -20% Margin/Position PnL",
+		"entry × (1 - 0.20 / leverage)",
+		"entry × (1 + 0.20 / leverage)",
+		"Never send the percentage itself as a price",
+		"Fees, slippage, funding, and exchange tick precision",
+	} {
+		if !strings.Contains(prompt, phrase) {
+			t.Fatalf("prompt missing unified stop rule %q:\n%s", phrase, prompt)
+		}
+	}
+}
+
+func TestBuildSystemPromptUsesMarginTakeProfitPrices(t *testing.T) {
+	cfg := store.GetDefaultStrategyConfig("en")
+	cfg.CoinSource.SourceType = "static"
+	cfg.CoinSource.StaticCoins = []string{"BTCUSDT"}
+
+	prompt := NewStrategyEngine(&cfg).BuildSystemPrompt(100, "balanced", 100)
+	for _, phrase := range []string{
+		"Take-profit thresholds are gross Margin/Position PnL",
+		"long entry × (1 + 0.40 / leverage)",
+		"short entry × (1 - 0.40 / leverage)",
+		"Price PnL is shown separately",
+	} {
+		if !strings.Contains(prompt, phrase) {
+			t.Fatalf("prompt missing Margin/Position PnL take-profit rule %q:\n%s", phrase, prompt)
+		}
+	}
+}
+
 func containsCJK(text string) bool {
 	for _, r := range text {
 		if r >= 0x4E00 && r <= 0x9FFF {

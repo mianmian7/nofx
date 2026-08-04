@@ -136,6 +136,64 @@ func TestGetClosedPositionsByTraderFiltersIncludesLegacyAutopilotIDs(t *testing.
 	}
 }
 
+func TestRecordClosedTradeReusesLegacyPaperRow(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	positions := NewPositionStore(db)
+	if err := positions.InitTables(); err != nil {
+		t.Fatal(err)
+	}
+	legacy := &TraderPosition{TraderID: "trader-1", ExchangeID: "paper", Source: "paper", ExchangePositionID: "paper_BTCUSDT_LONG_123456789", Symbol: "BTCUSDT", Side: "LONG", Quantity: 2, EntryQuantity: 2, EntryPrice: 100, EntryTime: 1000, ExitPrice: 110, ExitTime: 2000, Status: "CLOSED"}
+	if err := db.Create(legacy).Error; err != nil {
+		t.Fatal(err)
+	}
+	stable := *legacy
+	stable.ExchangePositionID = "paper_BTCUSDT_LONG_order-1"
+	stable.ExitOrderID = "order-1"
+	stable.RealizedPnL = 20
+	if err := positions.RecordClosedTrade(&stable); err != nil {
+		t.Fatal(err)
+	}
+	var rows []TraderPosition
+	db.Find(&rows)
+	if len(rows) != 1 || rows[0].ExchangePositionID != stable.ExchangePositionID || rows[0].ExitOrderID != "order-1" {
+		t.Fatalf("legacy row was not upgraded: %#v", rows)
+	}
+	if err := positions.RecordClosedTrade(&stable); err != nil {
+		t.Fatal(err)
+	}
+	db.Find(&rows)
+	if len(rows) != 1 {
+		t.Fatalf("stable duplicate inserted a row: %d", len(rows))
+	}
+}
+
+func TestRecordClosedTradeDoesNotCrossMatchTraders(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	positions := NewPositionStore(db)
+	if err := positions.InitTables(); err != nil {
+		t.Fatal(err)
+	}
+	base := TraderPosition{ExchangeID: "paper", Source: "paper", ExchangePositionID: "paper_ETHUSDT_SHORT_order-2", Symbol: "ETHUSDT", Side: "SHORT", Quantity: 1, EntryQuantity: 1, EntryPrice: 2000, EntryTime: 3000, ExitPrice: 1990, ExitTime: 4000, ExitOrderID: "order-2", Status: "CLOSED"}
+	for _, traderID := range []string{"trader-1", "trader-2"} {
+		row := base
+		row.TraderID = traderID
+		if err := positions.RecordClosedTrade(&row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var rows []TraderPosition
+	db.Find(&rows)
+	if len(rows) != 2 {
+		t.Fatalf("same order ID across traders collapsed rows: %d", len(rows))
+	}
+}
+
 func TestCalculateMaxDrawdownUsesRealBaseline(t *testing.T) {
 	// +50 then -100: peak 550, trough 450 on a 500 account → 100/550 ≈ 18.18%.
 	pnls := []float64{50, -100}

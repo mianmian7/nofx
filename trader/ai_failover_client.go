@@ -88,6 +88,19 @@ func (client *AIModelFailoverClient) CallWithMessages(systemPrompt, userPrompt s
 	})
 }
 
+// CallWithMessagesWithMetadata preserves one logical call ID while probing
+// fallback candidates. A legacy candidate without the optional correlated
+// interface still works through CallWithMessages, but its provider-side logs
+// cannot be guaranteed to share the upper-layer ID.
+func (client *AIModelFailoverClient) CallWithMessagesWithMetadata(metadata mcp.CallMetadata, systemPrompt, userPrompt string) (string, error) {
+	return client.tryCandidates(func(candidate mcp.AIClient) (string, error) {
+		if correlated, ok := candidate.(mcp.CorrelatedAIClient); ok {
+			return correlated.CallWithMessagesWithMetadata(metadata, systemPrompt, userPrompt)
+		}
+		return candidate.CallWithMessages(systemPrompt, userPrompt)
+	})
+}
+
 func (client *AIModelFailoverClient) CallWithRequest(request *mcp.Request) (string, error) {
 	return client.tryCandidatesWithRequest(request, func(candidate mcp.AIClient, candidateRequest *mcp.Request) (string, error) {
 		return candidate.CallWithRequest(candidateRequest)

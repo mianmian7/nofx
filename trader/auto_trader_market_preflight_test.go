@@ -48,3 +48,38 @@ func TestPaperOpenStopsBeforeLedgerMutationWhenBinanceMarketIsUnavailable(t *tes
 		t.Fatalf("paper ledger changed after rejected preflight: before=%#v after=%#v", before, after)
 	}
 }
+
+func TestPaperOpenRejectsWrongSideShortProtectionBeforeLedgerMutation(t *testing.T) {
+	broker, err := NewPaperBroker(
+		PaperBrokerConfig{InitialBalance: 1_000},
+		fixedPaperPriceSource{"MUUSDT": 100},
+	)
+	if err != nil {
+		t.Fatalf("NewPaperBroker: %v", err)
+	}
+	before := broker.Snapshot()
+	autoTrader := &AutoTrader{
+		executionMode: ExecutionModePaper,
+		exchange:      "binance",
+		trader:        broker,
+		paperBroker:   broker,
+	}
+	decision := &kernel.Decision{
+		Symbol:          "MUUSDT",
+		Action:          "open_short",
+		Leverage:        3,
+		PositionSizeUSD: 300,
+		StopLoss:        99,
+		TakeProfit:      95,
+		RiskUSD:         0,
+	}
+
+	err = autoTrader.executeDecisionWithRecord(decision, &store.DecisionAction{})
+	if err == nil || !strings.Contains(err.Error(), "short stop loss") {
+		t.Fatalf("error = %v, want wrong-side short protection rejection", err)
+	}
+	after := broker.Snapshot()
+	if after.Balance != before.Balance || after.OpenPositions != 0 || after.PendingOrders != 0 {
+		t.Fatalf("paper ledger changed after protection rejection: before=%#v after=%#v", before, after)
+	}
+}

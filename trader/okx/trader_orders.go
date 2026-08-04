@@ -3,11 +3,42 @@ package okx
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"nofx/logger"
 	"nofx/trader/types"
 	"strconv"
 	"strings"
 )
+
+// normalizeStopTriggerPrice rounds a calculated stop to the instrument tick
+// without making the protection looser: long stops round up toward entry,
+// short stops round down toward entry. The Margin/Position PnL-to-price
+// conversion happens upstream.
+func normalizeStopTriggerPrice(stopPrice, tickSize float64, positionSide string) float64 {
+	if stopPrice <= 0 || tickSize <= 0 {
+		return stopPrice
+	}
+	steps := stopPrice / tickSize
+	if strings.EqualFold(positionSide, "SHORT") {
+		return math.Floor(steps+1e-9) * tickSize
+	}
+	return math.Ceil(steps-1e-9) * tickSize
+}
+
+// normalizeTakeProfitTriggerPrice rounds a target to the nearest protective
+// tick. A long target rounds down (fills no later than requested); a short
+// target rounds up. The input is already an absolute price converted from a
+// Margin/Position PnL threshold by the caller.
+func normalizeTakeProfitTriggerPrice(takeProfitPrice, tickSize float64, positionSide string) float64 {
+	if takeProfitPrice <= 0 || tickSize <= 0 {
+		return takeProfitPrice
+	}
+	steps := takeProfitPrice / tickSize
+	if strings.EqualFold(positionSide, "SHORT") {
+		return math.Ceil(steps-1e-9) * tickSize
+	}
+	return math.Floor(steps+1e-9) * tickSize
+}
 
 // OpenLong opens long position
 func (t *OKXTrader) OpenLong(symbol string, quantity float64, leverage int) (map[string]interface{}, error) {
@@ -409,6 +440,7 @@ func (t *OKXTrader) SetStopLoss(symbol string, positionSide string, quantity, st
 	if err != nil {
 		return fmt.Errorf("failed to get instrument info: %w", err)
 	}
+	stopPrice = normalizeStopTriggerPrice(stopPrice, inst.TickSz, positionSide)
 
 	// Calculate contract size: quantity (in base asset) / ctVal (asset per contract)
 	sz := quantity / inst.CtVal
@@ -454,6 +486,7 @@ func (t *OKXTrader) SetTakeProfit(symbol string, positionSide string, quantity, 
 	if err != nil {
 		return fmt.Errorf("failed to get instrument info: %w", err)
 	}
+	takeProfitPrice = normalizeTakeProfitTriggerPrice(takeProfitPrice, inst.TickSz, positionSide)
 
 	// Calculate contract size: quantity (in base asset) / ctVal (asset per contract)
 	sz := quantity / inst.CtVal
@@ -512,8 +545,10 @@ func (t *OKXTrader) cancelAlgoOrders(symbol string, orderType string) error {
 	}
 
 	var orders []struct {
-		AlgoId string `json:"algoId"`
-		InstId string `json:"instId"`
+		AlgoId      string `json:"algoId"`
+		InstId      string `json:"instId"`
+		SlTriggerPx string `json:"slTriggerPx"`
+		TpTriggerPx string `json:"tpTriggerPx"`
 	}
 
 	if err := json.Unmarshal(data, &orders); err != nil {
@@ -522,6 +557,12 @@ func (t *OKXTrader) cancelAlgoOrders(symbol string, orderType string) error {
 
 	canceledCount := 0
 	for _, order := range orders {
+		if orderType == "sl" && !isNonZeroTrigger(order.SlTriggerPx) {
+			continue
+		}
+		if orderType == "tp" && !isNonZeroTrigger(order.TpTriggerPx) {
+			continue
+		}
 		body := []map[string]interface{}{
 			{
 				"algoId": order.AlgoId,
@@ -542,6 +583,11 @@ func (t *OKXTrader) cancelAlgoOrders(symbol string, orderType string) error {
 	}
 
 	return nil
+}
+
+func isNonZeroTrigger(value string) bool {
+	parsed, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	return err == nil && parsed > 0 && !math.IsNaN(parsed) && !math.IsInf(parsed, 0)
 }
 
 // CancelAllOrders cancels all pending orders

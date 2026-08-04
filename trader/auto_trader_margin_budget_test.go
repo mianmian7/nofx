@@ -14,6 +14,89 @@ func TestCalculateRemainingStrategyMarginIncludesPositionsAndOpenOrders(t *testi
 	}
 }
 
+func TestMarginPnLStopPriceConvertsLossThresholdForBothDirections(t *testing.T) {
+	tests := []struct {
+		name     string
+		action   string
+		leverage int
+		want     float64
+	}{
+		{name: "long 20x", action: "open_long", leverage: 20, want: 99},
+		{name: "short 20x", action: "open_short", leverage: 20, want: 101},
+		{name: "long 10x", action: "open_long", leverage: 10, want: 98},
+		{name: "short 10x", action: "open_short", leverage: 10, want: 102},
+		{name: "long 50x", action: "open_long", leverage: 50, want: 99.6},
+		{name: "short 50x", action: "open_short", leverage: 50, want: 100.4},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := marginPnLStopPrice(tt.action, 100, tt.leverage, unifiedMarginStopLossPct)
+			if err != nil {
+				t.Fatalf("margin-PnL stop price: %v", err)
+			}
+			if math.Abs(got-tt.want) > 0.000001 {
+				t.Fatalf("stop = %.6f, want %.6f", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClampStopLossToMarginRiskDoesNotLoosenTighterStops(t *testing.T) {
+	longStop, changed, err := clampStopLossToMarginRisk("open_long", 100, 20, 95, unifiedMarginStopLossPct)
+	if err != nil {
+		t.Fatalf("clamp long stop: %v", err)
+	}
+	if !changed || math.Abs(longStop-99) > 0.000001 {
+		t.Fatalf("long stop = %.6f changed=%v, want 99.000000 true", longStop, changed)
+	}
+
+	longTighter, changed, err := clampStopLossToMarginRisk("open_long", 100, 20, 99.5, unifiedMarginStopLossPct)
+	if err != nil {
+		t.Fatalf("preserve tighter long stop: %v", err)
+	}
+	if changed || math.Abs(longTighter-99.5) > 0.000001 {
+		t.Fatalf("tighter long stop = %.6f changed=%v, want 99.500000 false", longTighter, changed)
+	}
+
+	shortStop, changed, err := clampStopLossToMarginRisk("open_short", 100, 20, 105, unifiedMarginStopLossPct)
+	if err != nil {
+		t.Fatalf("clamp short stop: %v", err)
+	}
+	if !changed || math.Abs(shortStop-101) > 0.000001 {
+		t.Fatalf("short stop = %.6f changed=%v, want 101.000000 true", shortStop, changed)
+	}
+
+	shortTighter, changed, err := clampStopLossToMarginRisk("open_short", 100, 20, 100.5, unifiedMarginStopLossPct)
+	if err != nil {
+		t.Fatalf("preserve tighter short stop: %v", err)
+	}
+	if changed || math.Abs(shortTighter-100.5) > 0.000001 {
+		t.Fatalf("tighter short stop = %.6f changed=%v, want 100.500000 false", shortTighter, changed)
+	}
+}
+
+func TestUnifiedMarginStopStaysBeforePaperLiquidation(t *testing.T) {
+	for _, leverage := range []int{10, 20, 50} {
+		longStop, err := marginPnLStopPrice("open_long", 100, leverage, unifiedMarginStopLossPct)
+		if err != nil {
+			t.Fatalf("long %dx stop conversion: %v", leverage, err)
+		}
+		longLiquidation := paperLiquidationPrice("long", 100, leverage, 0.005)
+		if longStop <= longLiquidation {
+			t.Fatalf("long %dx stop %.4f must remain above liquidation %.4f", leverage, longStop, longLiquidation)
+		}
+
+		shortStop, err := marginPnLStopPrice("open_short", 100, leverage, unifiedMarginStopLossPct)
+		if err != nil {
+			t.Fatalf("short %dx stop conversion: %v", leverage, err)
+		}
+		shortLiquidation := paperLiquidationPrice("short", 100, leverage, 0.005)
+		if shortStop >= shortLiquidation {
+			t.Fatalf("short %dx stop %.4f must remain below liquidation %.4f", leverage, shortStop, shortLiquidation)
+		}
+	}
+}
+
 func TestCalculateRiskLimitedNotionalIncludesStopDistanceAndFees(t *testing.T) {
 	maximumNotional, enabled, err := calculateRiskLimitedNotional(
 		"open_long",

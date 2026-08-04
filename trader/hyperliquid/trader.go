@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"fmt"
+	"math"
 	"nofx/logger"
 	hlprovider "nofx/provider/hyperliquid"
 	"strconv"
@@ -300,4 +301,41 @@ func (t *HyperliquidTrader) roundPriceToSigfigs(price float64) float64 {
 	// Round
 	rounded := float64(int(price*multiplier+0.5)) / multiplier
 	return rounded
+}
+
+// roundTakeProfitPriceToSigfigs aligns an absolute target to Hyperliquid's
+// significant-figure grid without moving it farther away: long targets floor,
+// short targets ceil. The PnL-to-price conversion happens before this helper.
+func (t *HyperliquidTrader) roundTakeProfitPriceToSigfigs(price float64, positionSide string) float64 {
+	if price <= 0 {
+		return price
+	}
+	exponent := int(math.Floor(math.Log10(price)))
+	step := math.Pow10(exponent - 4) // five significant figures
+	if step <= 0 || math.IsInf(step, 0) {
+		return price
+	}
+	if strings.EqualFold(positionSide, "SHORT") {
+		return math.Ceil(price/step-1e-9) * step
+	}
+	return math.Floor(price/step+1e-9) * step
+}
+
+// roundStopLossPriceToSigfigs aligns an absolute stop to Hyperliquid's
+// significant-figure grid without loosening protection: long stops round up
+// toward the market and short stops round down. The PnL-to-price conversion
+// happens before this helper.
+func (t *HyperliquidTrader) roundStopLossPriceToSigfigs(price float64, positionSide string) float64 {
+	if price <= 0 {
+		return price
+	}
+	exponent := int(math.Floor(math.Log10(price)))
+	step := math.Pow10(exponent - 4)
+	if step <= 0 || math.IsInf(step, 0) {
+		return price
+	}
+	if strings.EqualFold(positionSide, "SHORT") {
+		return math.Floor(price/step+1e-9) * step
+	}
+	return math.Ceil(price/step-1e-9) * step
 }

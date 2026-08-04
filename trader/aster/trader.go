@@ -161,6 +161,50 @@ func roundToTickSize(value float64, tickSize float64) float64 {
 	return roundedSteps * tickSize
 }
 
+func roundTakeProfitToTickSize(value, tickSize float64, positionSide string) float64 {
+	if value <= 0 || tickSize <= 0 {
+		return value
+	}
+	steps := value / tickSize
+	if strings.EqualFold(positionSide, "SHORT") {
+		return math.Ceil(steps-1e-9) * tickSize
+	}
+	return math.Floor(steps+1e-9) * tickSize
+}
+
+func roundStopLossToTickSize(value, tickSize float64, positionSide string) float64 {
+	if value <= 0 || tickSize <= 0 {
+		return value
+	}
+	steps := value / tickSize
+	if strings.EqualFold(positionSide, "SHORT") {
+		return math.Floor(steps+1e-9) * tickSize
+	}
+	return math.Ceil(steps-1e-9) * tickSize
+}
+
+func roundTakeProfitToPrecision(value float64, precision int, positionSide string) float64 {
+	if value <= 0 || precision < 0 {
+		return value
+	}
+	scale := math.Pow10(precision)
+	if strings.EqualFold(positionSide, "SHORT") {
+		return math.Ceil(value*scale-1e-9) / scale
+	}
+	return math.Floor(value*scale+1e-9) / scale
+}
+
+func roundStopLossToPrecision(value float64, precision int, positionSide string) float64 {
+	if value <= 0 || precision < 0 {
+		return value
+	}
+	scale := math.Pow10(precision)
+	if strings.EqualFold(positionSide, "SHORT") {
+		return math.Floor(value*scale+1e-9) / scale
+	}
+	return math.Ceil(value*scale-1e-9) / scale
+}
+
 // formatPrice Format price to correct precision and tick size
 func (t *AsterTrader) formatPrice(symbol string, price float64) (float64, error) {
 	prec, err := t.getPrecision(symbol)

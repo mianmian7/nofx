@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -159,8 +160,10 @@ func (s *PositionStore) InitTables() error {
 				}
 			}
 
-			// Just ensure index exists
-			s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_positions_exchange_pos_unique ON trader_positions(exchange_id, exchange_position_id) WHERE exchange_position_id != ''`)
+			// Keep the idempotency key trader-scoped so separate traders may reuse
+			// the same paper order ID.
+			s.db.Exec(`DROP INDEX IF EXISTS idx_positions_exchange_pos_unique`)
+			s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_positions_exchange_pos_unique ON trader_positions(trader_id, exchange_id, exchange_position_id) WHERE exchange_position_id != ''`)
 			return nil
 		}
 	}
@@ -172,9 +175,9 @@ func (s *PositionStore) InitTables() error {
 	// Create unique partial index for exchange position deduplication
 	var indexSQL string
 	if s.isPostgres() {
-		indexSQL = `CREATE UNIQUE INDEX IF NOT EXISTS idx_positions_exchange_pos_unique ON trader_positions(exchange_id, exchange_position_id) WHERE exchange_position_id != ''`
+		indexSQL = `CREATE UNIQUE INDEX IF NOT EXISTS idx_positions_exchange_pos_unique ON trader_positions(trader_id, exchange_id, exchange_position_id) WHERE exchange_position_id != ''`
 	} else {
-		indexSQL = `CREATE UNIQUE INDEX IF NOT EXISTS idx_positions_exchange_pos_unique ON trader_positions(exchange_id, exchange_position_id) WHERE exchange_position_id != ''`
+		indexSQL = `CREATE UNIQUE INDEX IF NOT EXISTS idx_positions_exchange_pos_unique ON trader_positions(trader_id, exchange_id, exchange_position_id) WHERE exchange_position_id != ''`
 	}
 	if err := s.db.Exec(indexSQL).Error; err != nil {
 		if !strings.Contains(err.Error(), "already exists") && !strings.Contains(err.Error(), "UNIQUE constraint failed") {
@@ -201,6 +204,40 @@ func (s *PositionStore) RecordClosedTrade(pos *TraderPosition) error {
 		pos.Status = "CLOSED"
 	}
 	pos.Source = "paper"
+	if pos.ExchangePositionID == "" {
+		return s.db.Create(pos).Error
+	}
+	var existing TraderPosition
+	err := s.db.Where("trader_id = ? AND exchange_id = ? AND exchange_position_id = ?", pos.TraderID, pos.ExchangeID, pos.ExchangePositionID).
+		First(&existing).Error
+	if err == nil {
+		return s.db.Model(&existing).Updates(pos).Error
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	// Reuse unambiguously matching paper rows written with the legacy
+	// exit-timestamp position ID, upgrading them to the stable ID.
+	if pos.Source == "paper" {
+		var legacyRows []TraderPosition
+		if err := s.db.Where("trader_id = ? AND exchange_id = ? AND source = ? AND symbol = ? AND side = ? AND entry_time = ? AND exit_time = ? AND exchange_position_id LIKE ? AND exit_order_id = ''",
+			pos.TraderID, pos.ExchangeID, "paper", pos.Symbol, pos.Side, pos.EntryTime, pos.ExitTime, fmt.Sprintf("paper_%s_%s_%%", pos.Symbol, pos.Side)).
+			Find(&legacyRows).Error; err != nil {
+			return err
+		} else if len(legacyRows) == 1 {
+			existing = legacyRows[0]
+			return s.db.Model(&existing).Updates(pos).Error
+		}
+	}
+	// Rows written before trader_id was part of the idempotency key are only
+	// reusable when they have no trader identity; never cross-match another
+	// trader's row.
+	if err := s.db.Where("trader_id = '' AND exchange_id = ? AND exchange_position_id = ?", pos.ExchangeID, pos.ExchangePositionID).
+		First(&existing).Error; err == nil {
+		return s.db.Model(&existing).Updates(pos).Error
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
 	return s.db.Create(pos).Error
 }
 

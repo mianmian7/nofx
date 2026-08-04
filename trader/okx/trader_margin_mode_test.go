@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"testing"
@@ -19,15 +20,22 @@ type capturedRequest struct {
 }
 
 type recordingTransport struct {
-	requests []capturedRequest
+	requests            []capturedRequest
+	algoPendingResponse string
 }
 
 func (rt *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	var body map[string]interface{}
 	if req.Body != nil {
 		data, _ := io.ReadAll(req.Body)
-		if len(data) > 0 && strings.HasPrefix(strings.TrimSpace(string(data)), "{") {
+		trimmed := strings.TrimSpace(string(data))
+		if strings.HasPrefix(trimmed, "{") {
 			_ = json.Unmarshal(data, &body)
+		} else if strings.HasPrefix(trimmed, "[") {
+			var entries []map[string]interface{}
+			if json.Unmarshal(data, &entries) == nil && len(entries) > 0 {
+				body = entries[0]
+			}
 		}
 	}
 
@@ -43,6 +51,10 @@ func (rt *recordingTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		response = `{"code":"0","msg":"","data":[{"instId":"BTC-USDT-SWAP","ctVal":"0.01","ctMult":"1","lotSz":"1","minSz":"1","maxMktSz":"100000","tickSz":"0.1","ctType":"linear"}]}`
 	case okxOrderPath:
 		response = `{"code":"0","msg":"","data":[{"ordId":"123","clOrdId":"abc","sCode":"0","sMsg":""}]}`
+	case okxAlgoPendingPath:
+		if rt.algoPendingResponse != "" {
+			response = rt.algoPendingResponse
+		}
 	}
 
 	return &http.Response{
@@ -163,6 +175,72 @@ func TestOKXSetStopLossUsesConfiguredMarginMode(t *testing.T) {
 	}
 }
 
+func TestNormalizeStopTriggerPriceKeepsTickRoundingProtective(t *testing.T) {
+	if got := normalizeStopTriggerPrice(99.06, 0.1, "LONG"); math.Abs(got-99.1) > 1e-9 {
+		t.Fatalf("long stop tick rounding = %.8f, want 99.10000000", got)
+	}
+	if got := normalizeStopTriggerPrice(100.04, 0.1, "SHORT"); math.Abs(got-100.0) > 1e-9 {
+		t.Fatalf("short stop tick rounding = %.8f, want 100.00000000", got)
+	}
+}
+
+func TestNormalizeTakeProfitTriggerPriceKeepsTickRoundingProtective(t *testing.T) {
+	if got := normalizeTakeProfitTriggerPrice(99.06, 0.1, "LONG"); math.Abs(got-99.0) > 1e-9 {
+		t.Fatalf("long take-profit tick rounding = %.8f, want 99.00000000", got)
+	}
+	if got := normalizeTakeProfitTriggerPrice(100.04, 0.1, "SHORT"); math.Abs(got-100.1) > 1e-9 {
+		t.Fatalf("short take-profit tick rounding = %.8f, want 100.10000000", got)
+	}
+}
+
+func TestOKXSetTakeProfitRoundsAbsolutePriceAndKeepsDirection(t *testing.T) {
+	rt := &recordingTransport{}
+	trader := newTestOKXTrader(rt, false)
+
+	if err := trader.SetTakeProfit("BTCUSDT", "LONG", 0.1, 90000.06); err != nil {
+		t.Fatalf("long SetTakeProfit failed: %v", err)
+	}
+	if err := trader.SetTakeProfit("BTCUSDT", "SHORT", 0.1, 90000.04); err != nil {
+		t.Fatalf("short SetTakeProfit failed: %v", err)
+	}
+	requests := rt.requestsForPath(okxAlgoOrderPath)
+	if len(requests) != 2 {
+		t.Fatalf("expected 2 algo order requests, got %d", len(requests))
+	}
+	if got := requests[0].Body["tpTriggerPx"]; got != "90000.00000000" {
+		t.Fatalf("long take-profit trigger = %#v, want 90000.00000000", got)
+	}
+	if got := requests[1].Body["tpTriggerPx"]; got != "90000.10000000" {
+		t.Fatalf("short take-profit trigger = %#v, want 90000.10000000", got)
+	}
+	if requests[0].Body["tpTriggerPx"] == "90000.06" || requests[1].Body["tpTriggerPx"] == "90000.04" {
+		t.Fatal("take-profit request contained an unrounded/raw threshold instead of an absolute tick-aligned price")
+	}
+}
+
+func TestOKXSetStopLossRoundsTriggerToProtectiveTick(t *testing.T) {
+	rt := &recordingTransport{}
+	trader := newTestOKXTrader(rt, false)
+
+	if err := trader.SetStopLoss("BTCUSDT", "LONG", 0.1, 90000.06); err != nil {
+		t.Fatalf("long SetStopLoss failed: %v", err)
+	}
+	if err := trader.SetStopLoss("BTCUSDT", "SHORT", 0.1, 90000.04); err != nil {
+		t.Fatalf("short SetStopLoss failed: %v", err)
+	}
+
+	requests := rt.requestsForPath(okxAlgoOrderPath)
+	if len(requests) != 2 {
+		t.Fatalf("expected 2 algo order requests, got %d", len(requests))
+	}
+	if got := requests[0].Body["slTriggerPx"]; got != "90000.10000000" {
+		t.Fatalf("long trigger price = %#v, want 90000.10000000", got)
+	}
+	if got := requests[1].Body["slTriggerPx"]; got != "90000.00000000" {
+		t.Fatalf("short trigger price = %#v, want 90000.00000000", got)
+	}
+}
+
 func TestOKXPlaceLimitOrderUsesConfiguredMarginMode(t *testing.T) {
 	rt := &recordingTransport{}
 	trader := newTestOKXTrader(rt, false)
@@ -243,5 +321,29 @@ func TestOKXSetTakeProfitUsesConfiguredMarginMode(t *testing.T) {
 
 	if algoRequests[0].Body["tdMode"] != "isolated" {
 		t.Fatalf("expected isolated tdMode for SetTakeProfit, got %#v", algoRequests[0].Body["tdMode"])
+	}
+}
+
+func TestOKXProtectionCancellationDoesNotDeleteOppositeAlgoOrder(t *testing.T) {
+	rt := &recordingTransport{algoPendingResponse: `{"code":"0","msg":"","data":[{"algoId":"sl-1","instId":"BTC-USDT-SWAP","slTriggerPx":"90000","tpTriggerPx":"0"},{"algoId":"tp-1","instId":"BTC-USDT-SWAP","slTriggerPx":"0","tpTriggerPx":"100000"}]}`}
+	trader := newTestOKXTrader(rt, false)
+
+	if err := trader.CancelStopLossOrders("BTCUSDT"); err != nil {
+		t.Fatalf("CancelStopLossOrders failed: %v", err)
+	}
+	if err := trader.CancelTakeProfitOrders("BTCUSDT"); err != nil {
+		t.Fatalf("CancelTakeProfitOrders failed: %v", err)
+	}
+
+	var canceled []string
+	for _, request := range rt.requestsForPath(okxCancelAlgoPath) {
+		body, ok := request.Body["algoId"]
+		if !ok {
+			t.Fatalf("cancel request missing algoId: %#v", request.Body)
+		}
+		canceled = append(canceled, body.(string))
+	}
+	if len(canceled) != 2 || canceled[0] != "sl-1" || canceled[1] != "tp-1" {
+		t.Fatalf("canceled algo IDs = %v, want [sl-1 tp-1]", canceled)
 	}
 }
