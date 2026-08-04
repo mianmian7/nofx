@@ -352,12 +352,10 @@ func (c *APIClient) GetKlines(symbol, interval string, limit int) ([]Kline, erro
 }
 
 // GetKlinesFresh is the strict variant used by live decision making. It never
-// substitutes the 20-minute stale snapshot when Binance fails or returns
-// malformed data. It still reuses the normal short-TTL response cache (and
-// singleflight coalescing) shared with GetKlines: "fresh" only means the data
-// is never older than the standard 5s K-line TTL. Callers that need bounded
-// degradation (paper trading, UI, diagnostics) should continue to use
-// GetKlines.
+// substitutes the stale snapshot when Binance fails or returns malformed data,
+// and it rejects an upstream candle older than the interval freshness bound.
+// Callers that need bounded degradation (paper trading, UI, diagnostics) should
+// continue to use GetKlines.
 func (c *APIClient) GetKlinesFresh(symbol, interval string, limit int) ([]Kline, error) {
 	return c.getKlines(symbol, interval, limit, false)
 }
@@ -401,6 +399,15 @@ func (c *APIClient) getKlines(symbol, interval string, limit int, allowStale boo
 			return c.klineFallback(path, err)
 		}
 		return nil, err
+	}
+	if !allowStale {
+		intervalDuration, durationErr := TFDuration(interval)
+		if durationErr != nil {
+			return nil, durationErr
+		}
+		if err := validateFreshPublicKlines("Binance", symbol, interval, klines, intervalDuration); err != nil {
+			return nil, err
+		}
 	}
 	if len(klines) == 0 {
 		emptyErr := fmt.Errorf("binance klines response is empty")

@@ -15,6 +15,14 @@ import (
 
 // getKlinesFromCoinAnk fetches kline data from CoinAnk API (replacement for WSMonitorCli)
 func getKlinesFromCoinAnk(symbol, interval, exchange string, limit int) ([]Kline, error) {
+	return getKlinesFromCoinAnkWithFreshness(symbol, interval, exchange, limit, false)
+}
+
+func getKlinesFromCoinAnkFresh(symbol, interval, exchange string, limit int) ([]Kline, error) {
+	return getKlinesFromCoinAnkWithFreshness(symbol, interval, exchange, limit, true)
+}
+
+func getKlinesFromCoinAnkWithFreshness(symbol, interval, exchange string, limit int, requireFresh bool) ([]Kline, error) {
 	// Map interval string to coinank enum
 	var coinankInterval coinank_enum.Interval
 	switch interval {
@@ -97,6 +105,15 @@ func getKlinesFromCoinAnk(symbol, interval, exchange string, limit int) ([]Kline
 		}
 	}
 
+	if requireFresh {
+		intervalDuration, err := TFDuration(interval)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateFreshPublicKlines("CoinAnk", symbol, interval, klines, intervalDuration); err != nil {
+			return nil, err
+		}
+	}
 	return klines, nil
 }
 

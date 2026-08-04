@@ -30,6 +30,11 @@ type nativePublicCacheEntry struct {
 
 const nativePublicResponseCacheTTL = time.Second
 
+const (
+	nativePublicMaxAttempts = 2
+	nativePublicRetryDelay  = 150 * time.Millisecond
+)
+
 func newNativePublicHTTPClient(baseURL string, client *http.Client) nativePublicHTTPClient {
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Second}
@@ -69,36 +74,59 @@ func (client nativePublicHTTPClient) getWithCache(path string, query url.Values,
 	if len(query) > 0 {
 		requestURL += "?" + query.Encode()
 	}
-	request, err := http.NewRequest(http.MethodGet, requestURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	request.Header.Set("Accept", "application/json")
-	response, err := client.client.Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("public market request %s: %w", path, err)
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read public market response %s: %w", path, err)
-	}
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		message := strings.TrimSpace(string(body))
-		if len(message) > 300 {
-			message = message[:300] + "..."
+	var lastErr error
+	for attempt := 1; attempt <= nativePublicMaxAttempts; attempt++ {
+		request, err := http.NewRequest(http.MethodGet, requestURL, nil)
+		if err != nil {
+			return nil, err
 		}
-		return nil, fmt.Errorf("public market request %s failed with HTTP %d: %s", path, response.StatusCode, message)
-	}
-	if allowCache && client.cache != nil {
-		client.cache.mu.Lock()
-		client.cache.entries[cacheKey] = nativePublicCacheEntry{
-			body:      append([]byte(nil), body...),
-			fetchedAt: time.Now(),
+		request.Header.Set("Accept", "application/json")
+		response, err := client.client.Do(request)
+		if err != nil {
+			lastErr = fmt.Errorf("public market request %s: %w", path, err)
+			if attempt < nativePublicMaxAttempts {
+				time.Sleep(nativePublicRetryDelay)
+				continue
+			}
+			return nil, lastErr
 		}
-		client.cache.mu.Unlock()
+		body, readErr := io.ReadAll(response.Body)
+		response.Body.Close()
+		if readErr != nil {
+			lastErr = fmt.Errorf("read public market response %s: %w", path, readErr)
+			if attempt < nativePublicMaxAttempts {
+				time.Sleep(nativePublicRetryDelay)
+				continue
+			}
+			return nil, lastErr
+		}
+		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+			message := strings.TrimSpace(string(body))
+			if len(message) > 300 {
+				message = message[:300] + "..."
+			}
+			lastErr = fmt.Errorf("public market request %s failed with HTTP %d: %s", path, response.StatusCode, message)
+			if nativePublicRetryableStatus(response.StatusCode) && attempt < nativePublicMaxAttempts {
+				time.Sleep(nativePublicRetryDelay)
+				continue
+			}
+			return nil, lastErr
+		}
+		if allowCache && client.cache != nil {
+			client.cache.mu.Lock()
+			client.cache.entries[cacheKey] = nativePublicCacheEntry{
+				body:      append([]byte(nil), body...),
+				fetchedAt: time.Now(),
+			}
+			client.cache.mu.Unlock()
+		}
+		return body, nil
 	}
-	return body, nil
+	return nil, lastErr
+}
+
+func nativePublicRetryableStatus(statusCode int) bool {
+	return statusCode == http.StatusTooManyRequests || statusCode >= http.StatusInternalServerError
 }
 
 func validateFreshPublicKlines(exchange, symbol, interval string, klines []Kline, intervalDuration time.Duration) error {
@@ -192,6 +220,14 @@ func parseRawInt64(raw json.RawMessage, fieldName string) (int64, error) {
 
 func parseOptionalInt64(raw string) int64 {
 	value, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return value
+}
+
+func parseOptionalRawInt64(raw json.RawMessage) int64 {
+	value, err := parseRawInt64(raw, "optional integer")
 	if err != nil {
 		return 0
 	}

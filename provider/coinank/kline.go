@@ -3,6 +3,8 @@ package coinank
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"math"
 	"nofx/provider/coinank/coinank_enum"
 	"strconv"
 )
@@ -37,6 +39,14 @@ func (c *CoinankClient) Kline(ctx context.Context, symbol string, exchange coina
 	}
 	klines := make([]KlineResult, len(result.Data))
 	for i, k := range result.Data {
+		if len(k) < 9 {
+			return nil, fmt.Errorf("CoinAnk kline %d has %d fields, want at least 9", i, len(k))
+		}
+		for field, value := range k[:9] {
+			if math.IsNaN(value) || math.IsInf(value, 0) {
+				return nil, fmt.Errorf("CoinAnk kline %d field %d is not finite", i, field)
+			}
+		}
 		klines[i].StartTime = int64(k[0] + 0.001)
 		klines[i].EndTime = int64(k[1] + 0.001)
 		klines[i].Open = k[2]

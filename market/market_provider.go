@@ -196,7 +196,7 @@ func (provider *coinAnkMarketDataProvider) GetKlines(symbol, interval string, li
 }
 
 func (provider *coinAnkMarketDataProvider) GetKlinesFresh(symbol, interval string, limit int) ([]Kline, error) {
-	return provider.GetKlines(symbol, interval, limit)
+	return getKlinesFromCoinAnkFresh(provider.NormalizeSymbol(symbol), interval, provider.exchange, limit)
 }
 
 func (provider *coinAnkMarketDataProvider) GetDepth(string, int) (*DepthSnapshot, error) {

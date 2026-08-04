@@ -2,6 +2,7 @@ package market
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -519,6 +520,20 @@ func TestGetKlinesFreshRejectsUpstreamFailureInsteadOfUsingSnapshot(t *testing.T
 	}
 	if got := calls.Load(); got != 2 {
 		t.Fatalf("upstream calls = %d, want 2", got)
+	}
+}
+
+func TestGetKlinesFreshRejectsStaleUpstreamCandles(t *testing.T) {
+	openTime := time.Now().Add(-10 * time.Minute).UnixMilli()
+	client := &APIClient{
+		baseURL: "https://binance.test",
+		client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return binanceJSONResponse(fmt.Sprintf(`[[%d,"120.1","121.2","119.8","120.9","10.5",%d,"1269.45",42,"5.2","628.68","0"]]`, openTime, openTime+59_999)), nil
+		})},
+		coordinator: newBinancePublicCoordinator(),
+	}
+	if _, err := client.GetKlinesFresh("MUUSDT", "1m", 1); err == nil || !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("GetKlinesFresh error = %v, want explicit stale-data error", err)
 	}
 }
 

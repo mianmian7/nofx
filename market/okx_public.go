@@ -3,6 +3,7 @@ package market
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"sort"
@@ -22,6 +23,14 @@ const (
 	okxPublicFundingHistoryPath = "/api/v5/public/funding-rate-history"
 	okxPublicOpenInterestPath   = "/api/v5/public/open-interest"
 	okxPublicMarkPricePath      = "/api/v5/public/mark-price"
+	okxPublicHistoryMarkPath    = "/api/v5/market/history-mark-price-candles"
+)
+
+const (
+	okxFundingHistoryPageLimit = 100
+	okxFundingHistoryMaxPages  = 100
+	okxMarkCandlePageLimit     = 100
+	okxMarkCandleMaxPages      = 100
 )
 
 // OKXMarketDataProvider reads public OKX USDT perpetual market data. It does
@@ -179,10 +188,10 @@ func (provider *OKXMarketDataProvider) GetDepth(symbol string, limit int) (*Dept
 		return nil, err
 	}
 	var books []struct {
-		Asks [][]string `json:"asks"`
-		Bids [][]string `json:"bids"`
-		Ts   string     `json:"ts"`
-		Seq  string     `json:"seqId"`
+		Asks [][]string      `json:"asks"`
+		Bids [][]string      `json:"bids"`
+		Ts   json.RawMessage `json:"ts"`
+		Seq  json.RawMessage `json:"seqId"`
 	}
 	if err := decodePublicEnvelope(body, "OKX", &books); err != nil {
 		return nil, err
@@ -191,9 +200,9 @@ func (provider *OKXMarketDataProvider) GetDepth(symbol string, limit int) (*Dept
 		return nil, fmt.Errorf("OKX returned no order book for %s", symbol)
 	}
 	return &DepthSnapshot{
-		LastUpdateID:    parseOptionalInt64(books[0].Seq),
-		EventTime:       parseOptionalInt64(books[0].Ts),
-		TransactionTime: parseOptionalInt64(books[0].Ts),
+		LastUpdateID:    parseOptionalRawInt64(books[0].Seq),
+		EventTime:       parseOptionalRawInt64(books[0].Ts),
+		TransactionTime: parseOptionalRawInt64(books[0].Ts),
 		Bids:            normalizeDepthLevels(books[0].Bids),
 		Asks:            normalizeDepthLevels(books[0].Asks),
 	}, nil
@@ -221,17 +230,28 @@ func (provider *OKXMarketDataProvider) GetFundingSnapshot(symbol string) (*Fundi
 	if err != nil {
 		return nil, err
 	}
-	markPrice := 0.0
-	if markBody, markErr := provider.httpClient.get(okxPublicMarkPricePath, url.Values{
+	markBody, markErr := provider.httpClient.get(okxPublicMarkPricePath, url.Values{
 		"instType": {"SWAP"},
 		"instId":   {instID},
-	}); markErr == nil {
-		var marks []struct {
-			MarkPrice string `json:"markPx"`
+	})
+	if markErr != nil {
+		return nil, fmt.Errorf("OKX funding mark price for %s: %w", symbol, markErr)
+	}
+	var marks []struct {
+		MarkPrice string `json:"markPx"`
+	}
+	if err := decodePublicEnvelope(markBody, "OKX", &marks); err != nil {
+		return nil, fmt.Errorf("OKX funding mark price for %s: %w", symbol, err)
+	}
+	if len(marks) == 0 {
+		return nil, fmt.Errorf("OKX returned no mark price for %s", symbol)
+	}
+	markPrice, err := parsePublicFloat(marks[0].MarkPrice, "OKX mark price")
+	if err != nil || !validOKXMarkPrice(markPrice) {
+		if err != nil {
+			return nil, fmt.Errorf("invalid OKX mark price for %s: %w", symbol, err)
 		}
-		if decodePublicEnvelope(markBody, "OKX", &marks) == nil && len(marks) > 0 {
-			markPrice, _ = parsePublicFloat(marks[0].MarkPrice, "OKX mark price")
-		}
+		return nil, fmt.Errorf("invalid OKX mark price for %s: %.8f", symbol, markPrice)
 	}
 	return &FundingSnapshot{
 		Symbol:          provider.NormalizeSymbol(symbol),
@@ -243,39 +263,174 @@ func (provider *OKXMarketDataProvider) GetFundingSnapshot(symbol string) (*Fundi
 }
 
 func (provider *OKXMarketDataProvider) GetFundingHistory(symbol string, startTime, endTime int64) ([]FundingEvent, error) {
-	body, err := provider.httpClient.get(okxPublicFundingHistoryPath, url.Values{
-		"instId": {provider.exchangeSymbol(symbol)},
-		"limit":  {"100"},
-	})
-	if err != nil {
-		return nil, err
+	canonicalSymbol := provider.NormalizeSymbol(symbol)
+	instID := provider.exchangeSymbol(symbol)
+	type fundingHistoryRow struct {
+		InstID      string          `json:"instId"`
+		FundingRate json.RawMessage `json:"fundingRate"`
+		FundingTime json.RawMessage `json:"fundingTime"`
 	}
-	var rows []struct {
-		InstID      string `json:"instId"`
-		FundingRate string `json:"fundingRate"`
-		FundingTime string `json:"fundingTime"`
+
+	rows := make([]fundingHistoryRow, 0, okxFundingHistoryPageLimit)
+	var after int64
+	for page := 0; page < okxFundingHistoryMaxPages; page++ {
+		query := url.Values{
+			"instId": {instID},
+			"limit":  {strconv.Itoa(okxFundingHistoryPageLimit)},
+		}
+		if after > 0 {
+			query.Set("after", strconv.FormatInt(after, 10))
+		}
+		body, err := provider.httpClient.get(okxPublicFundingHistoryPath, query)
+		if err != nil {
+			return nil, fmt.Errorf("OKX funding history request for %s: %w", canonicalSymbol, err)
+		}
+		var pageRows []fundingHistoryRow
+		if err := decodePublicEnvelope(body, "OKX", &pageRows); err != nil {
+			return nil, fmt.Errorf("OKX funding history response for %s: %w", canonicalSymbol, err)
+		}
+		if len(pageRows) == 0 {
+			break
+		}
+		var oldest int64
+		for _, row := range pageRows {
+			fundingTime, parseErr := parseRawInt64(row.FundingTime, "OKX funding history time")
+			if parseErr != nil {
+				return nil, fmt.Errorf("OKX funding history %s has invalid funding time: %w", canonicalSymbol, parseErr)
+			}
+			if fundingTime <= 0 {
+				return nil, fmt.Errorf("OKX funding history returned invalid funding time %d for %s", fundingTime, canonicalSymbol)
+			}
+			if oldest == 0 || fundingTime < oldest {
+				oldest = fundingTime
+			}
+		}
+		if after > 0 && oldest >= after {
+			return nil, fmt.Errorf("OKX funding history pagination made no progress for %s after %d", canonicalSymbol, after)
+		}
+		rows = append(rows, pageRows...)
+		if startTime > 0 && oldest <= startTime {
+			break
+		}
+		if len(pageRows) < okxFundingHistoryPageLimit {
+			break
+		}
+		if oldest == 0 {
+			break
+		}
+		after = oldest
 	}
-	if err := decodePublicEnvelope(body, "OKX", &rows); err != nil {
-		return nil, err
-	}
+
 	events := make([]FundingEvent, 0, len(rows))
 	for _, row := range rows {
-		fundingTime := parseOptionalInt64(row.FundingTime)
+		fundingTime, parseErr := parseRawInt64(row.FundingTime, "OKX funding history time")
+		if parseErr != nil {
+			return nil, fmt.Errorf("OKX funding history %s at invalid time: %w", canonicalSymbol, parseErr)
+		}
 		if (startTime > 0 && fundingTime < startTime) || (endTime > 0 && fundingTime > endTime) {
 			continue
 		}
-		rate, parseErr := parsePublicFloat(row.FundingRate, "OKX funding history rate")
+		rate, parseErr := parseRawFloat(row.FundingRate, "OKX funding history rate")
 		if parseErr != nil {
-			return nil, parseErr
+			return nil, fmt.Errorf("OKX funding history %s at %d: %w", canonicalSymbol, fundingTime, parseErr)
 		}
 		events = append(events, FundingEvent{
-			Symbol:      provider.NormalizeSymbol(symbol),
+			Symbol:      canonicalSymbol,
 			Rate:        rate,
 			FundingTime: fundingTime,
 		})
 	}
 	sort.SliceStable(events, func(left, right int) bool { return events[left].FundingTime < events[right].FundingTime })
+	for index := range events {
+		markPrice, markErr := provider.getHistoricalMarkPrice(events[index].Symbol, events[index].FundingTime)
+		if markErr != nil {
+			return nil, markErr
+		}
+		events[index].MarkPrice = markPrice
+	}
 	return events, nil
+}
+
+func (provider *OKXMarketDataProvider) getHistoricalMarkPrice(symbol string, fundingTime int64) (float64, error) {
+	if fundingTime <= 0 {
+		return 0, fmt.Errorf("OKX historical mark price for %s at %d: invalid funding time", symbol, fundingTime)
+	}
+
+	// OKX's `after` cursor returns candles older than the requested timestamp.
+	// Adding one millisecond keeps a candle whose opening timestamp equals the
+	// funding timestamp eligible for selection.
+	after := fundingTime
+	if after < math.MaxInt64 {
+		after++
+	}
+	var (
+		found         bool
+		selectedTime  int64
+		selectedPrice float64
+	)
+	for page := 0; page < okxMarkCandleMaxPages; page++ {
+		query := url.Values{
+			"instId": {provider.exchangeSymbol(symbol)},
+			"bar":    {"1m"},
+			"limit":  {strconv.Itoa(okxMarkCandlePageLimit)},
+			"after":  {strconv.FormatInt(after, 10)},
+		}
+		body, err := provider.httpClient.get(okxPublicHistoryMarkPath, query)
+		if err != nil {
+			return 0, fmt.Errorf("OKX historical mark price for %s at %d: request failed: %w", symbol, fundingTime, err)
+		}
+		var rows [][]json.RawMessage
+		if err := decodePublicEnvelope(body, "OKX", &rows); err != nil {
+			return 0, fmt.Errorf("OKX historical mark price for %s at %d: decode failed: %w", symbol, fundingTime, err)
+		}
+		if len(rows) == 0 {
+			break
+		}
+
+		oldest := int64(0)
+		for rowIndex, row := range rows {
+			if len(row) < 5 {
+				return 0, fmt.Errorf("OKX historical mark price for %s at %d: candle %d has %d fields, want at least 5", symbol, fundingTime, rowIndex, len(row))
+			}
+			candleTime, parseErr := parseRawInt64(row[0], "OKX historical mark candle timestamp")
+			if parseErr != nil {
+				return 0, fmt.Errorf("OKX historical mark price for %s at %d: %w", symbol, fundingTime, parseErr)
+			}
+			if candleTime <= 0 {
+				return 0, fmt.Errorf("OKX historical mark price for %s at %d: invalid candle timestamp %d", symbol, fundingTime, candleTime)
+			}
+			markPrice, parseErr := parseRawFloat(row[4], "OKX historical mark candle close")
+			if parseErr != nil {
+				return 0, fmt.Errorf("OKX historical mark price for %s at %d: %w", symbol, fundingTime, parseErr)
+			}
+			if !validOKXMarkPrice(markPrice) {
+				return 0, fmt.Errorf("OKX historical mark price for %s at %d: invalid candle price %.8f", symbol, fundingTime, markPrice)
+			}
+			if oldest == 0 || candleTime < oldest {
+				oldest = candleTime
+			}
+			if candleTime <= fundingTime && (!found || candleTime > selectedTime) {
+				found = true
+				selectedTime = candleTime
+				selectedPrice = markPrice
+			}
+		}
+		if found {
+			return selectedPrice, nil
+		}
+		if len(rows) < okxMarkCandlePageLimit || oldest == 0 || oldest >= after {
+			break
+		}
+		after = oldest
+	}
+	if !found {
+		return 0, fmt.Errorf("OKX historical mark price for %s at %d: no valid candle at or before funding time", symbol, fundingTime)
+	}
+	return selectedPrice, nil
+}
+
+func validOKXMarkPrice(value float64) bool {
+	return value > 0 && !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
 func (provider *OKXMarketDataProvider) GetOpenInterest(symbol string) (*OIData, error) {

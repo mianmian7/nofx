@@ -9,13 +9,15 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
 // CoinankClient coinank openapi url and apikey
 type CoinankClient struct {
-	Url    string
-	Apikey string
+	Url        string
+	Apikey     string
+	httpClient *http.Client
 }
 
 // CoinankResponse coinank openapi common response
@@ -39,7 +41,14 @@ var HttpError error = errors.New("http client error")
 
 // NewCoinankClient new coinank http client for coinank openapi
 func NewCoinankClient(url, apikey string) *CoinankClient {
-	return &CoinankClient{url, apikey}
+	return &CoinankClient{Url: url, Apikey: apikey, httpClient: client}
+}
+
+func (c *CoinankClient) doer() *http.Client {
+	if c.httpClient != nil {
+		return c.httpClient
+	}
+	return client
 }
 
 // Get coinank openapi get request
@@ -54,11 +63,15 @@ func (c *CoinankClient) Get(ctx context.Context, path string, paramsMap map[stri
 		return "", err
 	}
 	request.Header.Add("apikey", c.Apikey)
-	resp, err := client.Do(request)
+	resp, err := c.doer().Do(request)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("CoinAnk GET %s failed with HTTP %d: %s", path, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
@@ -79,11 +92,15 @@ func (c *CoinankClient) Post(ctx context.Context, path string, data any) (string
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Add("apikey", c.Apikey)
-	resp, err := client.Do(request)
+	resp, err := c.doer().Do(request)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("CoinAnk POST %s failed with HTTP %d: %s", path, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err

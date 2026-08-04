@@ -1,11 +1,14 @@
 package market
 
 import (
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -93,6 +96,13 @@ func TestOKXProviderParsesMarketDataAndContractSpec(t *testing.T) {
 			writeJSON(responseWriter, `{"code":"0","data":[{"instId":"BTC-USDT-SWAP","fundingRate":"0.0012","nextFundingTime":"4000","ts":"3000"}]}`)
 			return
 		}
+		if request.URL.Path == "/api/v5/public/mark-price" {
+			if query.Get("instType") != "SWAP" || query.Get("instId") != "BTC-USDT-SWAP" {
+				t.Fatalf("unexpected OKX mark price query: %s", request.URL.RawQuery)
+			}
+			writeJSON(responseWriter, `{"code":"0","data":[{"instId":"BTC-USDT-SWAP","markPx":"20.8"}]}`)
+			return
+		}
 		if request.URL.Path == "/api/v5/public/open-interest" {
 			writeJSON(responseWriter, `{"code":"0","data":[{"oi":"100","oiCcy":"2.5","oiUsd":"50000","ts":"3000"}]}`)
 			return
@@ -132,6 +142,25 @@ func TestOKXProviderParsesMarketDataAndContractSpec(t *testing.T) {
 	}
 }
 
+func TestOKXProviderParsesNumericDepthSequence(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/v5/market/books" {
+			t.Fatalf("unexpected OKX path %s", request.URL.Path)
+		}
+		writeJSON(responseWriter, `{"code":"0","data":[{"asks":[["21","2","0","3"]],"bids":[["20","1","0","2"]],"ts":3000,"seqId":7}]}`)
+	}))
+	defer server.Close()
+
+	provider := NewOKXMarketDataProviderWithHTTPClient(server.URL, server.Client())
+	depth, err := provider.GetDepth("BTCUSDT", 20)
+	if err != nil {
+		t.Fatalf("OKX GetDepth returned error for numeric sequence fields: %v", err)
+	}
+	if depth.LastUpdateID != 7 || depth.EventTime != 3000 || depth.TransactionTime != 3000 {
+		t.Fatalf("unexpected numeric OKX depth metadata: %#v", depth)
+	}
+}
+
 func TestBitgetProviderParsesMarketDataAndContractSpec(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
 		query := request.URL.Query()
@@ -147,7 +176,40 @@ func TestBitgetProviderParsesMarketDataAndContractSpec(t *testing.T) {
 			return
 		}
 		if request.URL.Path == "/api/v2/mix/market/current-fund-rate" {
-			writeJSON(responseWriter, `{"code":"00000","data":[{"symbol":"BTCUSDT","fundingRate":"0.002","nextFundingTime":"4000","ts":"3000"}]}`)
+			if query.Get("symbol") != "BTCUSDT" || query.Get("productType") != "USDT-FUTURES" {
+				t.Fatalf("unexpected Bitget funding snapshot query: %s", request.URL.RawQuery)
+			}
+			writeJSON(responseWriter, `{"code":"00000","data":[{"symbol":"BTCUSDT","fundingRate":"0.002","nextUpdate":"4000"}]}`)
+			return
+		}
+		if request.URL.Path == "/api/v2/mix/market/symbol-price" {
+			if query.Get("symbol") != "BTCUSDT" || query.Get("productType") != "USDT-FUTURES" {
+				t.Fatalf("unexpected Bitget symbol-price query: %s", request.URL.RawQuery)
+			}
+			writeJSON(responseWriter, `{"code":"00000","data":[{"symbol":"BTCUSDT","price":"805.2","indexPrice":"804.0728898231652706","markPrice":"805.17","ts":"3000"}]}`)
+			return
+		}
+		if request.URL.Path == "/api/v2/mix/market/history-fund-rate" {
+			if query.Get("symbol") != "BTCUSDT" || query.Get("productType") != "USDT-FUTURES" || query.Get("pageSize") != "100" || query.Get("pageNo") != "1" {
+				t.Fatalf("unexpected Bitget funding history query: %s", request.URL.RawQuery)
+			}
+			writeJSON(responseWriter, `{"code":"00000","data":[{"symbol":"BTCUSDT","fundingRate":"0.001","fundingTime":"2000000"},{"symbol":"BTCUSDT","fundingRate":"0.002","fundingTime":"1000000"}]}`)
+			return
+		}
+		if request.URL.Path == "/api/v2/mix/market/history-mark-candles" {
+			if query.Get("symbol") != "BTCUSDT" || query.Get("productType") != "USDT-FUTURES" || query.Get("granularity") != "1m" || query.Get("limit") != "5" {
+				t.Fatalf("unexpected Bitget historical mark query: %s", request.URL.RawQuery)
+			}
+			fundingTime, parseErr := strconv.ParseInt(query.Get("endTime"), 10, 64)
+			if parseErr != nil {
+				t.Fatalf("invalid historical mark end time: %v", parseErr)
+			}
+			fundingTime -= time.Minute.Milliseconds()
+			closePrice := "805.17"
+			if fundingTime == 2000000 {
+				closePrice = "806.17"
+			}
+			writeJSON(responseWriter, `{"code":"00000","data":[["`+strconv.FormatInt(fundingTime, 10)+`","805","806","804","`+closePrice+`","0","0"]]}`)
 			return
 		}
 		if request.URL.Path == "/api/v2/mix/market/open-interest" {
@@ -175,8 +237,15 @@ func TestBitgetProviderParsesMarketDataAndContractSpec(t *testing.T) {
 		t.Fatalf("unexpected Bitget depth: %#v, error=%v", depth, err)
 	}
 	funding, err := provider.GetFundingSnapshot("BTCUSDT")
-	if err != nil || funding.Rate != 0.002 || funding.NextFundingTime != 4000 {
+	if err != nil || funding.Rate != 0.002 || funding.MarkPrice != 805.17 || funding.IndexPrice != 804.0728898231652706 || funding.NextFundingTime != 4000 || funding.Time != 3000 {
 		t.Fatalf("unexpected Bitget funding: %#v, error=%v", funding, err)
+	}
+	history, err := provider.GetFundingHistory("BTCUSDT", 1000000, 2000000)
+	if err != nil {
+		t.Fatalf("Bitget GetFundingHistory returned error: %v", err)
+	}
+	if len(history) != 2 || history[0].FundingTime != 1000000 || history[0].MarkPrice != 805.17 || history[1].FundingTime != 2000000 || history[1].MarkPrice != 806.17 {
+		t.Fatalf("unexpected Bitget funding history: %#v", history)
 	}
 	oi, err := provider.GetOpenInterest("BTCUSDT")
 	if err != nil || oi.Latest != 123 || oi.NotionalUSD != 456000 {
@@ -225,6 +294,64 @@ func TestNativePublicHTTPClientCachesNormalReadsButNotFreshReads(t *testing.T) {
 	}
 	if requestCount != 2 {
 		t.Fatalf("fresh request count = %d, want 2", requestCount)
+	}
+}
+
+func TestNativePublicHTTPRetriesTransientNetworkThenSucceeds(t *testing.T) {
+	var calls atomic.Int32
+	client := newNativePublicHTTPClient("https://native.test", &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if calls.Add(1) == 1 {
+			return nil, errors.New("temporary TLS/network failure")
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"code":"0","data":[]}`)),
+			Header:     make(http.Header),
+		}, nil
+	})})
+	if _, err := client.get("/api/v5/market/ticker", url.Values{"instId": {"BTC-USDT-SWAP"}}); err != nil {
+		t.Fatalf("native retry error = %v", err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("native request calls = %d, want one retry", calls.Load())
+	}
+}
+
+func TestNativePublicHTTPDoesNotRetryClientErrors(t *testing.T) {
+	var calls atomic.Int32
+	client := newNativePublicHTTPClient("https://native.test", &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Body:       io.NopCloser(strings.NewReader(`bad symbol`)),
+			Header:     make(http.Header),
+		}, nil
+	})})
+	if _, err := client.get("/api/v5/market/ticker", url.Values{"instId": {"BAD"}}); err == nil || !strings.Contains(err.Error(), "HTTP 400") {
+		t.Fatalf("native client error = %v, want HTTP 400", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("native client-error calls = %d, want no retry", calls.Load())
+	}
+}
+
+func TestOKXFundingSnapshotReportsMarkRequestFailure(t *testing.T) {
+	provider := NewOKXMarketDataProviderWithHTTPClient("https://okx.test", &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path == okxPublicFundingPath {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"code":"0","data":[{"fundingRate":"0.001","nextFundingTime":"2000","ts":"1000"}]}`)),
+				Header:     make(http.Header),
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusGatewayTimeout,
+			Body:       io.NopCloser(strings.NewReader(`mark endpoint timeout`)),
+			Header:     make(http.Header),
+		}, nil
+	})})
+	if _, err := provider.GetFundingSnapshot("BTCUSDT"); err == nil || !strings.Contains(err.Error(), "mark price") || !strings.Contains(err.Error(), "HTTP 504") {
+		t.Fatalf("funding snapshot error = %v, want mark-price HTTP diagnostic", err)
 	}
 }
 

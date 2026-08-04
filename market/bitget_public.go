@@ -3,6 +3,7 @@ package market
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"sort"
@@ -21,6 +22,8 @@ const (
 	bitgetPublicContractsPath      = "/api/v2/mix/market/contracts"
 	bitgetPublicFundingPath        = "/api/v2/mix/market/current-fund-rate"
 	bitgetPublicFundingHistoryPath = "/api/v2/mix/market/history-fund-rate"
+	bitgetPublicSymbolPricePath    = "/api/v2/mix/market/symbol-price"
+	bitgetPublicHistoryMarkPath    = "/api/v2/mix/market/history-mark-candles"
 	bitgetPublicOpenInterestPath   = "/api/v2/mix/market/open-interest"
 )
 
@@ -211,10 +214,11 @@ func (provider *BitgetMarketDataProvider) GetFundingSnapshot(symbol string) (*Fu
 		return nil, err
 	}
 	var rows []struct {
-		Symbol      string `json:"symbol"`
-		FundingRate string `json:"fundingRate"`
-		NextTime    string `json:"nextFundingTime"`
-		Ts          string `json:"ts"`
+		Symbol          string          `json:"symbol"`
+		FundingRate     json.RawMessage `json:"fundingRate"`
+		NextUpdate      json.RawMessage `json:"nextUpdate"`
+		NextFundingTime json.RawMessage `json:"nextFundingTime"`
+		Ts              json.RawMessage `json:"ts"`
 	}
 	if err := decodePublicEnvelope(body, "Bitget", &rows); err != nil {
 		return nil, err
@@ -222,42 +226,104 @@ func (provider *BitgetMarketDataProvider) GetFundingSnapshot(symbol string) (*Fu
 	if len(rows) == 0 {
 		return nil, fmt.Errorf("Bitget returned no funding rate for %s", symbol)
 	}
-	rate, err := parsePublicFloat(rows[0].FundingRate, "Bitget funding rate")
+	rate, err := parseRawFloat(rows[0].FundingRate, "Bitget funding rate")
 	if err != nil {
 		return nil, err
 	}
+	nextFundingTime := parseOptionalRawInt64(rows[0].NextUpdate)
+	if nextFundingTime == 0 {
+		nextFundingTime = parseOptionalRawInt64(rows[0].NextFundingTime)
+	}
+	fundingTime := parseOptionalRawInt64(rows[0].Ts)
+
+	priceBody, err := provider.httpClient.get(bitgetPublicSymbolPricePath, url.Values{
+		"symbol":      {provider.exchangeSymbol(symbol)},
+		"productType": {bitgetPublicProductType},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("Bitget funding %s symbol price: %w", symbol, err)
+	}
+	var prices []struct {
+		Symbol     string          `json:"symbol"`
+		MarkPrice  json.RawMessage `json:"markPrice"`
+		IndexPrice json.RawMessage `json:"indexPrice"`
+		Ts         json.RawMessage `json:"ts"`
+	}
+	if err := decodePublicEnvelope(priceBody, "Bitget", &prices); err != nil {
+		return nil, fmt.Errorf("Bitget funding %s symbol price: %w", symbol, err)
+	}
+	if len(prices) == 0 {
+		return nil, fmt.Errorf("Bitget returned no symbol price for %s", symbol)
+	}
+	markPrice, err := parseRawFloat(prices[0].MarkPrice, "Bitget mark price")
+	if err != nil {
+		return nil, fmt.Errorf("invalid Bitget mark price for %s: %w", symbol, err)
+	}
+	if !validBitgetPrice(markPrice) {
+		return nil, fmt.Errorf("invalid Bitget mark price for %s: %.8f", symbol, markPrice)
+	}
+	indexPrice, err := parseRawFloat(prices[0].IndexPrice, "Bitget index price")
+	if err != nil {
+		return nil, fmt.Errorf("invalid Bitget index price for %s: %w", symbol, err)
+	}
+	if !validBitgetPrice(indexPrice) {
+		return nil, fmt.Errorf("invalid Bitget index price for %s: %.8f", symbol, indexPrice)
+	}
+	if fundingTime == 0 {
+		if priceTime := parseOptionalRawInt64(prices[0].Ts); priceTime > 0 {
+			fundingTime = priceTime
+		}
+	}
 	return &FundingSnapshot{
 		Symbol:          provider.NormalizeSymbol(symbol),
+		MarkPrice:       markPrice,
+		IndexPrice:      indexPrice,
 		Rate:            rate,
-		NextFundingTime: parseOptionalInt64(rows[0].NextTime),
-		Time:            parseOptionalInt64(rows[0].Ts),
+		NextFundingTime: nextFundingTime,
+		Time:            fundingTime,
 	}, nil
 }
 
 func (provider *BitgetMarketDataProvider) GetFundingHistory(symbol string, startTime, endTime int64) ([]FundingEvent, error) {
-	body, err := provider.httpClient.get(bitgetPublicFundingHistoryPath, url.Values{
-		"symbol":      {provider.exchangeSymbol(symbol)},
-		"productType": {bitgetPublicProductType},
-		"limit":       {"100"},
-	})
-	if err != nil {
-		return nil, err
+	type fundingHistoryRow struct {
+		Symbol      string          `json:"symbol"`
+		FundingRate json.RawMessage `json:"fundingRate"`
+		FundingTime json.RawMessage `json:"fundingTime"`
 	}
-	var rows []struct {
-		Symbol      string `json:"symbol"`
-		FundingRate string `json:"fundingRate"`
-		FundingTime string `json:"fundingTime"`
-	}
-	if err := decodePublicEnvelope(body, "Bitget", &rows); err != nil {
-		return nil, err
+	const pageSize = 100
+	rows := make([]fundingHistoryRow, 0, pageSize)
+	for pageNo := 1; ; pageNo++ {
+		body, err := provider.httpClient.get(bitgetPublicFundingHistoryPath, url.Values{
+			"symbol":      {provider.exchangeSymbol(symbol)},
+			"productType": {bitgetPublicProductType},
+			"pageSize":    {strconv.Itoa(pageSize)},
+			"pageNo":      {strconv.Itoa(pageNo)},
+		})
+		if err != nil {
+			return nil, err
+		}
+		var pageRows []fundingHistoryRow
+		if err := decodePublicEnvelope(body, "Bitget", &pageRows); err != nil {
+			return nil, err
+		}
+		rows = append(rows, pageRows...)
+		if len(pageRows) < pageSize {
+			break
+		}
 	}
 	events := make([]FundingEvent, 0, len(rows))
 	for _, row := range rows {
-		fundingTime := parseOptionalInt64(row.FundingTime)
+		fundingTime, parseErr := parseRawInt64(row.FundingTime, "Bitget funding history time")
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		if fundingTime <= 0 {
+			return nil, fmt.Errorf("Bitget funding history returned invalid funding time %d for %s", fundingTime, symbol)
+		}
 		if (startTime > 0 && fundingTime < startTime) || (endTime > 0 && fundingTime > endTime) {
 			continue
 		}
-		rate, parseErr := parsePublicFloat(row.FundingRate, "Bitget funding history rate")
+		rate, parseErr := parseRawFloat(row.FundingRate, "Bitget funding history rate")
 		if parseErr != nil {
 			return nil, parseErr
 		}
@@ -268,7 +334,75 @@ func (provider *BitgetMarketDataProvider) GetFundingHistory(symbol string, start
 		})
 	}
 	sort.SliceStable(events, func(left, right int) bool { return events[left].FundingTime < events[right].FundingTime })
+	for index := range events {
+		markPrice, markErr := provider.getHistoricalMarkPrice(events[index].Symbol, events[index].FundingTime)
+		if markErr != nil {
+			return nil, fmt.Errorf("Bitget funding history %s at %d: %w", symbol, events[index].FundingTime, markErr)
+		}
+		events[index].MarkPrice = markPrice
+	}
 	return events, nil
+}
+
+func (provider *BitgetMarketDataProvider) getHistoricalMarkPrice(symbol string, fundingTime int64) (float64, error) {
+	const candleDuration = time.Minute
+	window := candleDuration.Milliseconds()
+	startTime := fundingTime - window
+	if startTime < 0 {
+		startTime = 0
+	}
+	body, err := provider.httpClient.get(bitgetPublicHistoryMarkPath, url.Values{
+		"symbol":      {provider.exchangeSymbol(symbol)},
+		"productType": {bitgetPublicProductType},
+		"granularity": {"1m"},
+		"startTime":   {strconv.FormatInt(startTime, 10)},
+		"endTime":     {strconv.FormatInt(fundingTime+window, 10)},
+		"limit":       {"5"},
+	})
+	if err != nil {
+		return 0, fmt.Errorf("request historical mark candles: %w", err)
+	}
+	var rows [][]json.RawMessage
+	if err := decodePublicEnvelope(body, "Bitget", &rows); err != nil {
+		return 0, fmt.Errorf("decode historical mark candles: %w", err)
+	}
+	var (
+		found         bool
+		selectedOpen  int64
+		selectedPrice float64
+	)
+	for rowIndex, row := range rows {
+		if len(row) < 5 {
+			return 0, fmt.Errorf("historical mark candle %d has %d fields, want at least 5", rowIndex, len(row))
+		}
+		openTime, parseErr := parseRawInt64(row[0], "Bitget historical mark candle timestamp")
+		if parseErr != nil {
+			return 0, parseErr
+		}
+		if openTime > fundingTime {
+			continue
+		}
+		markPrice, parseErr := parseRawFloat(row[4], "Bitget historical mark candle close")
+		if parseErr != nil {
+			return 0, parseErr
+		}
+		if !validBitgetPrice(markPrice) {
+			return 0, fmt.Errorf("historical mark candle at %d has invalid mark price %.8f", openTime, markPrice)
+		}
+		if !found || openTime > selectedOpen {
+			found = true
+			selectedOpen = openTime
+			selectedPrice = markPrice
+		}
+	}
+	if !found {
+		return 0, fmt.Errorf("no historical mark candle covering funding time %d", fundingTime)
+	}
+	return selectedPrice, nil
+}
+
+func validBitgetPrice(value float64) bool {
+	return value > 0 && !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
 func (provider *BitgetMarketDataProvider) GetOpenInterest(symbol string) (*OIData, error) {
