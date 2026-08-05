@@ -32,6 +32,17 @@ interface ComparisonChartProps {
   traders: CompetitionTraderData[]
 }
 
+export type TraderEquityHistories = Record<string, any[]>
+
+export function mapEquityHistoriesByTraderId(
+  traders: CompetitionTraderData[],
+  histories: TraderEquityHistories
+): TraderEquityHistories {
+  return Object.fromEntries(
+    traders.map((trader) => [trader.trader_id, histories[trader.trader_id] || []])
+  )
+}
+
 export function ComparisonChart({ traders }: ComparisonChartProps) {
   const { language } = useLanguage()
   const [selectedPeriod, setSelectedPeriod] = useState('7d') // Default to 7 days
@@ -45,17 +56,17 @@ export function ComparisonChart({ traders }: ComparisonChartProps) {
     .sort()
     .join(',')
 
-  const { data: allTraderHistories, isLoading } = useSWR(
+  const { data: allTraderHistories, isLoading } = useSWR<TraderEquityHistories>(
     traders.length > 0 ? `equity-histories-${tradersKey}-${selectedHours}` : null,
     async () => {
       console.log('Fetching equity history with hours:', selectedHours)
       const traderIds = traders.map((trader) => trader.trader_id)
       const batchData = await api.getEquityHistoryBatch(traderIds, selectedHours)
       console.log('Received data points:', Object.values(batchData.histories || {}).map((h: any) => h?.length))
-      return traders.map((trader) => {
-        const history = batchData.histories?.[trader.trader_id] || []
+      const histories = mapEquityHistoriesByTraderId(traders, batchData.histories || {})
 
-        // If backend doesn't return total_pnl_pct, calculate it from equity
+      // If backend doesn't return total_pnl_pct, calculate it from equity
+      Object.values(histories).forEach((history) => {
         if (history.length > 0 && history[0].total_pnl_pct === undefined) {
           const initialEquity = history[0].total_equity
           history.forEach((point: any) => {
@@ -64,9 +75,9 @@ export function ComparisonChart({ traders }: ComparisonChartProps) {
               : 0
           })
         }
-
-        return history
       })
+
+      return histories
     },
     {
       refreshInterval: 30000,
@@ -76,15 +87,12 @@ export function ComparisonChart({ traders }: ComparisonChartProps) {
     }
   )
 
-  const traderHistories = useMemo(() => {
-    if (!allTraderHistories) {
-      return traders.map(() => ({ data: undefined }))
-    }
-    return allTraderHistories.map((data) => ({ data }))
-  }, [allTraderHistories, traders.length])
-
   const combinedData = useMemo(() => {
-    const allLoaded = traderHistories.every((h) => h.data)
+    if (!allTraderHistories) return []
+
+    const allLoaded = traders.every((trader) =>
+      Object.prototype.hasOwnProperty.call(allTraderHistories, trader.trader_id)
+    )
     if (!allLoaded) return []
 
     const timestampMap = new Map<
@@ -103,11 +111,11 @@ export function ComparisonChart({ traders }: ComparisonChartProps) {
       return date.toISOString()
     }
 
-    traderHistories.forEach((history, index) => {
-      const trader = traders[index]
-      if (!history.data) return
+    traders.forEach((trader) => {
+      const history = allTraderHistories[trader.trader_id]
+      if (!history) return
 
-      history.data.forEach((point: any) => {
+      history.forEach((point: any) => {
         // Normalize timestamp to nearest minute so different traders' data aligns
         const normalizedTs = normalizeTimestamp(point.timestamp)
 
@@ -500,13 +508,19 @@ export function ComparisonChart({ traders }: ComparisonChartProps) {
 
                 return (
                   <div style={{ display: 'flex', justifyContent: 'center', gap: '20px', flexWrap: 'wrap' }}>
-                    {filteredPayload.map((entry: any, index: number) => {
-                      const trader = traders.find((t) => t.trader_name === entry.value)
+                    {filteredPayload.map((entry: any) => {
+                      const dataKey = String(entry.dataKey || '')
+                      const traderId = dataKey.endsWith('_pnl_pct')
+                        ? dataKey.slice(0, -'_pnl_pct'.length)
+                        : ''
+                      const trader =
+                        traders.find((t) => t.trader_id === traderId) ||
+                        traders.find((t) => t.trader_name === entry.value)
                       // Find this trader's last available PnL from traderStats
                       const traderStat = traderStats.find((t) => t.trader_id === trader?.trader_id)
                       const pnl = traderStat?.currentPnl || 0
                       return (
-                        <div key={`legend-${index}`} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <div key={`legend-${trader?.trader_id || dataKey}`} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                           <div style={{
                             width: '8px',
                             height: '8px',

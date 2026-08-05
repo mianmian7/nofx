@@ -60,10 +60,17 @@ export const traderApi = {
     if (!result.success) throw new Error('Failed to delete trader')
   },
 
-  async startTrader(traderId: string): Promise<void> {
+  async startTrader(
+    traderId: string,
+    options: { liveConfirm?: boolean } = {}
+  ): Promise<void> {
     const result = await httpClient.request(
       `${API_BASE}/traders/${traderId}/start`,
-      { method: 'POST', timeout: TRADER_LIFECYCLE_TIMEOUT_MS }
+      {
+        method: 'POST',
+        params: options.liveConfirm ? { live_confirm: 'true' } : undefined,
+        timeout: TRADER_LIFECYCLE_TIMEOUT_MS,
+      }
     )
     if (!result.success) {
       throwApiError(

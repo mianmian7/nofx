@@ -245,6 +245,7 @@ export interface TraderInfo {
   trader_id: string
   trader_name: string
   ai_model: string
+  primary_model_name?: string
   exchange_id?: string
   exchange_type?: string
   is_running?: boolean
@@ -298,6 +299,7 @@ export interface TraderConfigData {
   trader_id?: string
   trader_name: string
   ai_model: string
+  primary_model_name?: string
   exchange_id: string
   exchange_type?: string
   strategy_id?: string // Strategy ID

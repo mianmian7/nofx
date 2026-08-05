@@ -282,13 +282,25 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
     }
   }
 
-  const handleToggleTrader = async (traderId: string, running: boolean) => {
+  const handleToggleTrader = async (
+    traderId: string,
+    running: boolean,
+    executionMode?: TraderInfo['execution_mode']
+  ) => {
     try {
       if (running) {
         await api.stopTrader(traderId)
         toast.success(t('aiTradersToast.stopped', language))
       } else {
-        await api.startTrader(traderId)
+        const liveConfirm = executionMode === 'live'
+        if (
+          liveConfirm &&
+          !(await confirmToast(t('confirmStartLiveTrader', language)))
+        ) {
+          return
+        }
+
+        await api.startTrader(traderId, { liveConfirm })
         toast.success(t('aiTradersToast.started', language))
       }
 

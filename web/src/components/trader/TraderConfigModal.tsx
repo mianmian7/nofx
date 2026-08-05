@@ -35,6 +35,13 @@ export function getAIModelOptionLabel(model: AIModel): string {
     : configName
 }
 
+function getPrimaryModelOptions(model?: AIModel): string[] {
+  if (!model) return []
+  return Array.from(
+    new Set([...(model.modelNames || []), model.customModelName || ''])
+  ).filter(Boolean)
+}
+
 function getStrategyAIConfig(strategy: Strategy) {
   return (
     strategy.config.ai_config ||
@@ -76,6 +83,7 @@ interface FormState {
   trader_id?: string
   trader_name: string
   ai_model: string
+  primary_model_name: string
   exchange_id: string
   strategy_id: string
   is_cross_margin: boolean
@@ -112,6 +120,7 @@ export function TraderConfigModal({
   const [formData, setFormData] = useState<FormState>({
     trader_name: '',
     ai_model: '',
+    primary_model_name: '',
     exchange_id: '',
     strategy_id: '',
     is_cross_margin: true,
@@ -164,8 +173,15 @@ export function TraderConfigModal({
 
   useEffect(() => {
     if (traderData) {
+      const configuredModel = availableModels.find(
+        (model) => model.id === traderData.ai_model
+      )
       setFormData({
         ...traderData,
+        primary_model_name:
+          traderData.primary_model_name ||
+          getPrimaryModelOptions(configuredModel)[0] ||
+          '',
         strategy_id: traderData.strategy_id || '',
         execution_mode: traderData.execution_mode || 'paper',
         initial_balance: traderData.initial_balance || 10000,
@@ -175,9 +191,11 @@ export function TraderConfigModal({
         fallback_ai_model_ids: traderData.fallback_ai_model_ids || [],
       })
     } else if (!isEditMode) {
+      const defaultModel = availableModels[0]
       setFormData({
         trader_name: '',
-        ai_model: availableModels[0]?.id || '',
+        ai_model: defaultModel?.id || '',
+        primary_model_name: getPrimaryModelOptions(defaultModel)[0] || '',
         exchange_id: availableExchanges[0]?.id || '',
         strategy_id: '',
         is_cross_margin: true,
@@ -222,6 +240,7 @@ export function TraderConfigModal({
       const saveData: CreateTraderRequest = {
         name: formData.trader_name,
         ai_model_id: formData.ai_model,
+        primary_model_name: formData.primary_model_name,
         exchange_id: formData.exchange_id,
         strategy_id: formData.strategy_id,
         is_cross_margin: formData.is_cross_margin,
@@ -362,15 +381,22 @@ export function TraderConfigModal({
                   <NofxSelect
                     value={formData.ai_model}
                     onChange={(val) =>
-                      setFormData((previous) => ({
-                        ...previous,
-                        ai_model: val,
-                        fallback_model_names: [],
-                        fallback_ai_model_ids:
-                          previous.fallback_ai_model_ids.filter(
-                            (modelId) => modelId !== val
-                          ),
-                      }))
+                      setFormData((previous) => {
+                        const nextModel = availableModels.find(
+                          (model) => model.id === val
+                        )
+                        return {
+                          ...previous,
+                          ai_model: val,
+                          primary_model_name:
+                            getPrimaryModelOptions(nextModel)[0] || '',
+                          fallback_model_names: [],
+                          fallback_ai_model_ids:
+                            previous.fallback_ai_model_ids.filter(
+                              (modelId) => modelId !== val
+                            ),
+                        }
+                      })
                     }
                     className="w-full px-3 py-2 bg-nofx-bg-lighter border border-nofx-gold/20 rounded text-nofx-text"
                     options={availableModels.map((model) => ({
@@ -391,6 +417,39 @@ export function TraderConfigModal({
                         : ''}
                     </p>
                   )}
+                  {selectedAIModel &&
+                    getPrimaryModelOptions(selectedAIModel).length > 0 && (
+                      <div className="mt-3">
+                        <label className="text-sm text-nofx-text block mb-2">
+                          {language === 'zh'
+                            ? '交易员主模型 *'
+                            : 'Trader primary model *'}
+                        </label>
+                        <NofxSelect
+                          value={
+                            formData.primary_model_name ||
+                            getPrimaryModelOptions(selectedAIModel)[0]
+                          }
+                          onChange={(modelName) =>
+                            setFormData((previous) => ({
+                              ...previous,
+                              primary_model_name: modelName,
+                              fallback_model_names:
+                                previous.fallback_model_names.filter(
+                                  (name) => name !== modelName
+                                ),
+                            }))
+                          }
+                          className="w-full px-3 py-2 bg-nofx-bg-lighter border border-nofx-gold/20 rounded text-nofx-text"
+                          options={getPrimaryModelOptions(selectedAIModel).map(
+                            (modelName) => ({
+                              value: modelName,
+                              label: modelName,
+                            })
+                          )}
+                        />
+                      </div>
+                    )}
                 </div>
                 <div>
                   <label className="text-sm text-nofx-text block mb-2">
@@ -450,7 +509,10 @@ export function TraderConfigModal({
                 </label>
                 <SameAPIModelSelector
                   models={selectedAIModel?.modelNames || []}
-                  primaryModelName={selectedAIModel?.customModelName}
+                  primaryModelName={
+                    formData.primary_model_name ||
+                    selectedAIModel?.customModelName
+                  }
                   selectedModelNames={formData.fallback_model_names}
                   onChange={(modelNames) =>
                     handleInputChange('fallback_model_names', modelNames)

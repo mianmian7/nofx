@@ -33,7 +33,11 @@ interface TradersListProps {
   onTraderSelect?: (traderId: string) => void
   onNavigate: (path: string) => void
   onEditTrader: (traderId: string) => void
-  onToggleTrader: (traderId: string, running: boolean) => void
+  onToggleTrader: (
+    traderId: string,
+    running: boolean,
+    executionMode?: TraderInfo['execution_mode']
+  ) => void
   onToggleCompetition: (traderId: string, currentShowInCompetition: boolean) => void
   onDeleteTrader: (traderId: string) => void
   onToggleTraderAddress: (traderId: string) => void
@@ -193,7 +197,11 @@ function TraderRow({
   onTraderSelect?: (traderId: string) => void
   onNavigate: (path: string) => void
   onEditTrader: (traderId: string) => void
-  onToggleTrader: (traderId: string, running: boolean) => void
+  onToggleTrader: (
+    traderId: string,
+    running: boolean,
+    executionMode?: TraderInfo['execution_mode']
+  ) => void
   onToggleCompetition: (traderId: string, currentShowInCompetition: boolean) => void
   onDeleteTrader: (traderId: string) => void
   onToggleTraderAddress: (traderId: string) => void
@@ -369,7 +377,8 @@ function TraderRow({
             onClick={() =>
               onToggleTrader(
                 trader.trader_id,
-                trader.is_running || false
+                trader.is_running || false,
+                trader.execution_mode
               )
             }
             className="px-2 md:px-3 py-1.5 md:py-2 rounded text-xs md:text-sm font-semibold transition-all hover:scale-105 whitespace-nowrap"

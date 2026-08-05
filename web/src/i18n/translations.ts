@@ -135,6 +135,8 @@ export const translations = {
     modelNotConfigured: 'Selected model is not configured',
     exchangeNotConfigured: 'Selected exchange is not configured',
     confirmDeleteTrader: 'Are you sure you want to delete this trader?',
+    confirmStartLiveTrader:
+      'This is a live trader. Starting it connects to the real exchange and may place real orders. Continue?',
     status: 'Status',
     start: 'Start',
     stop: 'Stop',
@@ -1483,6 +1485,8 @@ export const translations = {
     modelNotConfigured: '所选模型未配置',
     exchangeNotConfigured: '所选交易所未配置',
     confirmDeleteTrader: '确定要删除这个交易员吗？',
+    confirmStartLiveTrader:
+      '这是实盘交易员。启动后会连接真实交易所，并可能产生真实下单。确定继续吗？',
     status: '状态',
     start: '启动',
     stop: '停止',
@@ -2753,6 +2757,8 @@ export const translations = {
     modelNotConfigured: 'Model yang dipilih belum dikonfigurasi',
     exchangeNotConfigured: 'Bursa yang dipilih belum dikonfigurasi',
     confirmDeleteTrader: 'Apakah Anda yakin ingin menghapus trader ini?',
+    confirmStartLiveTrader:
+      'Ini adalah trader live. Memulainya akan terhubung ke bursa nyata dan dapat menempatkan order nyata. Lanjutkan?',
     status: 'Status',
     start: 'Mulai',
     stop: 'Berhenti',

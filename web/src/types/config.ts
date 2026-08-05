@@ -97,6 +97,7 @@ export interface CreateExchangeRequest {
 export interface CreateTraderRequest {
   name: string
   ai_model_id: string
+  primary_model_name?: string
   exchange_id: string
   execution_mode?: 'paper' | 'live'
   initial_balance?: number

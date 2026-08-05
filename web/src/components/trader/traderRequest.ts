@@ -6,6 +6,7 @@ export function buildUpdateTraderRequest(
   return {
     name: traderConfig.name,
     ai_model_id: traderConfig.ai_model_id,
+    primary_model_name: traderConfig.primary_model_name,
     exchange_id: traderConfig.exchange_id,
     strategy_id: traderConfig.strategy_id,
     scan_interval_minutes: traderConfig.scan_interval_minutes,
