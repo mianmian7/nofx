@@ -66,3 +66,36 @@ func TestValidateFallbackAIModelSelection(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveTraderPrimaryModelNameUsesVerifiedCatalog(t *testing.T) {
+	model := &store.AIModel{
+		CustomModelName: "gpt-5.6-luna",
+		ModelNames:      store.EncodeStringList([]string{"gpt-5.6-luna", "gpt-5.6-terra"}),
+	}
+
+	if got, err := resolveTraderPrimaryModelName(model, "gpt-5.6-terra"); err != nil || got != "gpt-5.6-terra" {
+		t.Fatalf("explicit primary = (%q, %v), want (gpt-5.6-terra, nil)", got, err)
+	}
+	if got, err := resolveTraderPrimaryModelName(model, ""); err != nil || got != "gpt-5.6-luna" {
+		t.Fatalf("default primary = (%q, %v), want (gpt-5.6-luna, nil)", got, err)
+	}
+	if _, err := resolveTraderPrimaryModelName(model, "not-available"); err == nil {
+		t.Fatal("primary model outside the verified catalog must be rejected")
+	}
+}
+
+type shutdownRecorder struct {
+	called bool
+}
+
+func (r *shutdownRecorder) Shutdown() {
+	r.called = true
+}
+
+func TestStopManagedTraderUsesShutdownForAlreadyStoppedTrader(t *testing.T) {
+	recorder := &shutdownRecorder{}
+	stopManagedTrader(recorder)
+	if !recorder.called {
+		t.Fatal("stopManagedTrader must invoke Shutdown for a complete trader stop")
+	}
+}

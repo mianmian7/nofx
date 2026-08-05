@@ -25,6 +25,7 @@ type Trader struct {
 	UserID              string    `gorm:"column:user_id;not null;default:default;index" json:"user_id"`
 	Name                string    `gorm:"column:name;not null" json:"name"`
 	AIModelID           string    `gorm:"column:ai_model_id;not null" json:"ai_model_id"`
+	PrimaryModelName    string    `gorm:"column:primary_model_name;default:''" json:"primary_model_name,omitempty"`
 	ExchangeID          string    `gorm:"column:exchange_id;not null" json:"exchange_id"`
 	StrategyID          string    `gorm:"column:strategy_id;default:''" json:"strategy_id"`
 	ExecutionMode       string    `gorm:"column:execution_mode;not null;default:paper" json:"execution_mode"`
@@ -132,6 +133,7 @@ func (s *TraderStore) ensureTraderConfigurationColumns() error {
 		"StartupDelayMinutes",
 		"FallbackModelNames",
 		"FallbackAIModelIDs",
+		"PrimaryModelName",
 	} {
 		if s.db.Migrator().HasColumn(&Trader{}, columnName) {
 			continue
@@ -200,6 +202,7 @@ func (s *TraderStore) Update(trader *Trader) error {
 	updates := map[string]interface{}{
 		"name":                   trader.Name,
 		"ai_model_id":            trader.AIModelID,
+		"primary_model_name":     trader.PrimaryModelName,
 		"exchange_id":            trader.ExchangeID,
 		"strategy_id":            trader.StrategyID,
 		"execution_mode":         trader.ExecutionMode,

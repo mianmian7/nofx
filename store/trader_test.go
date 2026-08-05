@@ -36,6 +36,7 @@ func TestTraderStoreUpdatePersistsInvertSignals(t *testing.T) {
 	}
 
 	trader.InvertSignals = true
+	trader.PrimaryModelName = "gpt-5.6-luna"
 	if err := traderStore.Update(trader); err != nil {
 		t.Fatalf("update trader: %v", err)
 	}
@@ -46,6 +47,9 @@ func TestTraderStoreUpdatePersistsInvertSignals(t *testing.T) {
 	}
 	if !persisted.InvertSignals {
 		t.Fatal("invert_signals was not persisted")
+	}
+	if persisted.PrimaryModelName != "gpt-5.6-luna" {
+		t.Fatalf("primary_model_name = %q, want gpt-5.6-luna", persisted.PrimaryModelName)
 	}
 }
 
@@ -61,6 +65,9 @@ func TestEnsureInvertSignalsColumnMigratesExistingTraderTable(t *testing.T) {
 	}
 	if !database.Migrator().HasColumn(&Trader{}, "InvertSignals") {
 		t.Fatal("invert_signals column is still missing after migration")
+	}
+	if !database.Migrator().HasColumn(&Trader{}, "PrimaryModelName") {
+		t.Fatal("primary_model_name column is still missing after migration")
 	}
 }
 

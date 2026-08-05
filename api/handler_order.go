@@ -51,6 +51,7 @@ func (s *Server) handleTraderList(c *gin.Context) {
 			"trader_id":             trader.ID,
 			"trader_name":           trader.Name,
 			"ai_model":              trader.AIModelID, // Use complete ID
+			"primary_model_name":    trader.PrimaryModelName,
 			"exchange_id":           trader.ExchangeID,
 			"exchange_type":         exchangeType,
 			"is_running":            isRunning,
@@ -110,6 +111,7 @@ func (s *Server) handleGetTraderConfig(c *gin.Context) {
 		"trader_id":             traderConfig.ID,
 		"trader_name":           traderConfig.Name,
 		"ai_model":              aiModelID,
+		"primary_model_name":    traderConfig.PrimaryModelName,
 		"exchange_id":           traderConfig.ExchangeID,
 		"exchange_type":         "",
 		"strategy_id":           traderConfig.StrategyID,

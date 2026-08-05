@@ -18,6 +18,7 @@ import (
 type CreateTraderRequest struct {
 	Name                 string   `json:"name" binding:"required"`
 	AIModelID            string   `json:"ai_model_id" binding:"required"`
+	PrimaryModelName     string   `json:"primary_model_name"`
 	ExchangeID           string   `json:"exchange_id" binding:"required"`
 	StrategyID           string   `json:"strategy_id"` // Strategy ID (new version)
 	ExecutionMode        string   `json:"execution_mode"`
@@ -39,6 +40,7 @@ type CreateTraderRequest struct {
 type UpdateTraderRequest struct {
 	Name                 string   `json:"name" binding:"required"`
 	AIModelID            string   `json:"ai_model_id" binding:"required"`
+	PrimaryModelName     string   `json:"primary_model_name"`
 	ExchangeID           string   `json:"exchange_id" binding:"required"`
 	StrategyID           string   `json:"strategy_id"` // Strategy ID (new version)
 	ExecutionMode        string   `json:"execution_mode"`
@@ -119,6 +121,46 @@ func validateFallbackAIModelSelection(primaryModelID string, fallbackAIModelIDs 
 		validatedIDs = append(validatedIDs, modelID)
 	}
 	return validatedIDs, nil
+}
+
+func resolveTraderPrimaryModelName(model *store.AIModel, requestedName string) (string, error) {
+	if model == nil {
+		return "", fmt.Errorf("AI model configuration is missing")
+	}
+
+	requestedPrimaryName := strings.TrimSpace(requestedName)
+	primaryName := requestedPrimaryName
+	availableNames := store.DecodeStringList(model.ModelNames)
+	if primaryName == "" {
+		primaryName = strings.TrimSpace(model.CustomModelName)
+	}
+	if len(availableNames) > 0 {
+		isAvailable := false
+		for _, availableName := range availableNames {
+			if availableName == primaryName {
+				isAvailable = true
+				break
+			}
+		}
+		if primaryName == "" || (requestedPrimaryName == "" && !isAvailable) {
+			primaryName = availableNames[0]
+		}
+	}
+	if primaryName == "" {
+		return "", nil
+	}
+
+	if len(availableNames) == 0 {
+		// Older model configurations did not persist a verified model catalog.
+		// Keep accepting their configured name for backward compatibility.
+		return primaryName, nil
+	}
+	for _, availableName := range availableNames {
+		if availableName == primaryName {
+			return primaryName, nil
+		}
+	}
+	return "", fmt.Errorf("primary model %q is not available from the configured API", primaryName)
 }
 
 func validateStartConfirmation(mode, liveConfirm string) error {
@@ -430,6 +472,11 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		), "trader.create.model_missing_credentials", mapStringPairs("model_name", model.Name))
 		return
 	}
+	primaryModelName, primaryModelErr := resolveTraderPrimaryModelName(model, req.PrimaryModelName)
+	if primaryModelErr != nil {
+		SafeBadRequestWithDetails(c, primaryModelErr.Error(), "trader.create.invalid_primary_model", nil)
+		return
+	}
 
 	if req.StrategyID == "" {
 		SafeBadRequestWithDetails(c, formatTraderCreationError("You have not selected a trading strategy yet", "Please select a strategy first, then continue creating the bot"), "trader.create.strategy_required", nil)
@@ -498,7 +545,7 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		return
 	}
 	fallbackAIModelIDsJSON := store.EncodeStringList(fallbackAIModelIDs)
-	fallbackModelNames, fallbackNamesErr := validateSameAPIFallbackModels(c.Request.Context(), model, req.FallbackModelNames)
+	fallbackModelNames, fallbackNamesErr := validateSameAPIFallbackModelsForPrimary(model, primaryModelName, req.FallbackModelNames)
 	if fallbackNamesErr != nil {
 		SafeBadRequestWithDetails(c, fallbackNamesErr.Error(), "trader.create.invalid_same_api_fallback_model", nil)
 		return
@@ -583,6 +630,7 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		UserID:               userID,
 		Name:                 req.Name,
 		AIModelID:            req.AIModelID,
+		PrimaryModelName:     primaryModelName,
 		ExchangeID:           req.ExchangeID,
 		StrategyID:           req.StrategyID, // Associated strategy ID (new version)
 		ExecutionMode:        executionMode,
@@ -643,11 +691,12 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 	logger.Infof("✓ Trader created successfully: %s (model: %s, exchange: %s)", req.Name, req.AIModelID, req.ExchangeID)
 
 	c.JSON(http.StatusCreated, gin.H{
-		"trader_id":       traderID,
-		"trader_name":     req.Name,
-		"ai_model":        req.AIModelID,
-		"is_running":      false,
-		"startup_warning": startupWarning,
+		"trader_id":          traderID,
+		"trader_name":        req.Name,
+		"ai_model":           req.AIModelID,
+		"primary_model_name": primaryModelName,
+		"is_running":         false,
+		"startup_warning":    startupWarning,
 	})
 }
 
@@ -692,6 +741,15 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 	}
 	if store.ResolveAIModelAPIKey(primaryModel) == "" {
 		SafeBadRequestWithDetails(c, "The selected AI model is missing credentials", "trader.update.model_missing_credentials", nil)
+		return
+	}
+	requestedPrimaryModelName := strings.TrimSpace(req.PrimaryModelName)
+	if requestedPrimaryModelName == "" && req.AIModelID == existingTrader.AIModelID {
+		requestedPrimaryModelName = existingTrader.PrimaryModelName
+	}
+	primaryModelName, primaryModelErr := resolveTraderPrimaryModelName(primaryModel, requestedPrimaryModelName)
+	if primaryModelErr != nil {
+		SafeBadRequestWithDetails(c, primaryModelErr.Error(), "trader.update.invalid_primary_model", nil)
 		return
 	}
 	executionMode := existingTrader.ExecutionMode
@@ -773,7 +831,7 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 	if req.FallbackModelNames != nil {
 		fallbackModelNames = req.FallbackModelNames
 	}
-	fallbackModelNames, fallbackNamesErr := validateSameAPIFallbackModels(c.Request.Context(), primaryModel, fallbackModelNames)
+	fallbackModelNames, fallbackNamesErr := validateSameAPIFallbackModelsForPrimary(primaryModel, primaryModelName, fallbackModelNames)
 	if fallbackNamesErr != nil {
 		SafeBadRequestWithDetails(c, fallbackNamesErr.Error(), "trader.update.invalid_same_api_fallback_model", nil)
 		return
@@ -852,6 +910,7 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 		UserID:               userID,
 		Name:                 req.Name,
 		AIModelID:            req.AIModelID,
+		PrimaryModelName:     primaryModelName,
 		ExchangeID:           targetExchangeID,
 		StrategyID:           strategyID, // Associated strategy ID
 		ExecutionMode:        executionMode,
@@ -932,9 +991,10 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 	logger.Infof("✓ Trader updated successfully: %s (model: %s, exchange: %s, strategy: %s)", req.Name, req.AIModelID, req.ExchangeID, strategyID)
 
 	c.JSON(http.StatusOK, gin.H{
-		"trader_id":   traderID,
-		"trader_name": req.Name,
-		"ai_model":    req.AIModelID,
+		"trader_id":          traderID,
+		"trader_name":        req.Name,
+		"ai_model":           req.AIModelID,
+		"primary_model_name": primaryModelName,
 		// A running trader is restarted with the new config (async above), so
 		// report it as running — callers must not fire a redundant start.
 		"is_running": wasRunning,
@@ -1129,15 +1189,8 @@ func (s *Server) handleStopTrader(c *gin.Context) {
 		return
 	}
 
-	// Check if trader is running
-	status := trader.GetStatus()
-	if isRunning, ok := status["is_running"].(bool); ok && !isRunning {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Trader is already stopped"})
-		return
-	}
-
-	// Stop trader
-	trader.Stop()
+	// Stop trader and all of its background monitors.
+	stopManagedTrader(trader)
 
 	// Update running status in database
 	err = s.store.Trader().UpdateStatus(userID, traderID, false)
@@ -1147,4 +1200,8 @@ func (s *Server) handleStopTrader(c *gin.Context) {
 
 	logger.Infof("⏹  Trader %s stopped", trader.GetName())
 	c.JSON(http.StatusOK, gin.H{"message": "Trader stopped"})
+}
+
+func stopManagedTrader(trader interface{ Shutdown() }) {
+	trader.Shutdown()
 }

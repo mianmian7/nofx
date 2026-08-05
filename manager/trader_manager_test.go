@@ -266,6 +266,65 @@ func TestBuildTraderAIModelCandidatesUsesEnvironmentCredential(t *testing.T) {
 	}
 }
 
+func TestBuildTraderAIModelCandidatesUsesTraderPrimaryModelOverride(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "environment-key")
+	traderConfiguration := &store.Trader{
+		UserID:           "user-1",
+		PrimaryModelName: "gpt-5.6-terra",
+		FallbackModelNames: store.EncodeStringList([]string{
+			"gpt-5.6-terra",
+			"gpt-5.6-luna",
+		}),
+	}
+	primaryModel := &store.AIModel{
+		ID:              "openai-primary",
+		Provider:        "openai",
+		CustomModelName: "gpt-5.6-sol",
+		Enabled:         true,
+	}
+
+	candidates, err := buildTraderAIModelCandidates(traderConfiguration, primaryModel, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("candidate count = %d, want 2", len(candidates))
+	}
+	if candidates[0].ModelName != "gpt-5.6-terra" {
+		t.Fatalf("primary candidate model = %q, want gpt-5.6-terra", candidates[0].ModelName)
+	}
+	if candidates[1].ModelName != "gpt-5.6-luna" {
+		t.Fatalf("fallback candidate model = %q, want gpt-5.6-luna", candidates[1].ModelName)
+	}
+}
+
+type backgroundMonitoringRecorder struct {
+	started bool
+}
+
+func (r *backgroundMonitoringRecorder) StartBackgroundMonitoring() {
+	r.started = true
+}
+
+func TestStartBackgroundMonitoringIfRunning(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		isRunning bool
+		wantStart bool
+	}{
+		{name: "stopped trader", isRunning: false, wantStart: false},
+		{name: "running trader", isRunning: true, wantStart: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			recorder := &backgroundMonitoringRecorder{}
+			startBackgroundMonitoringIfRunning(recorder, testCase.isRunning)
+			if recorder.started != testCase.wantStart {
+				t.Fatalf("monitor started = %t, want %t", recorder.started, testCase.wantStart)
+			}
+		})
+	}
+}
+
 func TestBuildTraderAIModelCandidatesRejectsMissingPrimaryCredential(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "")
 	traderConfiguration := &store.Trader{UserID: "user-1"}

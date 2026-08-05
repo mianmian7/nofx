@@ -664,11 +664,25 @@ func (tm *TraderManager) LoadTradersFromStore(st *store.Store) error {
 	return nil
 }
 
+type backgroundMonitoringStarter interface {
+	StartBackgroundMonitoring()
+}
+
+func startBackgroundMonitoringIfRunning(at backgroundMonitoringStarter, isRunning bool) {
+	if isRunning {
+		at.StartBackgroundMonitoring()
+	}
+}
+
 // addTraderFromStore internal method: adds trader from store configuration
 func buildTraderAIModelCandidates(traderCfg *store.Trader, primaryModel *store.AIModel, st *store.Store) ([]trader.AIModelCandidate, error) {
 	primaryAPIKey := store.ResolveAIModelAPIKey(primaryModel)
 	if primaryAPIKey == "" {
 		return nil, fmt.Errorf("primary AI model %s is missing credentials", primaryModel.ID)
+	}
+	primaryModelName := strings.TrimSpace(traderCfg.PrimaryModelName)
+	if primaryModelName == "" {
+		primaryModelName = primaryModel.CustomModelName
 	}
 
 	candidates := []trader.AIModelCandidate{
@@ -677,12 +691,12 @@ func buildTraderAIModelCandidates(traderCfg *store.Trader, primaryModel *store.A
 			Provider:     primaryModel.Provider,
 			APIKey:       primaryAPIKey,
 			CustomAPIURL: primaryModel.CustomAPIURL,
-			ModelName:    primaryModel.CustomModelName,
+			ModelName:    primaryModelName,
 		},
 	}
 
 	for _, modelName := range store.DecodeStringList(traderCfg.FallbackModelNames) {
-		if modelName == primaryModel.CustomModelName {
+		if modelName == primaryModelName {
 			continue
 		}
 		candidates = append(candidates, trader.AIModelCandidate{
@@ -781,6 +795,10 @@ func (tm *TraderManager) addTraderFromStore(traderCfg *store.Trader, aiModelCfg 
 	if err != nil {
 		return fmt.Errorf("failed to configure AI models for trader %s: %w", traderCfg.Name, err)
 	}
+	primaryModelName := strings.TrimSpace(traderCfg.PrimaryModelName)
+	if primaryModelName == "" {
+		primaryModelName = aiModelCfg.CustomModelName
+	}
 
 	// Build AutoTraderConfig for StrategyEngine.
 	traderConfig := trader.AutoTraderConfig{
@@ -799,7 +817,7 @@ func (tm *TraderManager) addTraderFromStore(traderCfg *store.Trader, aiModelCfg 
 		DeepSeekKey:           "",
 		QwenKey:               "",
 		CustomAPIURL:          aiModelCfg.CustomAPIURL,
-		CustomModelName:       aiModelCfg.CustomModelName,
+		CustomModelName:       primaryModelName,
 		AIModelCandidates:     modelCandidates,
 		ScanInterval:          time.Duration(scanIntervalMinutes) * time.Minute,
 		StartupDelay:          time.Duration(startupDelayMinutes) * time.Minute,
@@ -885,7 +903,7 @@ func (tm *TraderManager) addTraderFromStore(traderCfg *store.Trader, aiModelCfg 
 	}
 
 	tm.traders[traderCfg.ID] = at
-	at.StartBackgroundMonitoring()
+	startBackgroundMonitoringIfRunning(at, traderCfg.IsRunning)
 	logger.Infof("✓ Trader '%s' (%s + %s/%s) loaded to memory", traderCfg.Name, aiModelCfg.Provider, exchangeCfg.ExchangeType, exchangeCfg.AccountName)
 
 	// Auto-start if trader was running before shutdown

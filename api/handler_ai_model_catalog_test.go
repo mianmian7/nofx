@@ -3,6 +3,8 @@ package api
 import (
 	"reflect"
 	"testing"
+
+	"nofx/store"
 )
 
 func TestParseModelCatalog(t *testing.T) {
@@ -63,6 +65,24 @@ func TestValidateFallbackModelNamesAgainstCatalog(t *testing.T) {
 		available,
 	); err == nil {
 		t.Fatal("a model absent from the API catalog must be rejected")
+	}
+}
+
+func TestValidateSameAPIFallbackModelsForTraderPrimary(t *testing.T) {
+	model := &store.AIModel{
+		CustomModelName: "gpt-5.6-luna",
+		ModelNames:      store.EncodeStringList([]string{"gpt-5.6-luna", "gpt-5.6-terra"}),
+	}
+
+	got, err := validateSameAPIFallbackModelsForPrimary(model, "gpt-5.6-terra", []string{
+		"gpt-5.6-terra",
+		"gpt-5.6-luna",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, []string{"gpt-5.6-luna"}) {
+		t.Fatalf("fallbacks = %#v, want [gpt-5.6-luna]", got)
 	}
 }
 

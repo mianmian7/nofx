@@ -129,6 +129,10 @@ func discoverConfiguredAIModelNames(ctx context.Context, model *store.AIModel) (
 }
 
 func validateSameAPIFallbackModels(_ context.Context, primaryModel *store.AIModel, fallbackModelNames []string) ([]string, error) {
+	return validateSameAPIFallbackModelsForPrimary(primaryModel, primaryModel.CustomModelName, fallbackModelNames)
+}
+
+func validateSameAPIFallbackModelsForPrimary(primaryModel *store.AIModel, primaryModelName string, fallbackModelNames []string) ([]string, error) {
 	normalizedNames := store.NormalizeStringList(fallbackModelNames)
 	if len(normalizedNames) == 0 {
 		return nil, nil
@@ -139,7 +143,7 @@ func validateSameAPIFallbackModels(_ context.Context, primaryModel *store.AIMode
 		// existing trader chains until the model config is edited and verified.
 		return normalizedNames, nil
 	}
-	return validateFallbackModelNamesAgainstCatalog(primaryModel.CustomModelName, normalizedNames, availableNames)
+	return validateFallbackModelNamesAgainstCatalog(primaryModelName, normalizedNames, availableNames)
 }
 
 func validateFallbackModelNamesAgainstCatalog(primaryModelName string, fallbackModelNames, availableNames []string) ([]string, error) {
