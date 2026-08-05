@@ -1948,6 +1948,42 @@ func (b *PaperBroker) GetPositions() ([]map[string]interface{}, error) {
 	return result, nil
 }
 
+// GetProtectionBreakevenCosts uses the paper ledger's actual entry fee plus
+// configured taker/slippage rates and funding settlements applied since this
+// position opened. This is read-only and does not alter PaperBroker execution
+// or protection replacement semantics.
+func (b *PaperBroker) GetProtectionBreakevenCosts(symbol, side string, entryPrice, quantity float64) (protectionBreakevenCosts, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	var position *PaperPosition
+	for _, candidate := range b.positions {
+		candidate := candidate
+		if candidate.Symbol == symbol && strings.EqualFold(candidate.Side, side) {
+			if position != nil {
+				return protectionBreakevenCosts{}, fmt.Errorf("paper position side is ambiguous for %s", symbol)
+			}
+			position = &candidate
+		}
+	}
+	if position == nil {
+		return protectionBreakevenCosts{}, fmt.Errorf("paper position not found for %s %s", symbol, side)
+	}
+	fundingNet := 0.0
+	for _, payment := range b.fundingPayments {
+		if payment.Symbol == symbol && strings.EqualFold(payment.Side, side) && !payment.AppliedAt.Before(position.EntryTime) {
+			fundingNet += payment.WalletDelta
+		}
+	}
+	return protectionBreakevenCosts{
+		EntryFeeQuote:    position.EntryFee,
+		ExitFeeRate:      b.config.TakerFeeBPS / 10_000,
+		FundingCostQuote: -fundingNet,
+		SlippageRate:     b.config.SlippageBPS / 10_000,
+		ProfitBufferRate: 0,
+		Source:           "paper ledger actual entry fee + configured taker/slippage + settled funding since entry",
+	}, nil
+}
+
 func (b *PaperBroker) GetBalance() (map[string]interface{}, error) {
 	s := b.Snapshot()
 	return map[string]interface{}{

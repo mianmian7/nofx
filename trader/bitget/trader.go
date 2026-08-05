@@ -22,6 +22,10 @@ const (
 	bitgetAccountPath      = "/api/v2/mix/account/accounts"
 	bitgetPositionPath     = "/api/v2/mix/position/all-position"
 	bitgetOrderPath        = "/api/v2/mix/order/place-order"
+	bitgetTPSLOrderPath    = "/api/v2/mix/order/place-tpsl-order"
+	bitgetModifyTPSLPath   = "/api/v2/mix/order/modify-tpsl-order"
+	bitgetPendingPlanPath  = "/api/v2/mix/order/orders-plan-pending"
+	bitgetCancelPlanPath   = "/api/v2/mix/order/cancel-plan-order"
 	bitgetLeveragePath     = "/api/v2/mix/account/set-leverage"
 	bitgetTickerPath       = "/api/v2/mix/market/ticker"
 	bitgetContractsPath    = "/api/v2/mix/market/contracts"
@@ -96,7 +100,8 @@ func NewBitgetTrader(apiKey, secretKey, passphrase string) *BitgetTrader {
 		contractsCache: make(map[string]*BitgetContract),
 	}
 
-	// Set one-way position mode (net mode)
+	// Keep the Bitget account in hedge mode. The order and TPSL payloads below
+	// explicitly identify long/short sides and open/close intent.
 	if err := trader.setPositionMode(); err != nil {
 		logger.Infof("⚠️ Failed to set Bitget position mode: %v (ignore if already set)", err)
 	}
@@ -106,11 +111,11 @@ func NewBitgetTrader(apiKey, secretKey, passphrase string) *BitgetTrader {
 	return trader
 }
 
-// setPositionMode sets one-way position mode
+// setPositionMode sets hedge (two-way) position mode.
 func (t *BitgetTrader) setPositionMode() error {
 	body := map[string]interface{}{
 		"productType": "USDT-FUTURES",
-		"posMode":     "one_way_mode",
+		"posMode":     "hedge_mode",
 	}
 
 	_, err := t.doRequest("POST", bitgetPositionModePath, body)
@@ -121,7 +126,7 @@ func (t *BitgetTrader) setPositionMode() error {
 		return err
 	}
 
-	logger.Infof("  ✓ Bitget account switched to one-way position mode")
+	logger.Infof("  ✓ Bitget account switched to hedge position mode")
 	return nil
 }
 

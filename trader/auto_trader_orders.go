@@ -8,6 +8,7 @@ import (
 	"nofx/logger"
 	"nofx/market"
 	"nofx/store"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -28,6 +29,15 @@ const (
 	// Unified hard stop boundary, expressed as Margin/Position PnL percent.
 	// The execution layer converts it to a price using the final leverage.
 	unifiedMarginStopLossPct = kernel.HardStopMarginPositionPnLPct
+
+	// Live exchanges do not currently expose a consistent fee-rate or paid-entry
+	// commission API through Trader. These values are therefore an explicit
+	// conservative execution fallback, not claimed Bitget/Binance fee rates:
+	// reuse the existing 0.10% taker sizing allowance on entry and exit, add a
+	// 0.05% adverse market-exit allowance, and require a 0.01% positive buffer.
+	protectionFallbackSlippageRate   = 0.0005
+	protectionFallbackProfitRate     = 0.0001
+	protectionNormalizationTolerance = 0.0001
 )
 
 func (at *AutoTrader) executeDecisionWithRecord(decision *kernel.Decision, actionRecord *store.DecisionAction) error {
@@ -117,6 +127,40 @@ type managedPosition struct {
 	quantity             float64
 	entry, current       float64
 	stopLoss, takeProfit float64
+	stopLossState        ProtectionLevelStatus
+	takeProfitState      ProtectionLevelStatus
+	stopLossOrderID      string
+	takeProfitOrderID    string
+	protectionErr        string
+	priceTick            float64
+	breakevenCosts       protectionBreakevenCosts
+	breakevenCostsKnown  bool
+}
+
+type protectionBreakevenCosts struct {
+	EntryFeeQuote    float64
+	ExitFeeRate      float64
+	FundingCostQuote float64
+	SlippageRate     float64
+	ProfitBufferRate float64
+	Source           string
+}
+
+type protectionPriceTickProvider interface {
+	GetProtectionPriceTick(symbol string) (float64, error)
+}
+
+type protectionBreakevenCostProvider interface {
+	GetProtectionBreakevenCosts(symbol, side string, entryPrice, quantity float64) (protectionBreakevenCosts, error)
+}
+
+type protectionOrderModifier interface {
+	ModifyProtectionOrder(symbol, orderID, kind, positionSide string, quantity, triggerPrice float64) error
+}
+
+type protectionUpdatePlan struct {
+	initialTakeProfit bool
+	degradedReason    string
 }
 
 // protectionUpdateRejectedError marks a decision that reached the position
@@ -146,7 +190,8 @@ func (at *AutoTrader) executeUpdatePositionWithRecord(decision *kernel.Decision,
 	if err != nil {
 		return err
 	}
-	if err := validateProtectionUpdate(position, decision); err != nil {
+	updatePlan, err := buildProtectionUpdatePlan(position, decision)
+	if err != nil {
 		return &protectionUpdateRejectedError{err: err}
 	}
 
@@ -157,6 +202,10 @@ func (at *AutoTrader) executeUpdatePositionWithRecord(decision *kernel.Decision,
 	actionRecord.StopLoss = decision.NewStopLoss
 	actionRecord.TakeProfit = decision.NewTakeProfit
 	actionRecord.Timestamp = time.Now().UTC()
+	if updatePlan.degradedReason != "" {
+		actionRecord.Degraded = true
+		actionRecord.DegradedReason = updatePlan.degradedReason
+	}
 
 	if at.executionMode == ExecutionModePaper {
 		if at.paperBroker == nil {
@@ -171,25 +220,31 @@ func (at *AutoTrader) executeUpdatePositionWithRecord(decision *kernel.Decision,
 
 	positionSide := strings.ToUpper(position.side)
 	if decision.NewStopLoss > 0 {
-		if position.stopLoss <= 0 {
-			return fmt.Errorf("cannot safely replace stop loss for %s: current stop price is unknown", position.symbol)
+		if position.stopLossState != ProtectionPresent || position.stopLoss <= 0 {
+			return fmt.Errorf("cannot safely replace stop loss for %s: current stop state=%s price=%.8f", position.symbol, position.stopLossState, position.stopLoss)
 		}
 		if err := at.replaceStopLoss(position, positionSide, decision.NewStopLoss); err != nil {
 			return err
 		}
 	}
 	if decision.NewTakeProfit > 0 {
-		if position.takeProfit <= 0 {
-			return fmt.Errorf("cannot safely replace take profit for %s: current target price is unknown", position.symbol)
+		var replaceErr error
+		if updatePlan.initialTakeProfit {
+			replaceErr = at.setInitialTakeProfit(position, positionSide, decision.NewTakeProfit)
+		} else {
+			replaceErr = at.replaceTakeProfit(position, positionSide, decision.NewTakeProfit)
 		}
-		if err := at.replaceTakeProfit(position, positionSide, decision.NewTakeProfit); err != nil {
+		if replaceErr != nil {
 			if decision.NewStopLoss <= 0 {
-				return err
+				return replaceErr
+			}
+			if updatePlan.initialTakeProfit {
+				return fmt.Errorf("set initial take profit: %w; tightened stop remains active", replaceErr)
 			}
 			if restoreErr := at.replaceStopLoss(position, positionSide, position.stopLoss); restoreErr != nil {
-				return fmt.Errorf("replace take profit: %v; CRITICAL: restore old stop %.4f failed: %v", err, position.stopLoss, restoreErr)
+				return fmt.Errorf("replace take profit: %v; CRITICAL: restore old stop %.4f failed: %v", replaceErr, position.stopLoss, restoreErr)
 			}
-			return fmt.Errorf("replace take profit: %w; old stop %.4f restored", err, position.stopLoss)
+			return fmt.Errorf("replace take profit: %w; old stop %.4f restored", replaceErr, position.stopLoss)
 		}
 	}
 	actionRecord.Success = true
@@ -197,6 +252,9 @@ func (at *AutoTrader) executeUpdatePositionWithRecord(decision *kernel.Decision,
 }
 
 func (at *AutoTrader) loadManagedPosition(symbol string) (managedPosition, error) {
+	if snapshot, ok := at.consumeManagedPositionSnapshot(symbol); ok {
+		return snapshot, nil
+	}
 	positions, err := at.trader.GetPositions()
 	if err != nil {
 		return managedPosition{}, fmt.Errorf("get positions for protection update: %w", err)
@@ -211,121 +269,462 @@ func (at *AutoTrader) loadManagedPosition(symbol string) (managedPosition, error
 		if result.symbol != "" {
 			return managedPosition{}, fmt.Errorf("position side is ambiguous for %s", symbol)
 		}
-		result.symbol = positionSymbol
-		result.side, _ = position["side"].(string)
-		result.quantity = math.Abs(floatFromPosition(position, "positionAmt", "quantity"))
-		result.entry = floatFromPosition(position, "entryPrice", "entry_price")
-		result.current = floatFromPosition(position, "markPrice", "mark_price")
-		result.stopLoss = floatFromPosition(position, "stop_loss", "stopLoss")
-		result.takeProfit = floatFromPosition(position, "take_profit", "takeProfit")
+		result = managedPositionFromMap(position)
 	}
 	if result.symbol == "" || result.quantity <= 0 || result.entry <= 0 {
 		return managedPosition{}, fmt.Errorf("open position not found for %s", symbol)
 	}
-	if marketPrice, priceErr := at.trader.GetMarketPrice(result.symbol); priceErr == nil && marketPrice > 0 {
-		result.current = marketPrice
-	}
 	if result.current <= 0 {
-		return managedPosition{}, fmt.Errorf("current price unavailable for %s", symbol)
+		return managedPosition{}, fmt.Errorf("current mark price unavailable for %s", symbol)
 	}
-	if result.stopLoss <= 0 || result.takeProfit <= 0 {
-		orders, orderErr := at.trader.GetOpenOrders(result.symbol)
-		if orderErr == nil {
-			for _, order := range orders {
-				if order.PositionSide != "" && !strings.EqualFold(order.PositionSide, result.side) {
-					continue
-				}
-				orderType := strings.ToUpper(order.Type)
-				trigger := order.StopPrice
-				if trigger <= 0 {
-					trigger = order.Price
-				}
-				switch {
-				case strings.Contains(orderType, "TAKE_PROFIT"):
-					result.takeProfit = trigger
-				case strings.Contains(orderType, "STOP"):
-					result.stopLoss = trigger
-				}
-			}
+	if at.executionMode == ExecutionModePaper && at.paperBroker != nil {
+		paperMark, markErr := at.paperBroker.GetMarketPrice(result.symbol)
+		if markErr != nil || paperMark <= 0 {
+			return managedPosition{}, fmt.Errorf("current paper mark price unavailable for %s: %w", symbol, markErr)
 		}
+		result.current = paperMark
 	}
+	at.enrichManagedPosition(&result)
 	return result, nil
 }
 
-func validateProtectionUpdate(position managedPosition, decision *kernel.Decision) error {
-	unchangedTakeProfit := normalizeProtectionUpdate(position, decision)
-	if decision.NewStopLoss <= 0 && decision.NewTakeProfit <= 0 {
-		if unchangedTakeProfit {
-			return nil
-		}
-		return fmt.Errorf("update_position requires new_stop_loss or new_take_profit")
-	}
-	long := strings.EqualFold(position.side, "long")
-	profitable := (long && position.current > position.entry) || (!long && position.current < position.entry)
-	if decision.NewStopLoss > 0 {
-		if long {
-			if decision.NewStopLoss >= position.current {
-				return fmt.Errorf("long stop %.4f must stay below current price %.4f", decision.NewStopLoss, position.current)
-			}
-			if position.stopLoss > 0 && decision.NewStopLoss <= position.stopLoss {
-				return fmt.Errorf("long stop may only tighten: current %.4f, requested %.4f", position.stopLoss, decision.NewStopLoss)
-			}
-			if profitable && decision.NewStopLoss < position.entry*1.001 {
-				return fmt.Errorf("profitable long stop must lock breakeven plus fees (minimum %.4f)", position.entry*1.001)
-			}
-		} else {
-			if decision.NewStopLoss <= position.current {
-				return fmt.Errorf("short stop %.4f must stay above current price %.4f", decision.NewStopLoss, position.current)
-			}
-			if position.stopLoss > 0 && decision.NewStopLoss >= position.stopLoss {
-				return fmt.Errorf("short stop may only tighten: current %.4f, requested %.4f", position.stopLoss, decision.NewStopLoss)
-			}
-			if profitable && decision.NewStopLoss > position.entry*0.999 {
-				return fmt.Errorf("profitable short stop must lock breakeven plus fees (maximum %.4f)", position.entry*0.999)
-			}
+func (at *AutoTrader) enrichManagedPosition(result *managedPosition) {
+	at.populateManagedPositionProtection(result)
+	if provider, ok := at.trader.(protectionPriceTickProvider); ok {
+		if tick, tickErr := provider.GetProtectionPriceTick(result.symbol); tickErr == nil && tick > 0 && !math.IsNaN(tick) && !math.IsInf(tick, 0) {
+			result.priceTick = tick
 		}
 	}
-	if decision.NewTakeProfit > 0 {
-		if decision.NewStopLoss <= 0 {
-			return fmt.Errorf("extending take profit requires a tightened new_stop_loss in the same decision")
-		}
-		if !profitable || decision.Confidence < 80 {
-			return fmt.Errorf("take-profit extension requires an already profitable position and confidence >= 80")
-		}
-		if position.takeProfit <= 0 {
-			return fmt.Errorf("current take-profit price is unavailable")
-		}
-		targetDistance := math.Abs(position.takeProfit - position.entry)
-		progress := math.Abs(position.current-position.entry) / targetDistance
-		if targetDistance <= 0 || progress < 0.55 {
-			return fmt.Errorf("take-profit extension is premature: %.0f%% of the current target path completed, need at least 55%%", progress*100)
-		}
-		maxStep := math.Min(targetDistance*0.5, position.current*0.03)
-		if long {
-			if decision.NewTakeProfit <= math.Max(position.current, position.takeProfit) {
-				return fmt.Errorf("long take profit may only extend beyond current target %.4f", position.takeProfit)
-			}
-			if decision.NewTakeProfit > position.takeProfit+maxStep {
-				return fmt.Errorf("long take-profit extension is too large; maximum next target %.4f", position.takeProfit+maxStep)
-			}
+	result.breakevenCosts = fallbackProtectionBreakevenCosts(result.entry, result.quantity)
+	result.breakevenCostsKnown = true
+	if provider, ok := at.trader.(protectionBreakevenCostProvider); ok {
+		costs, costErr := provider.GetProtectionBreakevenCosts(result.symbol, result.side, result.entry, result.quantity)
+		if costErr != nil {
+			result.breakevenCostsKnown = false
+			result.breakevenCosts.Source = fmt.Sprintf("provider unavailable: %v", costErr)
+		} else if err := validateProtectionBreakevenCosts(costs); err != nil {
+			result.breakevenCostsKnown = false
+			result.breakevenCosts.Source = fmt.Sprintf("provider invalid: %v", err)
 		} else {
-			if decision.NewTakeProfit >= math.Min(position.current, position.takeProfit) {
-				return fmt.Errorf("short take profit may only extend below current target %.4f", position.takeProfit)
-			}
-			if decision.NewTakeProfit < position.takeProfit-maxStep {
-				return fmt.Errorf("short take-profit extension is too large; minimum next target %.4f", position.takeProfit-maxStep)
-			}
+			result.breakevenCosts = costs
+			result.breakevenCostsKnown = true
 		}
+	}
+}
+
+func managedPositionFromMap(position map[string]interface{}) managedPosition {
+	result := managedPosition{}
+	result.symbol, _ = position["symbol"].(string)
+	result.side, _ = position["side"].(string)
+	result.quantity = math.Abs(floatFromPosition(position, "positionAmt", "quantity"))
+	result.entry = floatFromPosition(position, "entryPrice", "entry_price")
+	result.current = floatFromPosition(position, "markPrice", "mark_price")
+	result.stopLoss, result.stopLossState = protectionLevelFromPosition(position, "stop_loss", "stopLoss")
+	result.takeProfit, result.takeProfitState = protectionLevelFromPosition(position, "take_profit", "takeProfit")
+	return result
+}
+
+func protectionLevelFromPosition(position map[string]interface{}, keys ...string) (float64, ProtectionLevelStatus) {
+	for _, key := range keys {
+		value, exists := position[key]
+		if !exists {
+			continue
+		}
+		var price float64
+		var err error
+		switch typed := value.(type) {
+		case float64:
+			price = typed
+		case float32:
+			price = float64(typed)
+		case int:
+			price = float64(typed)
+		case int64:
+			price = float64(typed)
+		case string:
+			price, err = strconv.ParseFloat(strings.TrimSpace(typed), 64)
+		default:
+			err = fmt.Errorf("unsupported price type %T", value)
+		}
+		if err != nil {
+			return 0, ProtectionUnavailable
+		}
+		if price > 0 && !math.IsNaN(price) && !math.IsInf(price, 0) {
+			return price, ProtectionPresent
+		}
+		if price == 0 {
+			return 0, ProtectionConfirmedAbsent
+		}
+		return 0, ProtectionUnavailable
+	}
+	return 0, ProtectionUnavailable
+}
+
+func (at *AutoTrader) populateManagedPositionProtection(position *managedPosition) {
+	if provider, ok := at.trader.(ProtectionSnapshotProvider); ok {
+		snapshot, err := provider.GetProtectionSnapshot(position.symbol, position.side)
+		applyProtectionLevelSnapshot(position, true, snapshot.StopLoss)
+		applyProtectionLevelSnapshot(position, false, snapshot.TakeProfit)
+		if err != nil {
+			position.protectionErr = err.Error()
+		}
+		return
+	}
+	if position.stopLossState == ProtectionPresent && position.takeProfitState == ProtectionPresent {
+		return
+	}
+	orders, err := at.trader.GetOpenOrders(position.symbol)
+	if err != nil {
+		if position.stopLossState != ProtectionPresent {
+			position.stopLossState = ProtectionUnavailable
+		}
+		if position.takeProfitState != ProtectionPresent {
+			position.takeProfitState = ProtectionUnavailable
+		}
+		position.protectionErr = err.Error()
+		return
+	}
+	if position.stopLossState != ProtectionPresent {
+		position.stopLossState = ProtectionConfirmedAbsent
+	}
+	if position.takeProfitState != ProtectionPresent {
+		position.takeProfitState = ProtectionConfirmedAbsent
+	}
+	for _, order := range orders {
+		if order.PositionSide != "" && !strings.EqualFold(order.PositionSide, position.side) {
+			continue
+		}
+		trigger := order.StopPrice
+		if trigger <= 0 {
+			trigger = order.Price
+		}
+		orderType := strings.ToUpper(order.Type)
+		switch {
+		case strings.Contains(orderType, "TAKE_PROFIT"):
+			mergeProtectionOrder(position, false, trigger, order.OrderID)
+		case strings.Contains(orderType, "STOP"):
+			mergeProtectionOrder(position, true, trigger, order.OrderID)
+		}
+	}
+}
+
+func applyProtectionLevelSnapshot(position *managedPosition, stopLoss bool, level ProtectionLevelSnapshot) {
+	status := level.Status
+	if status == "" {
+		status = ProtectionUnavailable
+	}
+	if level.Price <= 0 && status == ProtectionPresent {
+		status = ProtectionUnavailable
+	}
+	if stopLoss {
+		position.stopLoss, position.stopLossState, position.stopLossOrderID = level.Price, status, level.OrderID
+		return
+	}
+	position.takeProfit, position.takeProfitState, position.takeProfitOrderID = level.Price, status, level.OrderID
+}
+
+func mergeProtectionOrder(position *managedPosition, stopLoss bool, trigger float64, orderID string) {
+	if trigger <= 0 || math.IsNaN(trigger) || math.IsInf(trigger, 0) {
+		if stopLoss {
+			position.stopLossState = ProtectionUnavailable
+		} else {
+			position.takeProfitState = ProtectionUnavailable
+		}
+		return
+	}
+	if stopLoss {
+		if position.stopLossState == ProtectionPresent {
+			position.stopLoss, position.stopLossOrderID, position.stopLossState = 0, "", ProtectionAmbiguous
+			return
+		}
+		position.stopLoss, position.stopLossOrderID, position.stopLossState = trigger, orderID, ProtectionPresent
+		return
+	}
+	if position.takeProfitState == ProtectionPresent {
+		position.takeProfit, position.takeProfitOrderID, position.takeProfitState = 0, "", ProtectionAmbiguous
+		return
+	}
+	position.takeProfit, position.takeProfitOrderID, position.takeProfitState = trigger, orderID, ProtectionPresent
+}
+
+func (at *AutoTrader) replaceManagedPositionSnapshots(snapshots []managedPosition) {
+	next := make(map[string]managedPosition, len(snapshots))
+	ambiguous := make(map[string]bool)
+	for _, snapshot := range snapshots {
+		key := normalizedDecisionSymbol(at.exchange, snapshot.symbol)
+		if _, exists := next[key]; exists {
+			delete(next, key)
+			ambiguous[key] = true
+			continue
+		}
+		if ambiguous[key] {
+			continue
+		}
+		next[key] = snapshot
+	}
+	at.protectionSnapshotMu.Lock()
+	at.protectionSnapshots = next
+	at.protectionSnapshotMu.Unlock()
+}
+
+func (at *AutoTrader) consumeManagedPositionSnapshot(symbol string) (managedPosition, bool) {
+	key := normalizedDecisionSymbol(at.exchange, symbol)
+	at.protectionSnapshotMu.Lock()
+	defer at.protectionSnapshotMu.Unlock()
+	snapshot, ok := at.protectionSnapshots[key]
+	if ok {
+		delete(at.protectionSnapshots, key)
+	}
+	return snapshot, ok
+}
+
+func fallbackProtectionBreakevenCosts(entryPrice, quantity float64) protectionBreakevenCosts {
+	return protectionBreakevenCosts{
+		EntryFeeQuote:    entryPrice * quantity * takerFeeRate,
+		ExitFeeRate:      takerFeeRate,
+		SlippageRate:     protectionFallbackSlippageRate,
+		ProfitBufferRate: protectionFallbackProfitRate,
+		Source:           "conservative fallback: existing 0.10% taker allowance each side + 0.05% exit slippage allowance + 0.01% profit buffer; not an exchange fee quote",
+	}
+}
+
+func validateProtectionBreakevenCosts(costs protectionBreakevenCosts) error {
+	values := []float64{costs.EntryFeeQuote, costs.ExitFeeRate, costs.FundingCostQuote, costs.SlippageRate, costs.ProfitBufferRate}
+	for _, value := range values {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return fmt.Errorf("non-finite breakeven cost")
+		}
+	}
+	if costs.EntryFeeQuote < 0 || costs.ExitFeeRate < 0 || costs.ExitFeeRate >= 1 || costs.SlippageRate < 0 || costs.SlippageRate >= 1 || costs.ProfitBufferRate < 0 {
+		return fmt.Errorf("invalid breakeven cost rates")
+	}
+	if strings.TrimSpace(costs.Source) == "" {
+		return fmt.Errorf("breakeven cost source is empty")
 	}
 	return nil
 }
 
-// normalizeProtectionUpdate removes a repeated target emitted by a model that
-// intends to keep the existing take-profit unchanged. A target equal to the
-// current exchange protection is not an extension and must not enter the
-// extension-only validation branch.
+// feeInclusiveBreakevenBoundary returns an absolute mark-trigger price. Entry
+// fee and settled funding are quote-currency amounts; exit fee, adverse market
+// slippage and the positive profit buffer are rates. This keeps every term in
+// the same quote-price/position-PnL unit before dividing by quantity.
+func feeInclusiveBreakevenBoundary(position managedPosition) (float64, error) {
+	if position.entry <= 0 || position.quantity <= 0 || math.IsNaN(position.entry) || math.IsInf(position.entry, 0) {
+		return 0, fmt.Errorf("breakeven calculation requires positive finite entry price and quantity")
+	}
+	if !position.breakevenCostsKnown {
+		return 0, fmt.Errorf("breakeven costs are unavailable: %s", position.breakevenCosts.Source)
+	}
+	if err := validateProtectionBreakevenCosts(position.breakevenCosts); err != nil {
+		return 0, err
+	}
+	costs := position.breakevenCosts
+	entryNotional := position.entry * position.quantity
+	fixedCost := costs.EntryFeeQuote + costs.FundingCostQuote + entryNotional*costs.ProfitBufferRate
+	long := strings.EqualFold(position.side, "long")
+	var boundary float64
+	if long {
+		denominator := position.quantity * (1 - costs.SlippageRate) * (1 - costs.ExitFeeRate)
+		boundary = (entryNotional + fixedCost) / denominator
+	} else {
+		denominator := position.quantity * (1 + costs.SlippageRate) * (1 + costs.ExitFeeRate)
+		boundary = (entryNotional - fixedCost) / denominator
+	}
+	if boundary <= 0 || math.IsNaN(boundary) || math.IsInf(boundary, 0) {
+		return 0, fmt.Errorf("breakeven calculation produced invalid boundary %.8f", boundary)
+	}
+	return boundary, nil
+}
+
+func ensureManagedPositionProtectionMetadata(position *managedPosition) {
+	if position.quantity <= 0 {
+		// Validation-only tests and legacy callers omitted quantity because the
+		// former percentage shortcut did not need it. A unit quantity preserves
+		// the exact per-unit boundary without weakening production validation,
+		// where loadManagedPosition already requires a positive quantity.
+		position.quantity = 1
+	}
+	if position.stopLossState == "" {
+		if position.stopLoss > 0 {
+			position.stopLossState = ProtectionPresent
+		} else {
+			position.stopLossState = ProtectionUnavailable
+		}
+	}
+	if position.takeProfitState == "" {
+		if position.takeProfit > 0 {
+			position.takeProfitState = ProtectionPresent
+		} else {
+			position.takeProfitState = ProtectionUnavailable
+		}
+	}
+	if !position.breakevenCostsKnown && position.breakevenCosts.Source == "" {
+		position.breakevenCosts = fallbackProtectionBreakevenCosts(position.entry, position.quantity)
+		position.breakevenCostsKnown = true
+	}
+}
+
+func validateProtectionUpdate(position managedPosition, decision *kernel.Decision) error {
+	_, err := buildProtectionUpdatePlan(position, decision)
+	return err
+}
+
+func buildProtectionUpdatePlan(position managedPosition, decision *kernel.Decision) (protectionUpdatePlan, error) {
+	plan := protectionUpdatePlan{}
+	ensureManagedPositionProtectionMetadata(&position)
+	unchangedTakeProfit := normalizeProtectionUpdate(position, decision)
+	if invalidProtectionPrice(decision.NewStopLoss) || invalidProtectionPrice(decision.NewTakeProfit) {
+		return plan, fmt.Errorf("update_position protection prices must be finite absolute prices")
+	}
+	if decision.NewStopLoss <= 0 && decision.NewTakeProfit <= 0 {
+		if unchangedTakeProfit {
+			return plan, nil
+		}
+		return plan, fmt.Errorf("update_position requires new_stop_loss or new_take_profit")
+	}
+	long := strings.EqualFold(position.side, "long")
+	profitable := (long && position.current > position.entry) || (!long && position.current < position.entry)
+	if decision.NewStopLoss > 0 {
+		if position.stopLossState != ProtectionPresent || position.stopLoss <= 0 {
+			return plan, fmt.Errorf("cannot tighten stop: state=%s requested=%.8f entry=%.8f current_mark=%.8f old_stop=%.8f", position.stopLossState, decision.NewStopLoss, position.entry, position.current, position.stopLoss)
+		}
+		if long {
+			if decision.NewStopLoss >= position.current {
+				return plan, fmt.Errorf("long stop must stay below current price/current mark: requested=%.8f entry=%.8f current_mark=%.8f old_stop=%.8f", decision.NewStopLoss, position.entry, position.current, position.stopLoss)
+			}
+			if decision.NewStopLoss <= position.stopLoss {
+				return plan, fmt.Errorf("long stop may only tighten: requested=%.8f entry=%.8f current_mark=%.8f old_stop=%.8f", decision.NewStopLoss, position.entry, position.current, position.stopLoss)
+			}
+		} else {
+			if decision.NewStopLoss <= position.current {
+				return plan, fmt.Errorf("short stop must stay above current price/current mark: requested=%.8f entry=%.8f current_mark=%.8f old_stop=%.8f", decision.NewStopLoss, position.entry, position.current, position.stopLoss)
+			}
+			if decision.NewStopLoss >= position.stopLoss {
+				return plan, fmt.Errorf("short stop may only tighten: requested=%.8f entry=%.8f current_mark=%.8f old_stop=%.8f", decision.NewStopLoss, position.entry, position.current, position.stopLoss)
+			}
+		}
+		if profitable {
+			boundary, err := feeInclusiveBreakevenBoundary(position)
+			if err != nil {
+				return plan, fmt.Errorf("profitable stop fee boundary unavailable: requested=%.8f entry=%.8f current_mark=%.8f old_stop=%.8f: %w", decision.NewStopLoss, position.entry, position.current, position.stopLoss, err)
+			}
+			if err := normalizeStopToFeeBoundary(&position, decision, boundary); err != nil {
+				return plan, err
+			}
+		}
+	}
+	if decision.NewTakeProfit <= 0 {
+		return plan, nil
+	}
+	switch position.takeProfitState {
+	case ProtectionUnavailable:
+		if decision.NewStopLoss <= 0 {
+			return plan, fmt.Errorf("take-profit state unavailable for %s: %s", position.symbol, position.protectionErr)
+		}
+		plan.degradedReason = fmt.Sprintf("take-profit snapshot unavailable; applied independently valid stop only: %s", position.protectionErr)
+		decision.NewTakeProfit = 0
+		return plan, nil
+	case ProtectionAmbiguous:
+		return plan, fmt.Errorf("take-profit state ambiguous for %s; refusing to modify or guess an active target", position.symbol)
+	case ProtectionConfirmedAbsent:
+		if long && decision.NewTakeProfit <= position.current {
+			return plan, fmt.Errorf("initial long take profit %.8f must stay above current mark %.8f", decision.NewTakeProfit, position.current)
+		}
+		if !long && decision.NewTakeProfit >= position.current {
+			return plan, fmt.Errorf("initial short take profit %.8f must stay below current mark %.8f", decision.NewTakeProfit, position.current)
+		}
+		plan.initialTakeProfit = true
+		return plan, nil
+	case ProtectionPresent:
+		// Continue into extension-only checks below.
+	default:
+		return plan, fmt.Errorf("unknown take-profit state %q", position.takeProfitState)
+	}
+	if decision.NewStopLoss <= 0 {
+		return plan, fmt.Errorf("extending take profit requires a tightened new_stop_loss in the same decision")
+	}
+	if !profitable || decision.Confidence < 80 {
+		return plan, fmt.Errorf("take-profit extension requires an already profitable position and confidence >= 80")
+	}
+	targetDistance := math.Abs(position.takeProfit - position.entry)
+	if targetDistance <= 0 {
+		return plan, fmt.Errorf("current take-profit price is invalid: %.8f", position.takeProfit)
+	}
+	progress := math.Abs(position.current-position.entry) / targetDistance
+	if progress < 0.55 {
+		return plan, fmt.Errorf("take-profit extension is premature: %.0f%% of the current target path completed, need at least 55%%", progress*100)
+	}
+	maxStep := math.Min(targetDistance*0.5, position.current*0.03)
+	if long {
+		if decision.NewTakeProfit <= math.Max(position.current, position.takeProfit) {
+			return plan, fmt.Errorf("long take profit may only extend beyond current target %.4f", position.takeProfit)
+		}
+		if decision.NewTakeProfit > position.takeProfit+maxStep {
+			return plan, fmt.Errorf("long take-profit extension is too large; maximum next target %.4f", position.takeProfit+maxStep)
+		}
+	} else {
+		if decision.NewTakeProfit >= math.Min(position.current, position.takeProfit) {
+			return plan, fmt.Errorf("short take profit may only extend below current target %.4f", position.takeProfit)
+		}
+		if decision.NewTakeProfit < position.takeProfit-maxStep {
+			return plan, fmt.Errorf("short take-profit extension is too large; minimum next target %.4f", position.takeProfit-maxStep)
+		}
+	}
+	return plan, nil
+}
+
+func invalidProtectionPrice(price float64) bool {
+	return math.IsNaN(price) || math.IsInf(price, 0)
+}
+
+func normalizeStopToFeeBoundary(position *managedPosition, decision *kernel.Decision, boundary float64) error {
+	long := strings.EqualFold(position.side, "long")
+	unsafeDistance := boundary - decision.NewStopLoss
+	if !long {
+		unsafeDistance = decision.NewStopLoss - boundary
+	}
+	if unsafeDistance <= 1e-12 {
+		return nil
+	}
+	errorMessage := func() error {
+		return fmt.Errorf("profitable %s stop must lock breakeven plus fees (fee-inclusive): requested=%.8f entry=%.8f current_mark=%.8f old_stop=%.8f fee_boundary=%.8f source=%s", position.side, decision.NewStopLoss, position.entry, position.current, position.stopLoss, boundary, position.breakevenCosts.Source)
+	}
+	if position.priceTick <= 0 || math.IsNaN(position.priceTick) || math.IsInf(position.priceTick, 0) {
+		return errorMessage()
+	}
+	tolerance := math.Max(position.priceTick, math.Abs(position.entry)*protectionNormalizationTolerance)
+	if unsafeDistance > tolerance+1e-12 {
+		return errorMessage()
+	}
+	normalized := math.Ceil(boundary/position.priceTick-1e-9) * position.priceTick
+	if !long {
+		normalized = math.Floor(boundary/position.priceTick+1e-9) * position.priceTick
+	}
+	if normalized <= 0 || math.IsNaN(normalized) || math.IsInf(normalized, 0) {
+		return errorMessage()
+	}
+	if long && !(position.stopLoss < normalized && normalized < position.current) {
+		return errorMessage()
+	}
+	if !long && !(position.current < normalized && normalized < position.stopLoss) {
+		return errorMessage()
+	}
+	decision.NewStopLoss = normalized
+	return nil
+}
+
+// normalizeProtectionUpdate removes a target that falls on the same exchange
+// tick as the confirmed active target. Unknown or ambiguous target state is
+// never normalized into a no-op.
 func normalizeProtectionUpdate(position managedPosition, decision *kernel.Decision) bool {
-	if decision.NewTakeProfit > 0 && position.takeProfit > 0 && decision.NewTakeProfit == position.takeProfit {
+	if decision.NewTakeProfit <= 0 || position.takeProfitState != ProtectionPresent || position.takeProfit <= 0 {
+		return false
+	}
+	sameTick := decision.NewTakeProfit == position.takeProfit
+	if position.priceTick > 0 {
+		sameTick = math.Round(decision.NewTakeProfit/position.priceTick) == math.Round(position.takeProfit/position.priceTick)
+	}
+	if sameTick {
 		decision.NewTakeProfit = 0
 		return true
 	}
@@ -333,6 +732,15 @@ func normalizeProtectionUpdate(position managedPosition, decision *kernel.Decisi
 }
 
 func (at *AutoTrader) replaceStopLoss(position managedPosition, positionSide string, requested float64) error {
+	if modifier, ok := at.trader.(protectionOrderModifier); ok {
+		if position.stopLossOrderID == "" {
+			return fmt.Errorf("cannot atomically modify stop loss for %s: confirmed order ID is unavailable", position.symbol)
+		}
+		if err := modifier.ModifyProtectionOrder(position.symbol, position.stopLossOrderID, "stop_loss", positionSide, position.quantity, requested); err != nil {
+			return err
+		}
+		return at.verifyProtectionLevel(position, true, requested)
+	}
 	if err := at.trader.CancelStopLossOrders(position.symbol); err != nil {
 		return fmt.Errorf("cancel current stop loss for %s: %w", position.symbol, err)
 	}
@@ -343,10 +751,19 @@ func (at *AutoTrader) replaceStopLoss(position managedPosition, positionSide str
 		}
 		return fmt.Errorf("set new stop loss: %w; old stop %.4f restored", err, position.stopLoss)
 	}
-	return nil
+	return at.verifyProtectionLevel(position, true, requested)
 }
 
 func (at *AutoTrader) replaceTakeProfit(position managedPosition, positionSide string, requested float64) error {
+	if modifier, ok := at.trader.(protectionOrderModifier); ok {
+		if position.takeProfitOrderID == "" {
+			return fmt.Errorf("cannot atomically modify take profit for %s: confirmed order ID is unavailable", position.symbol)
+		}
+		if err := modifier.ModifyProtectionOrder(position.symbol, position.takeProfitOrderID, "take_profit", positionSide, position.quantity, requested); err != nil {
+			return err
+		}
+		return at.verifyProtectionLevel(position, false, requested)
+	}
 	if err := at.trader.CancelTakeProfitOrders(position.symbol); err != nil {
 		return fmt.Errorf("cancel current take profit for %s: %w", position.symbol, err)
 	}
@@ -357,7 +774,45 @@ func (at *AutoTrader) replaceTakeProfit(position managedPosition, positionSide s
 		}
 		return fmt.Errorf("set new take profit: %w; old target %.4f restored", err, position.takeProfit)
 	}
+	return at.verifyProtectionLevel(position, false, requested)
+}
+
+func (at *AutoTrader) setInitialTakeProfit(position managedPosition, positionSide string, requested float64) error {
+	if err := at.trader.SetTakeProfit(position.symbol, positionSide, position.quantity, requested); err != nil {
+		return fmt.Errorf("set initial take profit for %s: %w", position.symbol, err)
+	}
+	return at.verifyProtectionLevel(position, false, requested)
+}
+
+func (at *AutoTrader) verifyProtectionLevel(position managedPosition, stopLoss bool, expected float64) error {
+	provider, ok := at.trader.(ProtectionSnapshotProvider)
+	if !ok {
+		return nil
+	}
+	snapshot, err := provider.GetProtectionSnapshot(position.symbol, position.side)
+	level := snapshot.TakeProfit
+	label := "take profit"
+	if stopLoss {
+		level = snapshot.StopLoss
+		label = "stop loss"
+	}
+	if err != nil && level.Status != ProtectionPresent {
+		return fmt.Errorf("verify final protection snapshot for %s: %w", position.symbol, err)
+	}
+	if level.Status != ProtectionPresent || level.Price <= 0 {
+		return fmt.Errorf("verify final %s for %s: state=%s price=%.8f", label, position.symbol, level.Status, level.Price)
+	}
+	if !pricesOnSameTick(level.Price, expected, position.priceTick) {
+		return fmt.Errorf("verify final %s for %s: expected=%.8f actual=%.8f tick=%.8f", label, position.symbol, expected, level.Price, position.priceTick)
+	}
 	return nil
+}
+
+func pricesOnSameTick(left, right, tick float64) bool {
+	if tick > 0 && !math.IsNaN(tick) && !math.IsInf(tick, 0) {
+		return math.Round(left/tick) == math.Round(right/tick)
+	}
+	return math.Abs(left-right) <= 1e-9*math.Max(1, math.Max(math.Abs(left), math.Abs(right)))
 }
 
 type leverageLimitProvider interface {
@@ -992,15 +1447,9 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 	posKey := decision.Symbol + "_long"
 	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
 
-	// Set stop loss and take profit
-	if err := at.trader.SetStopLoss(decision.Symbol, "LONG", quantity, decision.StopLoss); err != nil {
-		logger.Infof("  ⚠ Failed to set stop loss: %v", err)
-	}
-	if err := at.trader.SetTakeProfit(decision.Symbol, "LONG", quantity, decision.TakeProfit); err != nil {
-		logger.Errorf("  ❌ Failed to set take-profit protection order: %v", err)
-	}
-
-	return nil
+	// Set stop loss and take profit. Return exchange errors to the decision
+	// loop; protection failures are not an instruction to place another trade.
+	return at.setOpeningProtection(decision, "LONG", quantity)
 }
 
 // executeOpenShortWithRecord executes open short position and records detailed information
@@ -1128,14 +1577,26 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 	posKey := decision.Symbol + "_short"
 	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
 
-	// Set stop loss and take profit
-	if err := at.trader.SetStopLoss(decision.Symbol, "SHORT", quantity, decision.StopLoss); err != nil {
-		logger.Infof("  ⚠ Failed to set stop loss: %v", err)
-	}
-	if err := at.trader.SetTakeProfit(decision.Symbol, "SHORT", quantity, decision.TakeProfit); err != nil {
-		logger.Errorf("  ❌ Failed to set take-profit protection order: %v", err)
-	}
+	// Set stop loss and take profit. Return exchange errors to the decision
+	// loop; protection failures are not an instruction to place another trade.
+	return at.setOpeningProtection(decision, "SHORT", quantity)
+}
 
+// setOpeningProtection applies both protection orders after a market open and
+// reports any exchange rejection without issuing an unrelated close order.
+func (at *AutoTrader) setOpeningProtection(decision *kernel.Decision, positionSide string, quantity float64) error {
+	var protectionErrs []error
+	if err := at.trader.SetStopLoss(decision.Symbol, positionSide, quantity, decision.StopLoss); err != nil {
+		logger.Errorf("  ❌ Failed to set stop loss: %v", err)
+		protectionErrs = append(protectionErrs, fmt.Errorf("stop loss: %w", err))
+	}
+	if err := at.trader.SetTakeProfit(decision.Symbol, positionSide, quantity, decision.TakeProfit); err != nil {
+		logger.Errorf("  ❌ Failed to set take-profit protection order: %v", err)
+		protectionErrs = append(protectionErrs, fmt.Errorf("take profit: %w", err))
+	}
+	if len(protectionErrs) > 0 {
+		return fmt.Errorf("opening protection failed for %s: %w", decision.Symbol, errors.Join(protectionErrs...))
+	}
 	return nil
 }
 

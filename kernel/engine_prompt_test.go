@@ -151,6 +151,11 @@ func TestBuildSystemPromptStatesDirectionalProtectionAndRiskRewardRules(t *testi
 		"stop-only protection changes must omit `new_take_profit`",
 		"a repeated current take-profit is a no-op",
 		"backend determines the fee-inclusive breakeven boundary",
+		"`new_stop_loss` and `new_take_profit` are always absolute exchange trigger prices",
+		"Protection triggers use mark price",
+		"`confirmed_absent` permits an explicit directionally valid first take-profit",
+		"`unavailable` or `ambiguous` must never be guessed",
+		"recorded as degraded",
 	} {
 		if !strings.Contains(prompt, phrase) {
 			t.Fatalf("prompt missing directional protection rule %q:\n%s", phrase, prompt)

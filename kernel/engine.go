@@ -35,13 +35,16 @@ type PositionInfo struct {
 	UnrealizedPnLPct float64 `json:"unrealized_pnl_pct"`
 	// PricePnLPct is the unlevered price move, shown for context only and never
 	// used for Margin/Position PnL risk gates.
-	PricePnLPct      float64 `json:"price_pnl_pct"`
-	PeakPnLPct       float64 `json:"peak_pnl_pct"` // Historical peak Margin/Position PnL percentage
-	LiquidationPrice float64 `json:"liquidation_price"`
-	MarginUsed       float64 `json:"margin_used"`
-	StopLoss         float64 `json:"stop_loss,omitempty"`   // Absolute exchange trigger price
-	TakeProfit       float64 `json:"take_profit,omitempty"` // Absolute exchange trigger price; not a PnL percentage
-	UpdateTime       int64   `json:"update_time"`           // Position update timestamp (milliseconds)
+	PricePnLPct       float64 `json:"price_pnl_pct"`
+	PeakPnLPct        float64 `json:"peak_pnl_pct"` // Historical peak Margin/Position PnL percentage
+	LiquidationPrice  float64 `json:"liquidation_price"`
+	MarginUsed        float64 `json:"margin_used"`
+	StopLoss          float64 `json:"stop_loss,omitempty"`   // Absolute exchange trigger price
+	TakeProfit        float64 `json:"take_profit,omitempty"` // Absolute exchange trigger price; not a PnL percentage
+	StopLossState     string  `json:"stop_loss_state,omitempty"`
+	TakeProfitState   string  `json:"take_profit_state,omitempty"`
+	ProtectionWarning string  `json:"protection_warning,omitempty"`
+	UpdateTime        int64   `json:"update_time"` // Position update timestamp (milliseconds)
 }
 
 // AccountInfo account information

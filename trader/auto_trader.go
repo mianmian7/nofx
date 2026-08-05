@@ -225,17 +225,19 @@ type AutoTrader struct {
 	monitorWg             sync.WaitGroup     // Used to wait for monitoring goroutine to finish
 	peakPnLCache          map[string]float64 // Peak profit cache (symbol -> peak P&L percentage)
 	peakPnLCacheMutex     sync.RWMutex       // Cache read-write lock
-	lastBalanceSyncTime   time.Time          // Last balance sync time
-	userID                string             // User ID
-	gridState             *GridState         // Grid trading state (only used when StrategyType == "grid_trading")
-	runStopCh             chan struct{}      // Stops only the AI decision loop when the trader is paused
-	consecutiveAIFailures int                // Consecutive AI call failures
-	monitorLifecycleMu    sync.Mutex         // Guards background monitor startup and shutdown
-	monitorsStarted       bool               // Background position/risk monitors are running
-	monitorsStopped       bool               // This trader instance has been permanently shut down
-	runtimeHealthMu       sync.RWMutex       // Guards safe mode state (loop writes, API reads)
-	safeMode              bool               // Safe mode: no new positions, protect existing ones
-	safeModeReason        string             // Why safe mode was activated
+	protectionSnapshotMu  sync.Mutex         // Guards the read-only snapshot shared by prompt and executor
+	protectionSnapshots   map[string]managedPosition
+	lastBalanceSyncTime   time.Time     // Last balance sync time
+	userID                string        // User ID
+	gridState             *GridState    // Grid trading state (only used when StrategyType == "grid_trading")
+	runStopCh             chan struct{} // Stops only the AI decision loop when the trader is paused
+	consecutiveAIFailures int           // Consecutive AI call failures
+	monitorLifecycleMu    sync.Mutex    // Guards background monitor startup and shutdown
+	monitorsStarted       bool          // Background position/risk monitors are running
+	monitorsStopped       bool          // This trader instance has been permanently shut down
+	runtimeHealthMu       sync.RWMutex  // Guards safe mode state (loop writes, API reads)
+	safeMode              bool          // Safe mode: no new positions, protect existing ones
+	safeModeReason        string        // Why safe mode was activated
 }
 
 // NewAutoTrader creates an automatic trader

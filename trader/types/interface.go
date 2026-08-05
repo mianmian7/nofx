@@ -108,13 +108,49 @@ type Trader interface {
 type OpenOrder struct {
 	OrderID      string  `json:"order_id"`
 	Symbol       string  `json:"symbol"`
-	Side         string  `json:"side"`          // BUY/SELL
-	PositionSide string  `json:"position_side"` // LONG/SHORT
-	Type         string  `json:"type"`          // LIMIT/STOP_MARKET/TAKE_PROFIT_MARKET
-	Price        float64 `json:"price"`         // Order price (for limit orders)
-	StopPrice    float64 `json:"stop_price"`    // Trigger price (for stop orders)
+	Side         string  `json:"side"`                // BUY/SELL
+	PositionSide string  `json:"position_side"`       // LONG/SHORT
+	Type         string  `json:"type"`                // LIMIT/STOP_MARKET/TAKE_PROFIT_MARKET
+	PlanType     string  `json:"plan_type,omitempty"` // Exchange TPSL subtype, when available
+	Price        float64 `json:"price"`               // Order price (for limit orders)
+	StopPrice    float64 `json:"stop_price"`          // Trigger price (for stop orders)
 	Quantity     float64 `json:"quantity"`
 	Status       string  `json:"status"` // NEW
+}
+
+// ProtectionLevelStatus distinguishes an exchange-confirmed protection state
+// from a failed or ambiguous lookup. A zero price alone is never sufficient to
+// tell these cases apart safely.
+type ProtectionLevelStatus string
+
+const (
+	ProtectionPresent         ProtectionLevelStatus = "present"
+	ProtectionConfirmedAbsent ProtectionLevelStatus = "confirmed_absent"
+	ProtectionUnavailable     ProtectionLevelStatus = "unavailable"
+	ProtectionAmbiguous       ProtectionLevelStatus = "ambiguous"
+)
+
+// ProtectionLevelSnapshot is a read-only view of one active exchange
+// protection order.
+type ProtectionLevelSnapshot struct {
+	Status  ProtectionLevelStatus `json:"status"`
+	Price   float64               `json:"price,omitempty"`
+	OrderID string                `json:"order_id,omitempty"`
+}
+
+// ProtectionSnapshot contains independently classified stop-loss and
+// take-profit state for one symbol and position side.
+type ProtectionSnapshot struct {
+	StopLoss   ProtectionLevelSnapshot `json:"stop_loss"`
+	TakeProfit ProtectionLevelSnapshot `json:"take_profit"`
+}
+
+// ProtectionSnapshotProvider is an optional live-exchange capability. It is
+// intentionally separate from Trader so existing providers keep their current
+// API while exchanges with dedicated TPSL endpoints can expose certainty and
+// ambiguity instead of collapsing every non-present result to price zero.
+type ProtectionSnapshotProvider interface {
+	GetProtectionSnapshot(symbol, positionSide string) (ProtectionSnapshot, error)
 }
 
 // LimitOrderRequest represents a limit order request for grid trading

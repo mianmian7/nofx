@@ -8,6 +8,20 @@ import (
 	"time"
 )
 
+func formatProtectionLevel(price float64, state string) string {
+	if state == "" {
+		if price > 0 {
+			state = "present"
+		} else {
+			state = "unavailable"
+		}
+	}
+	if price > 0 {
+		return fmt.Sprintf("price %.4f (%s)", price, state)
+	}
+	return state
+}
+
 func formatPricePnLPct(pos PositionInfo) float64 {
 	if pos.EntryPrice > 0 && pos.MarkPrice > 0 {
 		move := (pos.MarkPrice - pos.EntryPrice) / pos.EntryPrice * 100
@@ -247,7 +261,7 @@ func formatCurrentPositionsZH(ctx *Context) string {
 		sb.WriteString(fmt.Sprintf("Margin/Position PnL %+.2f%% | Price PnL %+.2f%% | ", pos.UnrealizedPnLPct, pricePnLPct))
 		sb.WriteString(fmt.Sprintf("PnL Amount %+.2f USDT | ", pos.UnrealizedPnL))
 		sb.WriteString(fmt.Sprintf("Peak Margin/Position PnL %.2f%% | ", pos.PeakPnLPct))
-		sb.WriteString(fmt.Sprintf("Stop-loss price %.4f | Take-profit price %.4f | ", pos.StopLoss, pos.TakeProfit))
+		sb.WriteString(fmt.Sprintf("Stop-loss %s | Take-profit %s | ", formatProtectionLevel(pos.StopLoss, pos.StopLossState), formatProtectionLevel(pos.TakeProfit, pos.TakeProfitState)))
 		sb.WriteString(fmt.Sprintf("Leverage %dx | ", pos.Leverage))
 		sb.WriteString(fmt.Sprintf("Margin %.0f USDT | ", pos.MarginUsed))
 		sb.WriteString(fmt.Sprintf("Liq Price %.4f\n", pos.LiquidationPrice))
@@ -478,7 +492,7 @@ func formatCurrentPositionsEN(ctx *Context) string {
 		sb.WriteString(fmt.Sprintf("Margin/Position PnL %+.2f%% | Price PnL %+.2f%% | ", pos.UnrealizedPnLPct, pricePnLPct))
 		sb.WriteString(fmt.Sprintf("PnL Amount %+.2f USDT | ", pos.UnrealizedPnL))
 		sb.WriteString(fmt.Sprintf("Peak Margin/Position PnL %.2f%% | ", pos.PeakPnLPct))
-		sb.WriteString(fmt.Sprintf("Stop-loss price %.4f | Take-profit price %.4f | ", pos.StopLoss, pos.TakeProfit))
+		sb.WriteString(fmt.Sprintf("Stop-loss %s | Take-profit %s | ", formatProtectionLevel(pos.StopLoss, pos.StopLossState), formatProtectionLevel(pos.TakeProfit, pos.TakeProfitState)))
 		sb.WriteString(fmt.Sprintf("Leverage %dx | ", pos.Leverage))
 		sb.WriteString(fmt.Sprintf("Margin %.0f USDT | ", pos.MarginUsed))
 		sb.WriteString(fmt.Sprintf("Liq Price %.4f\n", pos.LiquidationPrice))

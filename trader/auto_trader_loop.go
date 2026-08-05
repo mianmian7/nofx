@@ -330,7 +330,13 @@ func (at *AutoTrader) runCycle() error {
 			}
 		} else {
 			actionRecord.Success = true
-			record.ExecutionLog = append(record.ExecutionLog, formatDecisionSuccessLog(d, at.entryConfidenceThreshold()))
+			if actionRecord.Degraded {
+				degradedLog := fmt.Sprintf("⚠️ %s %s partial/degraded: %s", d.Symbol, d.Action, actionRecord.DegradedReason)
+				at.logWarnf("%s", degradedLog)
+				record.ExecutionLog = append(record.ExecutionLog, degradedLog)
+			} else {
+				record.ExecutionLog = append(record.ExecutionLog, formatDecisionSuccessLog(d, at.entryConfidenceThreshold()))
+			}
 			// Brief delay after successful execution
 			time.Sleep(1 * time.Second)
 		}
@@ -400,6 +406,14 @@ func isOpenDecision(action string) bool {
 	return a == "open_long" || a == "open_short"
 }
 
+// isWaitDecision reports whether the action is a no-op that never places an
+// order. The engine's safe fallback (and the AI itself) signals a global wait
+// with an "ALL" or empty symbol, which is only meaningful for these actions.
+func isWaitDecision(action string) bool {
+	a := strings.ToLower(strings.TrimSpace(action))
+	return a == "wait" || a == "hold"
+}
+
 func (at *AutoTrader) filterDecisionsToStrategyUniverse(decisions []kernel.Decision, ctx *kernel.Context) []kernel.Decision {
 	if ctx == nil || len(decisions) == 0 {
 		return decisions
@@ -425,6 +439,19 @@ func (at *AutoTrader) filterDecisionsToStrategyUniverse(decisions []kernel.Decis
 
 	filtered := make([]kernel.Decision, 0, len(decisions))
 	for _, d := range decisions {
+		// The engine's safe fallback and the AI both use an "ALL" or empty
+		// symbol to signal a global wait. Check the raw value before exchange
+		// normalization: NormalizeForExchange rewrites "ALL" -> "ALLUSDT" and
+		// "" -> "USDT", which would make the sentinel unrecognizable and trip
+		// the candidate-universe warning on every cycle. Wait decisions carry
+		// no order intent, so letting them through is safe and preserves the
+		// wait record in the decision history.
+		rawSymbol := strings.ToUpper(strings.TrimSpace(d.Symbol))
+		if (rawSymbol == "" || rawSymbol == "ALL") && isWaitDecision(d.Action) {
+			filtered = append(filtered, d)
+			continue
+		}
+
 		sym := normalizeUniverseSymbol(at.exchange, d.Symbol)
 		if sym == "" || sym == "ALL" {
 			filtered = append(filtered, d)
@@ -523,6 +550,7 @@ func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 	}
 
 	var positionInfos []kernel.PositionInfo
+	managedSnapshots := make([]managedPosition, 0, len(positions))
 	totalMarginUsed := 0.0
 
 	// Current position key set (for cleaning up closed position records)
@@ -589,24 +617,32 @@ func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 		peakPnlPct := at.peakPnLCache[posKey]
 		at.peakPnLCacheMutex.RUnlock()
 
+		protectionSnapshot := managedPositionFromMap(pos)
+		at.enrichManagedPosition(&protectionSnapshot)
+		managedSnapshots = append(managedSnapshots, protectionSnapshot)
+
 		positionInfos = append(positionInfos, kernel.PositionInfo{
-			Symbol:           symbol,
-			Side:             side,
-			EntryPrice:       entryPrice,
-			MarkPrice:        markPrice,
-			Quantity:         quantity,
-			Leverage:         leverage,
-			UnrealizedPnL:    unrealizedPnl,
-			UnrealizedPnLPct: pnlPct,
-			PricePnLPct:      pricePnLPct,
-			PeakPnLPct:       peakPnlPct,
-			LiquidationPrice: liquidationPrice,
-			MarginUsed:       marginUsed,
-			StopLoss:         floatFromPosition(pos, "stop_loss", "stopLoss"),
-			TakeProfit:       floatFromPosition(pos, "take_profit", "takeProfit"),
-			UpdateTime:       updateTime,
+			Symbol:            symbol,
+			Side:              side,
+			EntryPrice:        entryPrice,
+			MarkPrice:         markPrice,
+			Quantity:          quantity,
+			Leverage:          leverage,
+			UnrealizedPnL:     unrealizedPnl,
+			UnrealizedPnLPct:  pnlPct,
+			PricePnLPct:       pricePnLPct,
+			PeakPnLPct:        peakPnlPct,
+			LiquidationPrice:  liquidationPrice,
+			MarginUsed:        marginUsed,
+			StopLoss:          protectionSnapshot.stopLoss,
+			TakeProfit:        protectionSnapshot.takeProfit,
+			StopLossState:     string(protectionSnapshot.stopLossState),
+			TakeProfitState:   string(protectionSnapshot.takeProfitState),
+			ProtectionWarning: protectionSnapshot.protectionErr,
+			UpdateTime:        updateTime,
 		})
 	}
+	at.replaceManagedPositionSnapshots(managedSnapshots)
 
 	// Clean up closed position records
 	for key := range at.positionFirstSeenTime {

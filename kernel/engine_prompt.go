@@ -311,11 +311,12 @@ func writeTradeThrottleGuidance(sb *strings.Builder, throttle store.TradeThrottl
 	sb.WriteString(fmt.Sprintf("- Open no more than %d new positions per hour and %d per decision cycle.\n", throttle.MaxOpensPerHour, throttle.MaxOpensPerCycle))
 	sb.WriteString("- Keep stops beyond thesis invalidation and targets far enough to cover fees; do not scalp noise.\n\n")
 	sb.WriteString("# Open Position Management\n\n")
-	sb.WriteString("- Use `update_position` instead of `hold` when an open position's protection should change. Provide `new_stop_loss`, `new_take_profit`, or both. Stops and all risk thresholds use Margin/Position PnL; convert every threshold to an actual price using the current leverage.\n")
-	sb.WriteString("- For an existing long position, the protection order is stop < current price < take-profit; for an existing short position, it is take-profit < current price < stop. Apply these directional relationships to every update.\n")
+	sb.WriteString("- Use `update_position` instead of `hold` when an open position's protection should change. `new_stop_loss` and `new_take_profit` are always absolute exchange trigger prices, never Margin/Position PnL values or percentages. Convert every risk threshold to an actual price using the current leverage before output.\n")
+	sb.WriteString("- Protection triggers use mark price. For an existing long position: stop < current mark < take-profit; for an existing short position: take-profit < current mark < stop. Do not substitute last/trade price for current mark.\n")
 	sb.WriteString("- When only the stop should move, output `new_stop_loss` only and omit `new_take_profit`. Repeating the current take-profit is treated as no change, not as an extension.\n")
 	sb.WriteString("- Once profit reaches +1R, move the stop to breakeven plus fees when market structure permits. At +2R, trail behind a confirmed 15m swing or volatility support/resistance. Never loosen a stop.\n")
-	sb.WriteString("- The backend determines the fee-inclusive breakeven boundary and rejects a profitable stop that could turn the position into a loss; do not invent or label a stop as breakeven based on an assumed fee rate.\n")
+	sb.WriteString("- The backend determines the fee-inclusive breakeven boundary from known costs or an explicitly labeled conservative fallback, then applies exchange tick safety. Do not invent or label a stop as breakeven based on an assumed fee rate.\n")
+	sb.WriteString("- Protection state is explicit: `present` includes a confirmed absolute price; `confirmed_absent` permits an explicit directionally valid first take-profit; `unavailable` or `ambiguous` must never be guessed. If take-profit is unavailable, a separately valid tightened stop may be applied alone and recorded as degraded.\n")
 	sb.WriteString("- For a runaway move: when price has completed most of the path to the existing target and momentum/volume still confirm a breakout, extend the take-profit one step and tighten the stop in the same `update_position` decision.\n")
 	sb.WriteString("- Never move a take-profit farther merely to avoid a likely fill. If momentum weakens, keep the existing target and protect profit with the stop.\n")
 	sb.WriteString("- If no protection level should change, use `hold`.\n\n")
@@ -489,7 +490,7 @@ func writeOutputFormat(sb *strings.Builder, accountEquity, availableBalance, btc
 		sb.WriteString("- `action`: open_long | open_short | close_long | close_short | update_position | hold | wait\n")
 		sb.WriteString(fmt.Sprintf("- `confidence`: 0-100 and required for every action. For `wait`, it is the strongest rejected setup's entry confidence and must be below %d, not confidence in waiting.\n", riskControl.MinConfidence))
 		sb.WriteString("- Required when opening: leverage, position_size_usd, stop_loss, take_profit, confidence, risk_usd\n")
-		sb.WriteString("- Required for `update_position`: `new_stop_loss`, `new_take_profit`, or both; include confidence.\n")
+		sb.WriteString("- Required for `update_position`: absolute-price `new_stop_loss`, absolute-price `new_take_profit`, or both; include confidence. Never put Margin/Position PnL or a percentage in these fields.\n")
 		sb.WriteString("- For `update_position`, output only the fields that change: stop-only protection changes must omit `new_take_profit`; a repeated current take-profit is a no-op.\n")
 		sb.WriteString("- Existing-position direction: long has stop < current price < take-profit; short has take-profit < current price < stop. A take-profit extension must include a tightened stop in the same decision.\n")
 		sb.WriteString("- Opening protection invariants: open_long requires stop_loss < entry/current price < take_profit; open_short requires take_profit < entry/current price < stop_loss. If invalid, output wait.\n")
@@ -504,7 +505,7 @@ func writeOutputFormat(sb *strings.Builder, accountEquity, availableBalance, btc
 		sb.WriteString("- `action`: open_long | open_short | close_long | close_short | update_position | hold | wait\n")
 		sb.WriteString(fmt.Sprintf("- `confidence`: 0-100 and required for every action. For `wait`, it is the strongest rejected setup's entry confidence and must be below %d, not confidence in waiting.\n", riskControl.MinConfidence))
 		sb.WriteString("- Required when opening: leverage, position_size_usd, stop_loss, take_profit, confidence, risk_usd\n")
-		sb.WriteString("- Required for `update_position`: `new_stop_loss`, `new_take_profit`, or both; include confidence.\n")
+		sb.WriteString("- Required for `update_position`: absolute-price `new_stop_loss`, absolute-price `new_take_profit`, or both; include confidence. Never put Margin/Position PnL or a percentage in these fields.\n")
 		sb.WriteString("- For `update_position`, output only the fields that change: stop-only protection changes must omit `new_take_profit`; a repeated current take-profit is a no-op.\n")
 		sb.WriteString("- Existing-position direction: long has stop < current price < take-profit; short has take-profit < current price < stop. A take-profit extension must include a tightened stop in the same decision.\n")
 		sb.WriteString("- Opening protection invariants: open_long requires stop_loss < entry/current price < take_profit; open_short requires take_profit < entry/current price < stop_loss. If invalid, output wait.\n")
@@ -761,10 +762,13 @@ func (e *StrategyEngine) formatPositionInfo(index int, pos PositionInfo, ctx *Co
 	}
 
 	pricePnLPct := formatPricePnLPct(pos)
-	sb.WriteString(fmt.Sprintf("%d. %s %s | Entry %.4f Current %.4f | Qty %.4f | Position Value %.2f USDT | Margin/Position PnL%+.2f%% | Price PnL%+.2f%% | PnL Amount%+.2f USDT | Peak Margin/Position PnL%.2f%% | Stop-loss price %.4f | Take-profit price %.4f | Leverage %dx | Margin %.0f | Liq Price %.4f%s\n\n",
+	sb.WriteString(fmt.Sprintf("%d. %s %s | Entry %.4f Current mark %.4f | Qty %.4f | Position Value %.2f USDT | Margin/Position PnL%+.2f%% | Price PnL%+.2f%% | PnL Amount%+.2f USDT | Peak Margin/Position PnL%.2f%% | Stop-loss %s | Take-profit %s | Leverage %dx | Margin %.0f | Liq Price %.4f%s\n\n",
 		index, pos.Symbol, strings.ToUpper(pos.Side),
 		pos.EntryPrice, pos.MarkPrice, pos.Quantity, positionValue, pos.UnrealizedPnLPct, pricePnLPct, pos.UnrealizedPnL, pos.PeakPnLPct,
-		pos.StopLoss, pos.TakeProfit, pos.Leverage, pos.MarginUsed, pos.LiquidationPrice, holdingDuration))
+		formatProtectionLevel(pos.StopLoss, pos.StopLossState), formatProtectionLevel(pos.TakeProfit, pos.TakeProfitState), pos.Leverage, pos.MarginUsed, pos.LiquidationPrice, holdingDuration))
+	if pos.ProtectionWarning != "" {
+		sb.WriteString(fmt.Sprintf("   Protection snapshot warning: %s\n", pos.ProtectionWarning))
+	}
 
 	if marketData, ok := ctx.MarketDataMap[pos.Symbol]; ok {
 		sb.WriteString(e.formatMarketData(marketData))
