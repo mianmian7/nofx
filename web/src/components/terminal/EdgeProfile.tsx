@@ -87,7 +87,18 @@ export function EdgeProfile({ positions }: EdgeProfileProps) {
     return <div className="tm-sc">{tt('noClosedTradeSample')}</div>
   }
 
-  const maxAbsNet = Math.max(0.01, ...holdBuckets.map((b) => Math.abs(b.net)))
+  // Scale across ALL buckets (hold + side). Using only the hold buckets here
+  // lets a dominant long/short side (e.g. +$5.44 short vs 2.24 max hold) blow
+  // past 100% width and overflow the bar container.
+  const maxAbsNet = Math.max(
+    0.01,
+    ...holdBuckets.map((b) => Math.abs(b.net)),
+    ...sideBuckets.map((b) => Math.abs(b.net)),
+  )
+
+  // width is relative to the 50%-wide half-container; clamp defensively so a
+  // future bucket can never overflow the axis again.
+  const barWidth = (net: number) => Math.min(100, (Math.abs(net) / maxAbsNet) * 100)
 
   const row = (bucket: BucketAgg) => {
     const winPct = bucket.n > 0 ? (100 * bucket.wins) / bucket.n : 0
@@ -107,12 +118,12 @@ export function EdgeProfile({ positions }: EdgeProfileProps) {
         <div style={{ display: 'flex', height: 4, background: 'var(--tm-hair)' }}>
           <div style={{ width: '50%', display: 'flex', justifyContent: 'flex-end' }}>
             {!up && (
-              <div style={{ height: 4, width: `${(Math.abs(bucket.net) / maxAbsNet) * 100}%`, background: 'var(--tm-dn)' }} />
+              <div style={{ height: 4, width: `${barWidth(bucket.net)}%`, background: 'var(--tm-dn)' }} />
             )}
           </div>
           <div style={{ width: '50%' }}>
             {up && bucket.net > 0 && (
-              <div style={{ height: 4, width: `${(bucket.net / maxAbsNet) * 100}%`, background: 'var(--tm-up)' }} />
+              <div style={{ height: 4, width: `${barWidth(bucket.net)}%`, background: 'var(--tm-up)' }} />
             )}
           </div>
         </div>
