@@ -105,7 +105,13 @@ func (t *BitgetTrader) GetTrades(startTime time.Time, limit int) ([]BitgetTrade,
 
 		// Determine order action based on side and tradeSide
 		// Bitget one-way mode: buy_single (open long), sell_single (close long)
-		// Bitget hedge mode: open + buy = open_long, close + sell = close_long
+		// Bitget hedge mode: open + buy = open_long, open + sell = open_short;
+		// close + sell = close_short, close + buy = close_long — the side field
+		// on a close names the position being closed (sell closes a short, buy
+		// closes a long). Liquidation closes surface as reduce_close_long/short
+		// (partial) and burst_close_long/short (full) and must still be recorded
+		// as closes so the position builder does not mistake a liquidation for a
+		// fresh open.
 		orderAction := "open_long"
 		side := strings.ToLower(fill.Side)
 		tradeSide := strings.ToLower(fill.TradeSide)
@@ -123,12 +129,19 @@ func (t *BitgetTrader) GetTrades(startTime time.Time, limit int) ([]BitgetTrade,
 				orderAction = "open_short"
 			}
 		} else if tradeSide == "close" {
-			// Hedge mode: close
+			// Hedge mode: close. Bitget reports the side of the position being
+			// closed: sell closes a short, buy closes a long.
 			if side == "sell" {
-				orderAction = "close_long"
-			} else {
 				orderAction = "close_short"
+			} else {
+				orderAction = "close_long"
 			}
+		} else if tradeSide == "reduce_close_long" || tradeSide == "burst_close_long" {
+			// Hedge mode: partial/full liquidation of a long
+			orderAction = "close_long"
+		} else if tradeSide == "reduce_close_short" || tradeSide == "burst_close_short" {
+			// Hedge mode: partial/full liquidation of a short
+			orderAction = "close_short"
 		}
 
 		trade := BitgetTrade{
@@ -195,7 +208,9 @@ func (t *BitgetTrader) SyncOrdersFromBitget(traderID string, exchangeID string, 
 		// Normalize symbol
 		symbol := market.Normalize(trade.Symbol)
 
-		// Determine position side from order action
+		// Determine position side from order action. Bitget runs in hedge mode
+		// (tradeSide open/close), so open/close fills carry a real LONG/SHORT
+		// position side, never the one-way "BOTH" sentinel.
 		positionSide := "LONG"
 		if strings.Contains(trade.OrderAction, "short") {
 			positionSide = "SHORT"
@@ -213,7 +228,7 @@ func (t *BitgetTrader) SyncOrdersFromBitget(traderID string, exchangeID string, 
 			ExchangeOrderID: trade.TradeID,
 			Symbol:          symbol,
 			Side:            side,
-			PositionSide:    "BOTH", // Bitget uses one-way position mode
+			PositionSide:    positionSide, // hedge-mode LONG/SHORT, not one-way BOTH
 			Type:            trade.OrderType,
 			OrderAction:     trade.OrderAction,
 			Quantity:        trade.FillQty,
