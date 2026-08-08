@@ -63,8 +63,8 @@ func TestBuildSystemPromptFallsBackToEnglishWhenConfiguredLanguageIsChinese(t *t
 			t.Fatalf("English fallback prompt missing %q:\n%s", phrase, prompt)
 		}
 	}
-	if !strings.Contains(prompt, "at least 4h") {
-		t.Fatalf("generic prompt should reflect the strategy throttle profile:\n%s", prompt)
+	if !strings.Contains(prompt, "It never blocks position closes") {
+		t.Fatalf("generic prompt should state that closes are not throttled:\n%s", prompt)
 	}
 	if containsCJK(prompt) {
 		t.Fatalf("system prompt must be English-only, got CJK text:\n%s", prompt)

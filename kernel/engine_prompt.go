@@ -304,9 +304,8 @@ func formatThrottleDuration(minutes int) string {
 
 func writeTradeThrottleGuidance(sb *strings.Builder, throttle store.TradeThrottleConfig) {
 	sb.WriteString("# Trade Throttle (Backend Enforced)\n\n")
-	sb.WriteString(fmt.Sprintf("- Hold each new position for at least %s unless Margin/Position PnL reaches %.1f%% loss or %.1f%% profit. Price PnL is shown separately and must not be used for this gate.\n", formatThrottleDuration(throttle.MinHoldMinutes), throttle.EarlyCloseStopLossBypassPct, throttle.EarlyCloseTakeProfitBypassPct))
-	sb.WriteString(fmt.Sprintf("- After the minimum hold, avoid small closes inside the %.1f%% to %.1f%% Margin/Position PnL noise band until %s.\n", throttle.NoiseCloseLossFloorPct, throttle.NoiseCloseProfitCeilingPct, formatThrottleDuration(throttle.NoiseCloseHoldMinutes)))
-	sb.WriteString("- Every throttle percentage above is Margin/Position PnL. Convert a positive take-profit threshold to an actual price with entry × (1 + target_pct/100/leverage) for longs or entry × (1 - target_pct/100/leverage) for shorts; Price PnL is display-only.\n")
+	sb.WriteString("- The backend only limits how many new positions can be opened per hour and per decision cycle. It never blocks position closes: you decide when to cut losses or take profit.\n")
+	sb.WriteString("- Every PnL figure you see uses Margin/Position PnL (leveraged return on margin). Price PnL is shown separately and is the unlevered price move for context only.\n")
 	sb.WriteString(fmt.Sprintf("- Wait %s after closing a symbol before re-entry.\n", formatThrottleDuration(throttle.ReentryCooldownMinutes)))
 	sb.WriteString(fmt.Sprintf("- Open no more than %d new positions per hour and %d per decision cycle.\n", throttle.MaxOpensPerHour, throttle.MaxOpensPerCycle))
 	sb.WriteString("- Keep stops beyond thesis invalidation and targets far enough to cover fees; do not scalp noise.\n\n")

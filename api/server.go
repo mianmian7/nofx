@@ -364,12 +364,9 @@ StrategyConfig fields:
   risk_control.min_position_size: minimum USDT per trade (default 12)
   risk_control.min_risk_reward_ratio: minimum profit/loss ratio required (default 2 = 2:1)
   risk_control.min_confidence: minimum AI confidence to open position (default 75, range 60-90)
-  risk_control.trade_throttle: optional strategy-scoped anti-churn policy; every *Pct field is Margin/Position PnL %, not Price PnL
-  risk_control.trade_throttle.pnl_unit: must be "margin_position_pnl_pct" for explicit percentage thresholds; unmarked legacy values are not silently reinterpreted
-  risk_control.trade_throttle.min_hold_minutes/noise_close_hold_minutes/reentry_cooldown_minutes: hold and re-entry windows in minutes
+  risk_control.trade_throttle: optional strategy-scoped anti-churn policy limiting opening frequency (closes are never throttled)
+  risk_control.trade_throttle.reentry_cooldown_minutes: wait after closing a symbol before re-entry
   risk_control.trade_throttle.max_opens_per_hour/max_opens_per_cycle: opening caps
-  risk_control.trade_throttle.early_close_stop_loss_bypass_pct/early_close_take_profit_bypass_pct: early AI-close Margin/Position PnL bypass thresholds
-  risk_control.trade_throttle.noise_close_loss_floor_pct/noise_close_profit_ceiling_pct: post-hold Margin/Position PnL noise-band thresholds
   prompt_sections.role_definition: describe the AI's trading persona and goal
   prompt_sections.trading_frequency: guidelines on how often to trade
   prompt_sections.entry_standards: conditions that must align before entering a position

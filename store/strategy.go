@@ -863,84 +863,40 @@ type ExternalDataSource struct {
 	RefreshSecs int               `json:"refresh_secs,omitempty"` // refresh interval (seconds)
 }
 
-// TradeThrottleConfig controls AI-managed trade frequency and noise exits for
-// one strategy. All *Pct fields are Margin/Position PnL percentages, not price
-// PnL. The early-close bypass is a separate throttle gate from the unified
-// hard stop. Zero percentage values mean "use the profile default"; old
-// persisted strategy JSON remains safe because its unit is marked legacy rather
-// than silently reinterpreted.
-const (
-	TradeThrottleMarginPositionPnLUnit = "margin_position_pnl_pct"
-	TradeThrottleLegacyPnLUnit         = "legacy_unverified"
-)
-
+// TradeThrottleConfig controls AI-managed opening frequency for one strategy.
+// Position management (closing) is owned by the AI and is never throttled, so
+// this config only carries opening-side limits.
 type TradeThrottleConfig struct {
-	MinHoldMinutes         int `json:"min_hold_minutes,omitempty"`
-	NoiseCloseHoldMinutes  int `json:"noise_close_hold_minutes,omitempty"`
 	ReentryCooldownMinutes int `json:"reentry_cooldown_minutes,omitempty"`
 	MaxOpensPerHour        int `json:"max_opens_per_hour,omitempty"`
 	MaxOpensPerCycle       int `json:"max_opens_per_cycle,omitempty"`
-	// PnLUnit makes the percentage basis explicit. Empty/legacy values from
-	// persisted pre-migration JSON are not reinterpreted as Margin/Position PnL.
-	PnLUnit                       string  `json:"pnl_unit,omitempty"`
-	EarlyCloseStopLossBypassPct   float64 `json:"early_close_stop_loss_bypass_pct,omitempty"`   // Margin/Position PnL %
-	EarlyCloseTakeProfitBypassPct float64 `json:"early_close_take_profit_bypass_pct,omitempty"` // Margin/Position PnL %
-	NoiseCloseLossFloorPct        float64 `json:"noise_close_loss_floor_pct,omitempty"`         // Margin/Position PnL %
-	NoiseCloseProfitCeilingPct    float64 `json:"noise_close_profit_ceiling_pct,omitempty"`     // Margin/Position PnL %
 }
 
 // DefaultTradeThrottleConfig returns the compatibility profile used when an
 // existing strategy has no throttle settings.
 func DefaultTradeThrottleConfig() TradeThrottleConfig {
-	// The migrated defaults keep a -20% Margin/Position PnL loss boundary and a
-	// +40% early-profit bypass: +40% is the normal 2R gross target against the
-	// unified -20% hard stop, and both values are explicitly margin-based.
 	return TradeThrottleConfig{
-		MinHoldMinutes:                60,
-		NoiseCloseHoldMinutes:         90,
-		ReentryCooldownMinutes:        30,
-		MaxOpensPerHour:               30,
-		MaxOpensPerCycle:              6,
-		PnLUnit:                       TradeThrottleMarginPositionPnLUnit,
-		EarlyCloseStopLossBypassPct:   -20,
-		EarlyCloseTakeProfitBypassPct: 40,
-		NoiseCloseLossFloorPct:        -5,
-		NoiseCloseProfitCeilingPct:    10,
+		ReentryCooldownMinutes: 30,
+		MaxOpensPerHour:        30,
+		MaxOpensPerCycle:       6,
 	}
 }
 
-// BigMoveTradeThrottleConfig retains the anti-churn timing profile derived from
-// 39eac5ac, but its old +12 value was compared as Price PnL in the historical
-// runtime. The percentage thresholds below are an explicit Margin/Position PnL
-// profile and therefore are intentionally not a numeric carry-over.
+// BigMoveTradeThrottleConfig returns the anti-churn opening profile for the
+// default strategy template (4h holding profile from 39eac5ac, reduced to the
+// opening-side limits that remain enforced).
 func BigMoveTradeThrottleConfig() TradeThrottleConfig {
-	// Big-move timing changes do not weaken the same -20% hard stop or +40% 2R
-	// early target; the old unmarked +12 value is intentionally not carried over.
 	return TradeThrottleConfig{
-		MinHoldMinutes:                4 * 60,
-		NoiseCloseHoldMinutes:         8 * 60,
-		ReentryCooldownMinutes:        3 * 60,
-		MaxOpensPerHour:               3,
-		MaxOpensPerCycle:              2,
-		PnLUnit:                       TradeThrottleMarginPositionPnLUnit,
-		EarlyCloseStopLossBypassPct:   -20,
-		EarlyCloseTakeProfitBypassPct: 40,
-		NoiseCloseLossFloorPct:        -10,
-		NoiseCloseProfitCeilingPct:    20,
+		ReentryCooldownMinutes: 3 * 60,
+		MaxOpensPerHour:        3,
+		MaxOpensPerCycle:       2,
 	}
 }
 
 // Effective returns a complete, safe configuration. Partial configs from API
-// clients inherit missing fields; percentage overrides are honored only when
-// PnLUnit explicitly declares Margin/Position PnL.
+// clients inherit missing fields.
 func (c TradeThrottleConfig) Effective() TradeThrottleConfig {
 	d := DefaultTradeThrottleConfig()
-	if c.MinHoldMinutes > 0 {
-		d.MinHoldMinutes = c.MinHoldMinutes
-	}
-	if c.NoiseCloseHoldMinutes > 0 {
-		d.NoiseCloseHoldMinutes = c.NoiseCloseHoldMinutes
-	}
 	if c.ReentryCooldownMinutes > 0 {
 		d.ReentryCooldownMinutes = c.ReentryCooldownMinutes
 	}
@@ -950,57 +906,13 @@ func (c TradeThrottleConfig) Effective() TradeThrottleConfig {
 	if c.MaxOpensPerCycle > 0 {
 		d.MaxOpensPerCycle = c.MaxOpensPerCycle
 	}
-	// The old throttle compared these values against price PnL. Without an
-	// explicit unit, retaining a value such as +12 would silently reinterpret
-	// it as Margin/Position PnL. Keep the safe migrated defaults and preserve
-	// the legacy marker so callers can surface that migration state.
-	if c.PnLUnit == TradeThrottleMarginPositionPnLUnit {
-		d.PnLUnit = TradeThrottleMarginPositionPnLUnit
-		if c.EarlyCloseStopLossBypassPct != 0 {
-			d.EarlyCloseStopLossBypassPct = c.EarlyCloseStopLossBypassPct
-		}
-		if c.EarlyCloseTakeProfitBypassPct != 0 {
-			d.EarlyCloseTakeProfitBypassPct = c.EarlyCloseTakeProfitBypassPct
-		}
-		if c.NoiseCloseLossFloorPct != 0 {
-			d.NoiseCloseLossFloorPct = c.NoiseCloseLossFloorPct
-		}
-		if c.NoiseCloseProfitCeilingPct != 0 {
-			d.NoiseCloseProfitCeilingPct = c.NoiseCloseProfitCeilingPct
-		}
-	} else {
-		d.PnLUnit = TradeThrottleLegacyPnLUnit
-	}
-	if d.NoiseCloseHoldMinutes < d.MinHoldMinutes {
-		d.NoiseCloseHoldMinutes = d.MinHoldMinutes
-	}
 	return d
 }
 
-// ClampLimits keeps user-provided throttle values finite and bounded without
-// materializing defaults into legacy strategy JSON.
+// ClampLimits keeps user-provided throttle values finite and bounded.
 func (c *TradeThrottleConfig) ClampLimits() {
 	if c == nil {
 		return
-	}
-	if c.PnLUnit == "" {
-		// Persisted pre-migration configs are explicitly marked instead of
-		// silently treating their old percentage values as margin PnL.
-		c.PnLUnit = TradeThrottleLegacyPnLUnit
-	} else if c.PnLUnit != TradeThrottleMarginPositionPnLUnit {
-		c.PnLUnit = TradeThrottleLegacyPnLUnit
-	}
-	if c.MinHoldMinutes < 0 {
-		c.MinHoldMinutes = 0
-	}
-	if c.MinHoldMinutes > 7*24*60 {
-		c.MinHoldMinutes = 7 * 24 * 60
-	}
-	if c.NoiseCloseHoldMinutes < 0 {
-		c.NoiseCloseHoldMinutes = 0
-	}
-	if c.NoiseCloseHoldMinutes > 14*24*60 {
-		c.NoiseCloseHoldMinutes = 14 * 24 * 60
 	}
 	if c.ReentryCooldownMinutes < 0 {
 		c.ReentryCooldownMinutes = 0
@@ -1019,30 +931,6 @@ func (c *TradeThrottleConfig) ClampLimits() {
 	}
 	if c.MaxOpensPerCycle > 100 {
 		c.MaxOpensPerCycle = 100
-	}
-	if c.EarlyCloseStopLossBypassPct < -100 {
-		c.EarlyCloseStopLossBypassPct = -100
-	}
-	if c.EarlyCloseStopLossBypassPct > 100 {
-		c.EarlyCloseStopLossBypassPct = 100
-	}
-	if c.EarlyCloseTakeProfitBypassPct < -100 {
-		c.EarlyCloseTakeProfitBypassPct = -100
-	}
-	if c.EarlyCloseTakeProfitBypassPct > 100 {
-		c.EarlyCloseTakeProfitBypassPct = 100
-	}
-	if c.NoiseCloseLossFloorPct < -100 {
-		c.NoiseCloseLossFloorPct = -100
-	}
-	if c.NoiseCloseLossFloorPct > 100 {
-		c.NoiseCloseLossFloorPct = 100
-	}
-	if c.NoiseCloseProfitCeilingPct < -100 {
-		c.NoiseCloseProfitCeilingPct = -100
-	}
-	if c.NoiseCloseProfitCeilingPct > 100 {
-		c.NoiseCloseProfitCeilingPct = 100
 	}
 }
 

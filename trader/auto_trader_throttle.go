@@ -27,63 +27,6 @@ func isCloseAction(action string) bool {
 	}
 }
 
-func closeActionSide(action string) string {
-	switch strings.ToLower(strings.TrimSpace(action)) {
-	case "close_long":
-		return "long"
-	case "close_short":
-		return "short"
-	default:
-		return ""
-	}
-}
-
-func openActionSide(action string) string {
-	switch strings.ToLower(strings.TrimSpace(action)) {
-	case "open_long":
-		return "long"
-	case "open_short":
-		return "short"
-	default:
-		return ""
-	}
-}
-
-// positionMarginPnLPct returns the leveraged return on the position margin.
-// UnrealizedPnLPct is defined by the kernel as margin/position PnL, so throttle
-// thresholds must compare against it directly. Price PnL is a separate display
-// metric and must not be used for risk exits.
-func positionMarginPnLPct(pos *kernel.PositionInfo) float64 {
-	if pos == nil {
-		return 0
-	}
-	return pos.UnrealizedPnLPct
-}
-
-// positionPricePnLPct is intentionally display-only. It must not be used for
-// margin-PnL risk gates.
-func positionPricePnLPct(pos *kernel.PositionInfo) float64 {
-	if pos == nil {
-		return 0
-	}
-	if pos.EntryPrice > 0 && pos.MarkPrice > 0 {
-		move := (pos.MarkPrice - pos.EntryPrice) / pos.EntryPrice * 100
-		if strings.EqualFold(pos.Side, "short") {
-			move = -move
-		}
-		return move
-	}
-	if pos.PricePnLPct != 0 {
-		return pos.PricePnLPct
-	}
-	if pos.Leverage > 1 {
-		// Compatibility fallback for contexts that only carry the margin PnL
-		// field. New contexts should always provide entry and mark prices.
-		return pos.UnrealizedPnLPct / float64(pos.Leverage)
-	}
-	return pos.UnrealizedPnLPct
-}
-
 func normalizedDecisionSymbol(exchange, symbol string) string {
 	return market.NormalizeForExchange(exchange, strings.TrimSpace(symbol))
 }
@@ -101,11 +44,13 @@ func (at *AutoTrader) tradeThrottleReason(decision kernel.Decision, ctx *kernel.
 	}
 	throttle := at.effectiveTradeThrottle()
 
+	// Only opening frequency is throttled. Close decisions are owned by the AI:
+	// the exchange-side -20% Margin/Position PnL hard stop caps downside, so a
+	// holding-time / PnL-band gate would only override the model's context-aware
+	// position management.
 	switch {
 	case isOpenAction(decision.Action):
 		return at.openThrottleReason(decision, ctx, opensQueuedThisCycle, throttle)
-	case isCloseAction(decision.Action):
-		return at.closeThrottleReason(decision, ctx, throttle)
 	default:
 		return ""
 	}
@@ -143,89 +88,6 @@ func (at *AutoTrader) openThrottleReason(decision kernel.Decision, ctx *kernel.C
 	}
 
 	return ""
-}
-
-func (at *AutoTrader) closeThrottleReason(decision kernel.Decision, ctx *kernel.Context, throttle store.TradeThrottleConfig) string {
-	symbol := normalizedDecisionSymbol(at.exchange, decision.Symbol)
-	side := closeActionSide(decision.Action)
-	if symbol == "" || side == "" {
-		return ""
-	}
-
-	pos := findContextPosition(at.exchange, ctx, symbol, side)
-	marginPnLPct := 0.0
-	pricePnLPct := 0.0
-	entryTime := int64(0)
-	if pos != nil {
-		marginPnLPct = positionMarginPnLPct(pos)
-		pricePnLPct = positionPricePnLPct(pos)
-		entryTime = pos.UpdateTime
-	}
-
-	noiseCloseHold := time.Duration(throttle.NoiseCloseHoldMinutes) * time.Minute
-	if order := at.findRecentOpenOrder(symbol, side, time.Now().Add(-noiseCloseHold)); order != nil && order.CreatedAt > entryTime {
-		entryTime = order.CreatedAt
-	}
-	if entryTime <= 0 {
-		return ""
-	}
-
-	heldFor := time.Since(time.UnixMilli(entryTime))
-	if heldFor < 0 {
-		heldFor = 0
-	}
-	minHold := time.Duration(throttle.MinHoldMinutes) * time.Minute
-	if heldFor >= minHold {
-		if heldFor >= noiseCloseHold ||
-			marginPnLPct <= throttle.NoiseCloseLossFloorPct ||
-			marginPnLPct >= throttle.NoiseCloseProfitCeilingPct {
-			return ""
-		}
-
-		remaining := noiseCloseHold - heldFor
-		return fmt.Sprintf(
-			"trade throttle: %s %s has been held for %s with Margin/Position PnL %.2f%% (Price PnL %.2f%%); it is still inside the noise band %.1f%% to %.1f%% Margin/Position PnL, so wait about %s before a flat/small close",
-			symbol,
-			side,
-			roundDuration(heldFor),
-			marginPnLPct,
-			pricePnLPct,
-			throttle.NoiseCloseLossFloorPct,
-			throttle.NoiseCloseProfitCeilingPct,
-			roundDuration(remaining),
-		)
-	}
-
-	// Do not block true risk exits or unusually strong take-profit exits.
-	if marginPnLPct <= throttle.EarlyCloseStopLossBypassPct || marginPnLPct >= throttle.EarlyCloseTakeProfitBypassPct {
-		return ""
-	}
-
-	remaining := minHold - heldFor
-	return fmt.Sprintf(
-		"trade throttle: %s %s has only been held for %s with Margin/Position PnL %.2f%% (Price PnL %.2f%%); min AI-managed hold is %s unless Margin/Position PnL loss <= %.1f%% or profit >= %.1f%%",
-		symbol,
-		side,
-		roundDuration(heldFor),
-		marginPnLPct,
-		pricePnLPct,
-		roundDuration(minHold),
-		throttle.EarlyCloseStopLossBypassPct,
-		throttle.EarlyCloseTakeProfitBypassPct,
-	) + fmt.Sprintf("; wait about %s", roundDuration(remaining))
-}
-
-func findContextPosition(exchange string, ctx *kernel.Context, symbol string, side string) *kernel.PositionInfo {
-	if ctx == nil {
-		return nil
-	}
-	for i := range ctx.Positions {
-		pos := &ctx.Positions[i]
-		if normalizedDecisionSymbol(exchange, pos.Symbol) == symbol && strings.EqualFold(pos.Side, side) {
-			return pos
-		}
-	}
-	return nil
 }
 
 func findAnyContextPosition(exchange string, ctx *kernel.Context, symbol string) *kernel.PositionInfo {
@@ -278,25 +140,6 @@ func (at *AutoTrader) findRecentCloseOrder(symbol string, since time.Time) *stor
 			continue
 		}
 		if normalizedDecisionSymbol(at.exchange, order.Symbol) == symbol && isCloseAction(order.OrderAction) {
-			return order
-		}
-	}
-	return nil
-}
-
-func (at *AutoTrader) findRecentOpenOrder(symbol string, side string, since time.Time) *store.TraderOrder {
-	orders, err := at.recentOrders(100)
-	if err != nil {
-		at.logWarnf("⚠️ Trade throttle could not read recent open orders: %v", err)
-		return nil
-	}
-	sinceMs := since.UTC().UnixMilli()
-	for _, order := range orders {
-		if order == nil || order.CreatedAt < sinceMs || isCanceledOrder(order) {
-			continue
-		}
-		if normalizedDecisionSymbol(at.exchange, order.Symbol) == symbol &&
-			strings.EqualFold(openActionSide(order.OrderAction), side) {
 			return order
 		}
 	}

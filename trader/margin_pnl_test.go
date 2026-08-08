@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"nofx/kernel"
-	"nofx/store"
 )
 
 func TestMarginPnLTakeProfitPriceConvertsLongAndShortAtFinalLeverage(t *testing.T) {
@@ -85,30 +84,6 @@ func TestPositionInitialMarginPrefersProviderInitialMarginAndSeparatesPricePnL(t
 	}
 	if got := calculatePricePnLPct(100, 110, "short"); math.Abs(got+10) > 1e-9 {
 		t.Fatalf("short Price PnL = %.8f%%, want -10%%", got)
-	}
-}
-
-func TestLegacyThrottleTakeProfit12IsNotSilentlyReinterpretedAsMarginPnL(t *testing.T) {
-	legacy := store.TradeThrottleConfig{EarlyCloseTakeProfitBypassPct: 12}
-	effectiveLegacy := legacy.Effective()
-	if effectiveLegacy.PnLUnit != store.TradeThrottleLegacyPnLUnit {
-		t.Fatalf("unmarked legacy throttle unit = %q, want %q", effectiveLegacy.PnLUnit, store.TradeThrottleLegacyPnLUnit)
-	}
-	if got := effectiveLegacy.EarlyCloseTakeProfitBypassPct; got != 40 {
-		t.Fatalf("unmarked legacy +12%% became %.2f%% Margin/Position PnL, want safe +40%% default", got)
-	}
-
-	marked := store.TradeThrottleConfig{
-		PnLUnit:                       store.TradeThrottleMarginPositionPnLUnit,
-		EarlyCloseTakeProfitBypassPct: 12,
-	}
-	if got := marked.Effective().EarlyCloseTakeProfitBypassPct; got != 12 {
-		t.Fatalf("explicit Margin/Position PnL +12%% became %.2f%%", got)
-	}
-
-	legacy.ClampLimits()
-	if legacy.PnLUnit != store.TradeThrottleLegacyPnLUnit {
-		t.Fatalf("legacy throttle unit = %q, want %q", legacy.PnLUnit, store.TradeThrottleLegacyPnLUnit)
 	}
 }
 

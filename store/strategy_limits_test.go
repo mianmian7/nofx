@@ -78,7 +78,7 @@ func TestNormalizeProductSchemaKeepsLegacySizingExplicit(t *testing.T) {
 
 func TestTradeThrottleProfilesAndLegacyFallback(t *testing.T) {
 	legacy := (RiskControlConfig{}).EffectiveTradeThrottle()
-	if legacy.PnLUnit != TradeThrottleMarginPositionPnLUnit || legacy.EarlyCloseTakeProfitBypassPct != 40 || legacy.NoiseCloseProfitCeilingPct != 10 || legacy.MinHoldMinutes != 60 || legacy.NoiseCloseHoldMinutes != 90 || legacy.MaxOpensPerCycle != 6 {
+	if legacy.ReentryCooldownMinutes != 30 || legacy.MaxOpensPerHour != 30 || legacy.MaxOpensPerCycle != 6 {
 		t.Fatalf("legacy throttle fallback = %+v", legacy)
 	}
 
@@ -91,33 +91,23 @@ func TestTradeThrottleProfilesAndLegacyFallback(t *testing.T) {
 	if got != want {
 		t.Fatalf("default throttle = %+v, want %+v", got, want)
 	}
-	if want.PnLUnit != TradeThrottleMarginPositionPnLUnit || want.EarlyCloseTakeProfitBypassPct != 40 {
-		t.Fatalf("default take-profit profile = %+v, want explicit Margin/Position PnL +40%%", want)
+	if want.ReentryCooldownMinutes != 3*60 || want.MaxOpensPerHour != 3 || want.MaxOpensPerCycle != 2 {
+		t.Fatalf("default opening profile = %+v, want the BigMove opening limits", want)
 	}
 }
 
 func TestTradeThrottleClampLimits(t *testing.T) {
 	throttle := &TradeThrottleConfig{
-		MinHoldMinutes:                -1,
-		NoiseCloseHoldMinutes:         999999,
-		ReentryCooldownMinutes:        -1,
-		MaxOpensPerHour:               9999,
-		MaxOpensPerCycle:              -1,
-		EarlyCloseStopLossBypassPct:   -999,
-		EarlyCloseTakeProfitBypassPct: 999,
-		NoiseCloseLossFloorPct:        -999,
-		NoiseCloseProfitCeilingPct:    999,
+		ReentryCooldownMinutes: -1,
+		MaxOpensPerHour:        9999,
+		MaxOpensPerCycle:       -1,
 	}
 	throttle.ClampLimits()
 
-	if throttle.MinHoldMinutes != 0 || throttle.ReentryCooldownMinutes != 0 || throttle.MaxOpensPerCycle != 0 {
+	if throttle.ReentryCooldownMinutes != 0 || throttle.MaxOpensPerCycle != 0 {
 		t.Fatalf("negative throttle values were not cleared: %+v", throttle)
 	}
-	if throttle.NoiseCloseHoldMinutes != 14*24*60 || throttle.MaxOpensPerHour != 1000 {
+	if throttle.MaxOpensPerHour != 1000 {
 		t.Fatalf("throttle upper bounds not applied: %+v", throttle)
-	}
-	if throttle.EarlyCloseStopLossBypassPct != -100 || throttle.EarlyCloseTakeProfitBypassPct != 100 ||
-		throttle.NoiseCloseLossFloorPct != -100 || throttle.NoiseCloseProfitCeilingPct != 100 {
-		t.Fatalf("throttle percentage bounds not applied: %+v", throttle)
 	}
 }

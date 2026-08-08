@@ -24,71 +24,37 @@ func throttleContext(symbol, side string, heldFor time.Duration, pnlPct float64)
 	}
 }
 
-func TestTradeThrottleUsesMarginPositionPnLForEarlyRiskExit(t *testing.T) {
+// Close decisions are owned by the AI: the exchange-side hard stop caps
+// downside, so the throttle must never block any close regardless of holding
+// time or PnL.
+func TestTradeThrottleNeverBlocksCloseDecisions(t *testing.T) {
 	at := &AutoTrader{}
-	// A 1% long price loss at 20x is -20% Margin/Position PnL.
-	ctx := throttleContext("xyz:INTC", "long", 20*time.Minute, -20.0)
-
-	if reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "close_long"}, ctx, 0); reason != "" {
-		t.Fatalf("margin-PnL hard stop should bypass minimum hold, got %q", reason)
-	}
-}
-
-func TestTradeThrottleBlocksEarlyNoiseClose(t *testing.T) {
-	at := &AutoTrader{}
-	// -0.3% Margin/Position PnL is only -0.015% Price PnL at 20x.
-	ctx := throttleContext("xyz:INTC", "long", 20*time.Minute, -0.3)
-
-	reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "close_long"}, ctx, 0)
-	if !strings.Contains(reason, "min AI-managed hold") {
-		t.Fatalf("expected early close to be blocked by min hold, got %q", reason)
-	}
-	if !strings.Contains(reason, "Margin/Position PnL") || !strings.Contains(reason, "Price PnL") {
-		t.Fatalf("expected both PnL units in throttle reason, got %q", reason)
-	}
-}
-
-func TestTradeThrottleAllowsEarlyHardStop(t *testing.T) {
-	at := &AutoTrader{}
-	// -20% Margin/Position PnL at 20x is only -1% Price PnL.
-	ctx := throttleContext("xyz:INTC", "long", 20*time.Minute, -20.0)
-
-	reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "close_long"}, ctx, 0)
-	if reason != "" {
-		t.Fatalf("expected hard stop close to pass, got %q", reason)
-	}
-}
-
-func TestTradeThrottleBlocksFlatCloseInsideNoiseWindow(t *testing.T) {
-	at := &AutoTrader{}
-	ctx := throttleContext("xyz:INTC", "long", 60*time.Minute, 0.4)
-
-	reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "close_long"}, ctx, 0)
-	if !strings.Contains(reason, "noise band") {
-		t.Fatalf("expected flat close to be blocked inside noise window, got %q", reason)
-	}
-}
-
-func TestTradeThrottleAllowsConfirmedLossAfterMinimumHold(t *testing.T) {
-	at := &AutoTrader{}
-	ctx := throttleContext("xyz:INTC", "long", 60*time.Minute, -6.0)
-
-	reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "close_long"}, ctx, 0)
-	if reason != "" {
-		t.Fatalf("expected confirmed loss after min hold to pass, got %q", reason)
-	}
-}
-
-func TestTradeThrottleUsesMarginPnLForEarlyTakeProfitBypass(t *testing.T) {
-	at := &AutoTrader{}
-	ctx := throttleContext("xyz:INTC", "long", 20*time.Minute, 40.0)
-	if reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "close_long"}, ctx, 0); reason != "" {
-		t.Fatalf("+40%% Margin/Position PnL should bypass minimum hold, got %q", reason)
+	tests := []struct {
+		name      string
+		heldFor   time.Duration
+		pnlPct    float64
+		closeSide string
+	}{
+		{"early small loss", 20 * time.Minute, -0.3, "long"},
+		{"early hard stop loss", 20 * time.Minute, -20.0, "long"},
+		{"flat inside former noise window", 60 * time.Minute, 0.4, "long"},
+		{"confirmed loss after hold", 60 * time.Minute, -6.0, "long"},
+		{"big early profit", 20 * time.Minute, 40.0, "long"},
+		{"moderate early profit", 20 * time.Minute, 12.0, "long"},
+		{"short side any state", 30 * time.Minute, -3.0, "short"},
 	}
 
-	ctx = throttleContext("xyz:INTC", "long", 20*time.Minute, 12.0)
-	if reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "close_long"}, ctx, 0); !strings.Contains(reason, "Margin/Position PnL") {
-		t.Fatalf("+12%% margin PnL should not be treated as the migrated +40%% target, got %q", reason)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := throttleContext("xyz:INTC", tc.closeSide, tc.heldFor, tc.pnlPct)
+			action := "close_long"
+			if tc.closeSide == "short" {
+				action = "close_short"
+			}
+			if reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: action}, ctx, 0); reason != "" {
+				t.Fatalf("close %s %s should never be throttled, got %q", tc.closeSide, tc.name, reason)
+			}
+		})
 	}
 }
 
@@ -101,16 +67,6 @@ func TestTradeThrottleAllowsLongShortPairInCycle(t *testing.T) {
 	reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "open_short"}, ctx, 1)
 	if reason != "" {
 		t.Fatalf("expected the second (short) open in cycle to be allowed, got %q", reason)
-	}
-}
-
-func TestPositionPnLMetricsKeepMarginAndPriceUnitsExplicit(t *testing.T) {
-	pos := &kernel.PositionInfo{UnrealizedPnLPct: -18, Leverage: 20}
-	if got := positionMarginPnLPct(pos); got != -18 {
-		t.Fatalf("margin/position PnL = %.2f, want -18.00", got)
-	}
-	if got := positionPricePnLPct(pos); got != -0.9 {
-		t.Fatalf("price PnL = %.2f, want -0.90", got)
 	}
 }
 
@@ -145,22 +101,25 @@ func TestTradeThrottleUsesStrategyScopedProfile(t *testing.T) {
 	}
 	at := &AutoTrader{config: AutoTraderConfig{StrategyConfig: &cfg}}
 
+	// The 4h BigMove profile no longer restricts closes.
 	ctx := throttleContext("BTCUSDT", "long", 2*time.Hour, 0.4)
-	if reason := at.tradeThrottleReason(kernel.Decision{Symbol: "BTCUSDT", Action: "close_long"}, ctx, 0); !strings.Contains(reason, "min AI-managed hold") {
-		t.Fatalf("strategy profile should enforce its 4h minimum hold, got %q", reason)
+	if reason := at.tradeThrottleReason(kernel.Decision{Symbol: "BTCUSDT", Action: "close_long"}, ctx, 0); reason != "" {
+		t.Fatalf("strategy profile should not throttle a close, got %q", reason)
 	}
+	// The per-cycle open cap is still enforced.
 	if reason := at.tradeThrottleReason(kernel.Decision{Symbol: "BTCUSDT", Action: "open_long"}, &kernel.Context{}, 2); !strings.Contains(reason, "2 new position") {
 		t.Fatalf("strategy profile should enforce its per-cycle cap, got %q", reason)
 	}
 }
 
-func TestTradeThrottleLegacyFallbackRemainsIndependent(t *testing.T) {
+func TestTradeThrottleLegacyFallbackKeepsOpenCap(t *testing.T) {
 	at := &AutoTrader{}
 	ctx := throttleContext("BTCUSDT", "long", 2*time.Hour, 0.4)
 	if reason := at.tradeThrottleReason(kernel.Decision{Symbol: "BTCUSDT", Action: "close_long"}, ctx, 0); reason != "" {
-		t.Fatalf("legacy trader should keep the 90m noise window fallback, got %q", reason)
+		t.Fatalf("legacy trader should not throttle a close, got %q", reason)
 	}
-	if reason := at.tradeThrottleReason(kernel.Decision{Symbol: "BTCUSDT", Action: "open_long"}, &kernel.Context{}, 2); reason != "" {
+	// The 6-per-cycle open cap fallback is still enforced.
+	if reason := at.tradeThrottleReason(kernel.Decision{Symbol: "BTCUSDT", Action: "open_long"}, &kernel.Context{}, 6); !strings.Contains(reason, "6 new position") {
 		t.Fatalf("legacy trader should keep the 6-per-cycle fallback, got %q", reason)
 	}
 }

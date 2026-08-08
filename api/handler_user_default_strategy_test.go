@@ -65,10 +65,9 @@ func TestCreateDefaultStrategiesUsesOneReadyToRunLocalDynamicPreset(t *testing.T
 		trendCfg.RiskControl.MaxMarginUsage != 0.5 {
 		t.Fatalf("default strategy should use bounded position sizing, got risk=%+v", trendCfg.RiskControl)
 	}
-	if throttle := trendCfg.RiskControl.EffectiveTradeThrottle(); throttle.MinHoldMinutes != 240 ||
-		throttle.NoiseCloseHoldMinutes != 480 || throttle.ReentryCooldownMinutes != 180 ||
+	if throttle := trendCfg.RiskControl.EffectiveTradeThrottle(); throttle.ReentryCooldownMinutes != 180 ||
 		throttle.MaxOpensPerHour != 3 || throttle.MaxOpensPerCycle != 2 {
-		t.Fatalf("default strategy should use the strategy-scoped big-move throttle, got %+v", throttle)
+		t.Fatalf("default strategy should use the strategy-scoped big-move opening limits, got %+v", throttle)
 	}
 }
 
