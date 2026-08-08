@@ -135,15 +135,9 @@ const profileOptions: Array<{
 ]
 
 const bigMoveTradeThrottle: Required<TradeThrottleConfig> = {
-  min_hold_minutes: 240,
-  noise_close_hold_minutes: 480,
   reentry_cooldown_minutes: 180,
   max_opens_per_hour: 3,
   max_opens_per_cycle: 2,
-  early_close_stop_loss_bypass_pct: -5,
-  early_close_take_profit_bypass_pct: 12,
-  noise_close_loss_floor_pct: -4,
-  noise_close_profit_ceiling_pct: 6,
 }
 
 function getAIConfig(config: StrategyConfig): AIStrategyConfig | null {
@@ -237,18 +231,9 @@ function defaultTradeThrottle(
   throttle?: Partial<TradeThrottleConfig>
 ): Required<TradeThrottleConfig> {
   return {
-    min_hold_minutes: throttle?.min_hold_minutes ?? 60,
-    noise_close_hold_minutes: throttle?.noise_close_hold_minutes ?? 90,
     reentry_cooldown_minutes: throttle?.reentry_cooldown_minutes ?? 30,
     max_opens_per_hour: throttle?.max_opens_per_hour ?? 30,
     max_opens_per_cycle: throttle?.max_opens_per_cycle ?? 6,
-    early_close_stop_loss_bypass_pct:
-      throttle?.early_close_stop_loss_bypass_pct ?? -2.5,
-    early_close_take_profit_bypass_pct:
-      throttle?.early_close_take_profit_bypass_pct ?? 5,
-    noise_close_loss_floor_pct: throttle?.noise_close_loss_floor_pct ?? -1,
-    noise_close_profit_ceiling_pct:
-      throttle?.noise_close_profit_ceiling_pct ?? 2,
   }
 }
 
@@ -1820,8 +1805,6 @@ export function StrategyStudioPage() {
                   <div className="grid gap-4 sm:grid-cols-3">
                     {(
                       [
-                        ['min_hold_minutes', '最短持仓（分钟）', 'Minimum hold (min)'],
-                        ['noise_close_hold_minutes', '噪声窗口（分钟）', 'Noise window (min)'],
                         ['reentry_cooldown_minutes', '重入冷却（分钟）', 'Re-entry cooldown (min)'],
                         ['max_opens_per_hour', '每小时最大开仓', 'Max opens per hour'],
                         ['max_opens_per_cycle', '每周期最大开仓', 'Max opens per cycle'],

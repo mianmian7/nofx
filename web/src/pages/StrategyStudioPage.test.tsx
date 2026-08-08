@@ -146,8 +146,6 @@ describe('StrategyStudioPage initial data policy', () => {
     )
     expect(payload.config.ai_config.risk_control.max_positions).toBe(3)
     expect(payload.config.ai_config.risk_control.trade_throttle).toMatchObject({
-      min_hold_minutes: 240,
-      noise_close_hold_minutes: 480,
       reentry_cooldown_minutes: 180,
       max_opens_per_hour: 3,
       max_opens_per_cycle: 2,
