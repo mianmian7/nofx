@@ -157,19 +157,7 @@ func (t *HyperliquidTrader) reconcilePositions(exchangeID string, positionStore 
 	if err != nil {
 		return fmt.Errorf("failed to get live positions: %w", err)
 	}
-
-	liveQty := make(map[string]float64, len(livePositions))
-	for _, pos := range livePositions {
-		symbol, _ := pos["symbol"].(string)
-		side, _ := pos["side"].(string)
-		qty, _ := pos["positionAmt"].(float64)
-		if symbol == "" || qty <= 0 {
-			continue
-		}
-		liveQty[store.LivePositionKey(market.Normalize(symbol), side)] += qty
-	}
-
-	_, err = positionStore.ReconcileOpenPositionsWithLive(exchangeID, liveQty)
+	_, err = positionStore.ReconcilePositionsFromLive(exchangeID, livePositions, market.Normalize)
 	return err
 }
 

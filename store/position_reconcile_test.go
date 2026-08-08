@@ -78,7 +78,7 @@ func TestReconcileClosesZombiesKeepsLiveAndTrims(t *testing.T) {
 	get := func(id int64) *TraderPosition {
 		t.Helper()
 		var pos TraderPosition
-		if err := st.Position().db.First(&pos, id).Error; err != nil {
+		if err := st.Position().db.Where("id = ?", id).First(&pos).Error; err != nil {
 			t.Fatalf("load position %d: %v", id, err)
 		}
 		return &pos
@@ -110,4 +110,93 @@ func TestReconcileNoOpenRowsIsNoop(t *testing.T) {
 	if err != nil || closed != 0 {
 		t.Fatalf("expected clean noop, got closed=%d err=%v", closed, err)
 	}
+}
+
+// TestReconcilePositionsFromLiveNormalizesSymbols verifies the convenience
+// wrapper normalizes exchange-native symbols (e.g. "SKHYNIXUSDT", "MUUSDT")
+// to the canonical stored form (e.g. "xyz:SKHYNIX", "xyz:MU") before matching,
+// exactly like the order-sync path that wrote the rows.
+func TestReconcilePositionsFromLiveNormalizesSymbols(t *testing.T) {
+	st := newReconcileTestStore(t)
+	const exch = "ex-bitget"
+	base := time.Now().Add(-24 * time.Hour).UnixMilli()
+
+	// Stored rows use the canonical normalized symbol (xyz: prefix for XYZ
+	// assets), matching what SyncOrdersFromBitget writes.
+	zombieMU := openRow(t, st, "trader-a", exch, "xyz:MU", "SHORT", 0.22, 0, base)
+	healthySKH := openRow(t, st, "trader-a", exch, "xyz:SKHYNIX", "SHORT", 0.13, 0, base+1000)
+
+	// Exchange-native live output (Bitget GetPositions returns "SKHYNIXUSDT",
+	// NOT the xyz: prefix). MU is absent from the live book — its DB row must
+	// be closed as a zombie; SKHYNIX matches live and stays open.
+	live := []map[string]interface{}{
+		{"symbol": "SKHYNIXUSDT", "side": "short", "positionAmt": float64(0.13)},
+	}
+
+	closed, err := st.Position().ReconcilePositionsFromLive(exch, live, func(symbol string) string {
+		return normalizeForReconcileTest(symbol)
+	})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+	if closed != 1 {
+		t.Fatalf("expected MU zombie (0.22) closed, SKHYNIX healthy row kept; got %d closed", closed)
+	}
+
+	var pos TraderPosition
+	if err := st.Position().db.Where("id = ?", zombieMU).First(&pos).Error; err != nil {
+		t.Fatalf("load MU row: %v", err)
+	}
+	if pos.Status != "CLOSED" {
+		t.Fatalf("MU row should close as zombie, got status=%s", pos.Status)
+	}
+	var skh TraderPosition
+	if err := st.Position().db.Where("id = ?", healthySKH).First(&skh).Error; err != nil {
+		t.Fatalf("load SKHYNIX row (id=%d): %v", healthySKH, err)
+	}
+	if skh.Status != "OPEN" || skh.Quantity != 0.13 {
+		t.Fatalf("SKHYNIX row must stay open at live qty, got status=%s qty=%v", skh.Status, skh.Quantity)
+	}
+}
+
+// TestReconcilePositionsFromLiveIgnoresZeroQuantity verifies zero/absent
+// position amounts never enter the live map.
+func TestReconcilePositionsFromLiveIgnoresZeroQuantity(t *testing.T) {
+	st := newReconcileTestStore(t)
+	const exch = "ex-zero"
+	base := time.Now().Add(-24 * time.Hour).UnixMilli()
+	rowID := openRow(t, st, "trader-a", exch, "BTCUSDT", "LONG", 0.01, 0, base)
+
+	live := []map[string]interface{}{
+		{"symbol": "BTCUSDT", "side": "long", "positionAmt": float64(0)},
+		{"symbol": "", "side": "long", "positionAmt": float64(1)},
+		{"symbol": "BTCUSDT", "side": "long", "positionAmt": 0.0},
+	}
+
+	closed, err := st.Position().ReconcilePositionsFromLive(exch, live, func(symbol string) string { return symbol })
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+	if closed != 1 {
+		t.Fatalf("expected the zero-amount row to become a zombie and close, got %d closed", closed)
+	}
+	var pos TraderPosition
+	if err := st.Position().db.Where("id = ?", rowID).First(&pos).Error; err != nil {
+		t.Fatalf("load row: %v", err)
+	}
+	if pos.Status != "CLOSED" {
+		t.Fatalf("row should close as zombie when live qty is zero, got status=%s", pos.Status)
+	}
+}
+
+// normalizeForReconcileTest mirrors market.Normalize's XYZ-asset handling for
+// the reconcile wrapper test without importing the market package.
+func normalizeForReconcileTest(symbol string) string {
+	switch symbol {
+	case "MUUSDT":
+		return "xyz:MU"
+	case "SKHYNIXUSDT":
+		return "xyz:SKHYNIX"
+	}
+	return symbol
 }

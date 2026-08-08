@@ -269,7 +269,32 @@ func (t *OKXTrader) SyncOrdersFromOKX(traderID string, exchangeID string, exchan
 	}
 
 	logger.Infof("✅ OKX order sync completed: %d new trades synced", syncedCount)
+
+	// Reconcile local OPEN rows against the exchange's live book. Without
+	// this, any missed/unmatched fill (position flips, liquidations, sync
+	// gaps) leaves a zombie OPEN row that swallows every later close as a
+	// "partial close" — its realized PnL then never reaches the closed-trade
+	// statistics. Scoped by exchange account so rows left by prior autopilot
+	// incarnations are healed too.
+	if err := t.reconcilePositions(exchangeID, positionStore); err != nil {
+		logger.Infof("⚠️ Position reconcile skipped: %v", err)
+	}
+
 	return nil
+}
+
+// reconcilePositions builds the live (symbol, side) → quantity map from the
+// exchange and lets the store close/trim any local OPEN rows on this exchange
+// account the exchange no longer backs. The snapshot is force-fetched so a
+// position opened moments before the reconcile runs is never compared against
+// a pre-open 15-second cache.
+func (t *OKXTrader) reconcilePositions(exchangeID string, positionStore *store.PositionStore) error {
+	livePositions, err := t.getPositionsFresh()
+	if err != nil {
+		return fmt.Errorf("failed to get live positions: %w", err)
+	}
+	_, err = positionStore.ReconcilePositionsFromLive(exchangeID, livePositions, market.Normalize)
+	return err
 }
 
 // StartOrderSync starts background order sync task for OKX

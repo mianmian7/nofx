@@ -28,6 +28,19 @@ func (t *FuturesTrader) SyncOrdersFromBinance(traderID string, exchangeID string
 	}
 
 	orderStore := st.Order()
+	positionStore := st.Position()
+
+	// Reconcile local OPEN rows against the exchange's live book on every sync
+	// pass, including early-return paths. Without this, any missed/unmatched
+	// fill (position flips, liquidations, sync gaps) leaves a zombie OPEN row
+	// that swallows every later close as a "partial close" — its realized PnL
+	// then never reaches the closed-trade statistics. Scoped by exchange
+	// account so rows left by prior autopilot incarnations are healed too.
+	defer func() {
+		if err := t.reconcilePositions(exchangeID, positionStore); err != nil {
+			logger.Infof("⚠️ Position reconcile skipped: %v", err)
+		}
+	}()
 
 	// Get last sync time (Unix ms) - first try memory, then database, then default
 	binanceSyncStateMutex.RLock()
@@ -169,7 +182,6 @@ func (t *FuturesTrader) SyncOrdersFromBinance(traderID string, exchangeID string
 	})
 
 	// Process trades one by one
-	positionStore := st.Position()
 	posBuilder := store.NewPositionBuilder(positionStore)
 	syncedCount := 0
 
@@ -347,6 +359,21 @@ func (t *FuturesTrader) determineOrderAction(side, positionSide string, realized
 		return "open_long"
 	}
 	return "open_short"
+}
+
+// reconcilePositions builds the live (symbol, side) → quantity map from the
+// exchange and lets the store close/trim any local OPEN rows on this exchange
+// account the exchange no longer backs. Symbols are normalized exactly like
+// order sync stores them so live and stored keys match.
+func (t *FuturesTrader) reconcilePositions(exchangeID string, positionStore *store.PositionStore) error {
+	livePositions, err := t.getPositionsFresh()
+	if err != nil {
+		return fmt.Errorf("failed to get live positions: %w", err)
+	}
+	_, err = positionStore.ReconcilePositionsFromLive(exchangeID, livePositions, func(symbol string) string {
+		return market.NormalizeForExchange("binance", symbol)
+	})
+	return err
 }
 
 // StartOrderSync starts background order sync task for Binance

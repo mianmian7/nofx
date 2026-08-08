@@ -10,13 +10,29 @@ import (
 
 // GetPositions gets all positions
 func (t *BitgetTrader) GetPositions() ([]map[string]interface{}, error) {
-	// Check cache
-	t.positionsCacheMutex.RLock()
-	if t.cachedPositions != nil && time.Since(t.positionsCacheTime) < t.cacheDuration {
+	return t.getPositions(false)
+}
+
+// getPositionsFresh fetches positions directly from the exchange, bypassing the
+// 15-second position cache, and refreshes the cached copy. Order sync reconcile
+// uses this so a position opened moments before the reconcile runs is never
+// compared against a pre-open cached snapshot.
+func (t *BitgetTrader) getPositionsFresh() ([]map[string]interface{}, error) {
+	return t.getPositions(true)
+}
+
+// getPositions returns the position book, optionally forcing a live fetch that
+// skips the cache read entirely.
+func (t *BitgetTrader) getPositions(force bool) ([]map[string]interface{}, error) {
+	// Check cache unless a forced refresh was requested.
+	if !force {
+		t.positionsCacheMutex.RLock()
+		if t.cachedPositions != nil && time.Since(t.positionsCacheTime) < t.cacheDuration {
+			t.positionsCacheMutex.RUnlock()
+			return t.cachedPositions, nil
+		}
 		t.positionsCacheMutex.RUnlock()
-		return t.cachedPositions, nil
 	}
-	t.positionsCacheMutex.RUnlock()
 
 	params := map[string]interface{}{
 		"productType": "USDT-FUTURES",

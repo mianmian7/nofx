@@ -109,3 +109,23 @@ func (s *PositionStore) ReconcileOpenPositionsWithLive(exchangeID string, liveQt
 	}
 	return closed, nil
 }
+
+// ReconcilePositionsFromLive converts an exchange's GetPositions() output into
+// the live-quantity map expected by ReconcileOpenPositionsWithLive and runs the
+// reconciliation. normalizeSymbol must produce the same canonical symbol that
+// order sync uses when storing rows (market.Normalize for most venues), so live
+// and stored keys match. Position rows the exchange no longer backs are closed
+// locally as zombies; rows whose quantity exceeds live are trimmed.
+func (s *PositionStore) ReconcilePositionsFromLive(exchangeID string, livePositions []map[string]interface{}, normalizeSymbol func(string) string) (int, error) {
+	liveQty := make(map[string]float64, len(livePositions))
+	for _, pos := range livePositions {
+		symbol, _ := pos["symbol"].(string)
+		side, _ := pos["side"].(string)
+		qty, _ := pos["positionAmt"].(float64)
+		if symbol == "" || qty <= 0 {
+			continue
+		}
+		liveQty[LivePositionKey(normalizeSymbol(symbol), side)] += qty
+	}
+	return s.ReconcileOpenPositionsWithLive(exchangeID, liveQty)
+}

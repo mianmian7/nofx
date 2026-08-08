@@ -14,29 +14,48 @@ import (
 
 // GetPositions gets all positions (with cache)
 func (t *FuturesTrader) GetPositions() ([]map[string]interface{}, error) {
-	// First check if cache is valid
-	t.positionsCacheMutex.RLock()
-	if t.cachedPositions != nil && time.Since(t.positionsCacheTime) < t.cacheDuration {
-		cacheAge := time.Since(t.positionsCacheTime)
+	return t.getPositions(false)
+}
+
+// getPositionsFresh fetches positions directly from the exchange, bypassing the
+// position cache, and refreshes the cached copy. Order sync reconcile uses this
+// so a position opened moments before the reconcile runs is never compared
+// against a pre-open cached snapshot.
+func (t *FuturesTrader) getPositionsFresh() ([]map[string]interface{}, error) {
+	return t.getPositions(true)
+}
+
+// getPositions returns the position book, optionally forcing a live fetch that
+// skips the cache read entirely.
+func (t *FuturesTrader) getPositions(force bool) ([]map[string]interface{}, error) {
+	// First check if cache is valid (skipped for a forced refresh)
+	if !force {
+		t.positionsCacheMutex.RLock()
+		if t.cachedPositions != nil && time.Since(t.positionsCacheTime) < t.cacheDuration {
+			cacheAge := time.Since(t.positionsCacheTime)
+			t.positionsCacheMutex.RUnlock()
+			logger.Infof("✓ Using cached position information (cache age: %.1f seconds ago)", cacheAge.Seconds())
+			return t.cachedPositions, nil
+		}
 		t.positionsCacheMutex.RUnlock()
-		logger.Infof("✓ Using cached position information (cache age: %.1f seconds ago)", cacheAge.Seconds())
-		return t.cachedPositions, nil
 	}
-	t.positionsCacheMutex.RUnlock()
 
 	// AI cycles, risk checks, and order synchronization may all observe an
 	// expired cache together. Coalesce the refresh and re-check after waiting so
-	// one expiry produces one Binance position request per trader.
+	// one expiry produces one Binance position request per trader. A forced
+	// refresh never serves from the cache but still serializes the API call.
 	t.positionsFetchMutex.Lock()
 	defer t.positionsFetchMutex.Unlock()
-	t.positionsCacheMutex.RLock()
-	if t.cachedPositions != nil && time.Since(t.positionsCacheTime) < t.cacheDuration {
-		cacheAge := time.Since(t.positionsCacheTime)
+	if !force {
+		t.positionsCacheMutex.RLock()
+		if t.cachedPositions != nil && time.Since(t.positionsCacheTime) < t.cacheDuration {
+			cacheAge := time.Since(t.positionsCacheTime)
+			t.positionsCacheMutex.RUnlock()
+			logger.Infof("✓ Using cached position information after coalescing (cache age: %.1f seconds ago)", cacheAge.Seconds())
+			return t.cachedPositions, nil
+		}
 		t.positionsCacheMutex.RUnlock()
-		logger.Infof("✓ Using cached position information after coalescing (cache age: %.1f seconds ago)", cacheAge.Seconds())
-		return t.cachedPositions, nil
 	}
-	t.positionsCacheMutex.RUnlock()
 
 	// Cache expired or doesn't exist, call API
 	logger.Infof("🔄 Cache expired, calling Binance API to get position information...")
