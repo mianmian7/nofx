@@ -895,8 +895,8 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 			SafeBadRequestWithDetails(c, "Only an existing Paper trader can reset its paper account", "trader.update.paper_reset_not_allowed", nil)
 			return
 		}
-		if !initialBalanceChanged {
-			SafeBadRequestWithDetails(c, "A new positive initial balance is required to reset the Paper account", "trader.update.paper_reset_balance_unchanged", nil)
+		if req.InitialBalance <= 0 {
+			SafeBadRequestWithDetails(c, "A positive initial balance is required to reset the Paper account", "trader.update.paper_reset_balance_required", nil)
 			return
 		}
 	} else if initialBalanceChanged && executionMode == "paper" && existingTrader.ExecutionMode == "paper" {

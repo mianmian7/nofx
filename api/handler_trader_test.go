@@ -1,10 +1,16 @@
 package api
 
 import (
+	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"nofx/crypto"
+	"nofx/manager"
 	"nofx/store"
+
+	"github.com/gin-gonic/gin"
 )
 
 func TestValidateStartConfirmationSeparatesPaperAndLive(t *testing.T) {
@@ -97,5 +103,73 @@ func TestStopManagedTraderUsesShutdownForAlreadyStoppedTrader(t *testing.T) {
 	stopManagedTrader(recorder)
 	if !recorder.called {
 		t.Fatal("stopManagedTrader must invoke Shutdown for a complete trader stop")
+	}
+}
+
+func TestUpdateTraderAllowsPaperResetWhenInitialBalanceUnchanged(t *testing.T) {
+	const (
+		userID   = "paper-reset-user"
+		traderID = "paper-reset-trader"
+		modelID  = "paper-reset-model"
+	)
+
+	st, err := store.New(t.TempDir() + "/nofx.db")
+	if err != nil {
+		t.Fatalf("store.New failed: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	if err := st.User().Create(&store.User{ID: userID, Email: "paper-reset@example.com", PasswordHash: "test"}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := st.AIModel().Create(userID, modelID, "Paper Reset Model", "custom", true, "test-api-key", "http://localhost:8317/v1"); err != nil {
+		t.Fatalf("create AI model: %v", err)
+	}
+	exchangeID, err := st.Exchange().Create(
+		userID, "binance", "Paper Market", true,
+		"test-api-key", "test-secret-key", "", true,
+		"", false, false,
+		"", "", "",
+		"", "", "", 0,
+	)
+	if err != nil {
+		t.Fatalf("create exchange: %v", err)
+	}
+	if err := st.Trader().Create(&store.Trader{
+		ID:                  traderID,
+		UserID:              userID,
+		Name:                "Paper Reset Trader",
+		AIModelID:           modelID,
+		ExchangeID:          exchangeID,
+		ExecutionMode:       "paper",
+		InitialBalance:      100,
+		ScanIntervalMinutes: 5,
+	}); err != nil {
+		t.Fatalf("create trader: %v", err)
+	}
+	if err := st.Paper().SavePaperState(traderID, []byte(`{"balance":75}`)); err != nil {
+		t.Fatalf("save paper state: %v", err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	server := &Server{store: st, traderManager: manager.NewTraderManager()}
+	router := gin.New()
+	router.PUT("/api/traders/:id", func(c *gin.Context) {
+		c.Set("user_id", userID)
+		server.handleUpdateTrader(c)
+	})
+	body := []byte(`{"name":"Paper Reset Trader","ai_model_id":"paper-reset-model","exchange_id":"` + exchangeID + `","execution_mode":"paper","initial_balance":100,"reset_paper_account":true,"scan_interval_minutes":5}`)
+	request := httptest.NewRequest(http.MethodPut, "/api/traders/"+traderID, bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("paper reset with unchanged balance returned %d, body: %s", response.Code, response.Body.String())
+	}
+	if _, found, err := st.Paper().LoadPaperState(traderID); err != nil {
+		t.Fatalf("load paper state: %v", err)
+	} else if found {
+		t.Fatal("paper reset must clear persisted paper account state")
 	}
 }
