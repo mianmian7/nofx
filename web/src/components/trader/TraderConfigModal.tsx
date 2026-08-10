@@ -89,6 +89,9 @@ interface FormState {
   is_cross_margin: boolean
   show_in_competition: boolean
   invert_signals: boolean
+  trading_symbols?: string
+  custom_prompt?: string
+  override_base_prompt?: boolean
   scan_interval_minutes: number
   startup_delay_minutes: number
   fallback_model_names: string[]
@@ -246,6 +249,9 @@ export function TraderConfigModal({
         is_cross_margin: formData.is_cross_margin,
         show_in_competition: formData.show_in_competition,
         invert_signals: formData.invert_signals,
+        trading_symbols: formData.trading_symbols,
+        custom_prompt: formData.custom_prompt,
+        override_base_prompt: formData.override_base_prompt,
         scan_interval_minutes: formData.scan_interval_minutes,
         startup_delay_minutes: Math.min(
           Math.max(0, formData.startup_delay_minutes),
