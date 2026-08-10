@@ -468,6 +468,17 @@ func ensureHyperliquidNativeStrategy(traderName, exchangeType string, cfg *store
 
 // LoadUserTradersFromStore loads traders from store for a specific user to memory
 func (tm *TraderManager) LoadUserTradersFromStore(st *store.Store, userID string) error {
+	return tm.loadUserTradersFromStore(st, userID, true)
+}
+
+// LoadUserTradersFromStoreWithoutAutoStart loads traders without starting
+// running-only monitors or the automatic decision loop. It is used when a
+// caller must restore an in-memory runtime before deciding whether to run it.
+func (tm *TraderManager) LoadUserTradersFromStoreWithoutAutoStart(st *store.Store, userID string) error {
+	return tm.loadUserTradersFromStore(st, userID, false)
+}
+
+func (tm *TraderManager) loadUserTradersFromStore(st *store.Store, userID string, autoStart bool) error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
@@ -548,7 +559,7 @@ func (tm *TraderManager) LoadUserTradersFromStore(st *store.Store, userID string
 
 		// Use existing method to load trader
 		logger.Infof("📦 Loading trader %s (AI Model: %s, Exchange: %s/%s, Strategy ID: %s)", traderCfg.Name, aiModelCfg.Provider, exchangeCfg.ExchangeType, exchangeCfg.AccountName, traderCfg.StrategyID)
-		err = tm.addTraderFromStore(traderCfg, aiModelCfg, exchangeCfg, st)
+		err = tm.addTraderFromStore(traderCfg, aiModelCfg, exchangeCfg, st, autoStart)
 		if err != nil {
 			logger.Warnf("%s failed to load trader: %v", traderLogTag(traderCfg.ID, traderCfg.Name), err)
 			// Save error for later retrieval
@@ -653,7 +664,7 @@ func (tm *TraderManager) LoadTradersFromStore(st *store.Store) error {
 		}
 
 		// Add the fully initialized trader to TraderManager.
-		err = tm.addTraderFromStore(traderCfg, aiModelCfg, exchangeCfg, st)
+		err = tm.addTraderFromStore(traderCfg, aiModelCfg, exchangeCfg, st, true)
 		if err != nil {
 			logger.Warnf("%s failed to add trader: %v", traderLogTag(traderCfg.ID, traderCfg.Name), err)
 			continue
@@ -743,7 +754,7 @@ func buildTraderAIModelCandidates(traderCfg *store.Trader, primaryModel *store.A
 	return candidates, nil
 }
 
-func (tm *TraderManager) addTraderFromStore(traderCfg *store.Trader, aiModelCfg *store.AIModel, exchangeCfg *store.Exchange, st *store.Store) error {
+func (tm *TraderManager) addTraderFromStore(traderCfg *store.Trader, aiModelCfg *store.AIModel, exchangeCfg *store.Exchange, st *store.Store, autoStart bool) error {
 	if _, exists := tm.traders[traderCfg.ID]; exists {
 		return fmt.Errorf("trader ID '%s' already exists", traderCfg.ID)
 	}
@@ -903,11 +914,11 @@ func (tm *TraderManager) addTraderFromStore(traderCfg *store.Trader, aiModelCfg 
 	}
 
 	tm.traders[traderCfg.ID] = at
-	startBackgroundMonitoringIfRunning(at, traderCfg.IsRunning)
+	startBackgroundMonitoringIfRunning(at, traderCfg.IsRunning && autoStart)
 	logger.Infof("✓ Trader '%s' (%s + %s/%s) loaded to memory", traderCfg.Name, aiModelCfg.Provider, exchangeCfg.ExchangeType, exchangeCfg.AccountName)
 
 	// Auto-start if trader was running before shutdown
-	if traderCfg.IsRunning {
+	if traderCfg.IsRunning && autoStart {
 		logger.Infof("%s 🔄 Auto-starting trader (was running before shutdown)...", traderLogTag(traderCfg.ID, traderCfg.Name))
 		go func(trader *trader.AutoTrader, traderName, traderID, userID string) {
 			if err := trader.Run(); err != nil {

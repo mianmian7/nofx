@@ -17,6 +17,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+type traderUpdateHooks struct {
+	loadUserTradersNoAutoStart func(*store.Store, string) error
+	resetPaperAccount          func(string, *store.Trader) error
+	restartPaperTrader         func(string) error
+	traderRunning              func(string) bool
+}
+
 // Server HTTP API server
 type Server struct {
 	router                    *gin.Engine
@@ -31,6 +38,8 @@ type Server struct {
 	backtestJobs              *backtestJobStore
 	backtestSlots             chan struct{}
 	depthMarketClient         depthMarketClient
+	loadUserTraders           func(*store.Store, string) error
+	traderUpdateHooks         traderUpdateHooks
 }
 
 // NewServer Creates API server
@@ -65,6 +74,56 @@ func NewServer(traderManager *manager.TraderManager, st *store.Store, cryptoServ
 	s.setupRoutes()
 
 	return s
+}
+
+func (s *Server) loadUserTradersFromStore(userID string) error {
+	if s.loadUserTraders != nil {
+		return s.loadUserTraders(s.store, userID)
+	}
+	return s.traderManager.LoadUserTradersFromStore(s.store, userID)
+}
+
+func (s *Server) loadUserTradersWithoutAutoStart(userID string) error {
+	if s.traderUpdateHooks.loadUserTradersNoAutoStart != nil {
+		return s.traderUpdateHooks.loadUserTradersNoAutoStart(s.store, userID)
+	}
+	return s.traderManager.LoadUserTradersFromStoreWithoutAutoStart(s.store, userID)
+}
+
+func (s *Server) updateAndResetPaperAccount(userID string, trader *store.Trader) error {
+	if s.traderUpdateHooks.resetPaperAccount != nil {
+		return s.traderUpdateHooks.resetPaperAccount(userID, trader)
+	}
+	return s.store.Paper().UpdateTraderAndResetAccount(userID, trader)
+}
+
+func (s *Server) wasTraderRunning(traderID string) bool {
+	if s.traderUpdateHooks.traderRunning != nil {
+		return s.traderUpdateHooks.traderRunning(traderID)
+	}
+	if existingTrader, err := s.traderManager.GetTrader(traderID); err == nil {
+		if running, ok := existingTrader.GetStatus()["is_running"].(bool); ok {
+			return running
+		}
+	}
+	return false
+}
+
+func (s *Server) restartPaperTraderRuntime(traderID string) error {
+	if s.traderUpdateHooks.restartPaperTrader != nil {
+		return s.traderUpdateHooks.restartPaperTrader(traderID)
+	}
+	reloadedTrader, err := s.traderManager.GetTrader(traderID)
+	if err != nil {
+		return err
+	}
+	go func() {
+		logger.Infof("▶️ Restarting trader %s after paper reset rollback...", traderID)
+		if runErr := reloadedTrader.Run(); runErr != nil {
+			logger.Infof("❌ Trader %s compensation runtime error: %v", traderID, runErr)
+		}
+	}()
+	return nil
 }
 
 // corsMiddleware returns a CORS handler. Origins come from CORS_ALLOWED_ORIGINS

@@ -425,6 +425,33 @@ func describeTraderStartError(traderName string, err error) string {
 	return fmt.Sprintf("Failed to start the bot this time: bot \"%s\" cannot start for now, because: %s. Please check the model, strategy, and exchange configuration, then click start again.", traderName, reason)
 }
 
+func (s *Server) compensatePaperResetFailure(userID, traderID string, wasRunning bool) {
+	if err := s.loadUserTradersWithoutAutoStart(userID); err != nil {
+		logger.Infof("⚠️ Failed to reload trader %s after paper reset rollback: %v", traderID, err)
+		return
+	}
+	if err := s.verifyTraderLoaded(traderID); err != nil {
+		logger.Infof("⚠️ Failed to verify trader %s after paper reset rollback: %v", traderID, err)
+		return
+	}
+	if !wasRunning {
+		return
+	}
+	if err := s.restartPaperTraderRuntime(traderID); err != nil {
+		logger.Infof("⚠️ Failed to restore trader %s after paper reset rollback: %v", traderID, err)
+	}
+}
+
+func (s *Server) verifyTraderLoaded(traderID string) error {
+	if loadErr := s.traderManager.GetLoadError(traderID); loadErr != nil {
+		return fmt.Errorf("trader %s failed to load: %w", traderID, loadErr)
+	}
+	if _, err := s.traderManager.GetTrader(traderID); err != nil {
+		return fmt.Errorf("trader %s is missing after reload: %w", traderID, err)
+	}
+	return nil
+}
+
 func formatTraderStartError(reason, nextStep string) string {
 	if nextStep == "" {
 		return fmt.Sprintf("Failed to start the bot this time: %s.", reason)
@@ -930,13 +957,9 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 	}
 
 	// Check if trader was running before update (we'll restart it after)
-	wasRunning := false
-	if existingMemTrader, memErr := s.traderManager.GetTrader(traderID); memErr == nil {
-		status := existingMemTrader.GetStatus()
-		if running, ok := status["is_running"].(bool); ok && running {
-			wasRunning = true
-			logger.Infof("🔄 Trader %s was running, will restart with new config after update", traderID)
-		}
+	wasRunning := s.wasTraderRunning(traderID)
+	if wasRunning {
+		logger.Infof("🔄 Trader %s was running, will restart with new config after update", traderID)
 	}
 	if req.ResetPaperAccount {
 		// Stop the runtime before clearing its persistent ledger so it cannot
@@ -947,8 +970,15 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 	// Update database
 	logger.Infof("🔄 Updating trader: ID=%s, Name=%s, AIModelID=%s, StrategyID=%s, ScanInterval=%d min",
 		traderRecord.ID, traderRecord.Name, traderRecord.AIModelID, traderRecord.StrategyID, scanIntervalMinutes)
-	err = s.store.Trader().Update(traderRecord)
+	if req.ResetPaperAccount {
+		err = s.updateAndResetPaperAccount(userID, traderRecord)
+	} else {
+		err = s.store.Trader().Update(traderRecord)
+	}
 	if err != nil {
+		if req.ResetPaperAccount {
+			s.compensatePaperResetFailure(userID, traderID, wasRunning)
+		}
 		SafeInternalError(c, "Failed to update trader", err)
 		return
 	}
@@ -960,20 +990,20 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 			return
 		}
 	}
-	if req.ResetPaperAccount {
-		if err := s.store.Paper().ResetTraderAccount(userID, traderID); err != nil {
-			SafeInternalError(c, "Failed to reset Paper account", err)
-			return
-		}
-	}
-
 	// Remove old trader from memory first (this also stops if running)
 	s.traderManager.RemoveTrader(traderID)
 
 	// Reload traders into memory with fresh config
-	err = s.traderManager.LoadUserTradersFromStore(s.store, userID)
+	err = s.loadUserTradersFromStore(userID)
 	if err != nil {
 		logger.Infof("⚠️ Failed to reload user traders into memory: %v", err)
+		SafeInternalError(c, "Failed to reload trader", err)
+		return
+	}
+	if err = s.verifyTraderLoaded(traderID); err != nil {
+		logger.Infof("⚠️ Failed to verify trader after reload: %v", err)
+		SafeInternalError(c, "Failed to reload trader", err)
+		return
 	}
 
 	// If trader was running before, restart it with new config
