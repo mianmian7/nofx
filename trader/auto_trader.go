@@ -20,6 +20,7 @@ import (
 	"nofx/trader/okx"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -231,10 +232,19 @@ type AutoTrader struct {
 	userID                string        // User ID
 	gridState             *GridState    // Grid trading state (only used when StrategyType == "grid_trading")
 	runStopCh             chan struct{} // Stops only the AI decision loop when the trader is paused
+	runLifecycleMu        sync.Mutex    // Guards the automatic decision loop lifecycle
+	runDoneCh             chan struct{} // Closed when the active automatic decision loop exits
+	runActive             bool          // Whether an automatic decision loop is active, including a draining cycle
+	runStopRequested      bool          // Whether the current loop has already received its stop signal
+	shutdownRequested     bool          // Prevents a new loop from starting during permanent shutdown
+	runGeneration         atomic.Uint64 // Changes whenever a pause invalidates pending Run calls
+	stopInProgress        atomic.Bool   // Excludes Run calls that overlap Stop's signal commit
+	runAttemptHook        func()        // Optional lifecycle-test hook invoked before admission
 	consecutiveAIFailures int           // Consecutive AI call failures
 	monitorLifecycleMu    sync.Mutex    // Guards background monitor startup and shutdown
 	monitorsStarted       bool          // Background position/risk monitors are running
 	monitorsStopped       bool          // This trader instance has been permanently shut down
+	monitorShutdownDone   chan struct{} // Closed after permanent monitor shutdown completes
 	runtimeHealthMu       sync.RWMutex  // Guards safe mode state (loop writes, API reads)
 	safeMode              bool          // Safe mode: no new positions, protect existing ones
 	safeModeReason        string        // Why safe mode was activated
@@ -569,17 +579,33 @@ func (at *AutoTrader) RunWithStartupDelay(startupDelay time.Duration) error {
 
 // Run runs the automatic trading main loop
 func (at *AutoTrader) Run() error {
-	at.isRunningMutex.Lock()
-	if at.isRunning {
-		at.isRunningMutex.Unlock()
+	if at.runAttemptHook != nil {
+		at.runAttemptHook()
+	}
+	attemptGeneration := at.runGeneration.Load()
+	if at.stopInProgress.Load() {
+		return nil
+	}
+	at.runLifecycleMu.Lock()
+	if at.shutdownRequested || at.runActive || at.runGeneration.Load() != attemptGeneration || at.stopInProgress.Load() {
+		at.runLifecycleMu.Unlock()
 		at.logWarnf("⚠️ Trader runtime is already running; duplicate Run ignored")
 		return nil
 	}
-	at.isRunning = true
-	at.runStopCh = make(chan struct{})
+	if at.runStopCh == nil {
+		at.runStopCh = make(chan struct{})
+	}
+	at.runStopRequested = false
+	at.runDoneCh = make(chan struct{})
+	runDoneCh := at.runDoneCh
 	runStopCh := at.runStopCh
+	at.runActive = true
+	at.isRunningMutex.Lock()
+	at.isRunning = true
 	at.startTime = time.Now()
 	at.isRunningMutex.Unlock()
+	at.runLifecycleMu.Unlock()
+	defer at.finishRun(runDoneCh)
 
 	logger.Info("🚀 AI-driven automatic trading system started")
 	at.logInfof("💰 Initial balance: %.2f USDT", at.initialBalance)
@@ -667,19 +693,68 @@ func (at *AutoTrader) runAutomaticCycle() error {
 
 // Stop pauses automatic AI decisions while leaving position/risk monitoring active.
 func (at *AutoTrader) Stop() {
-	at.isRunningMutex.Lock()
-	if !at.isRunning {
-		at.isRunningMutex.Unlock()
+	if !at.stopInProgress.CompareAndSwap(false, true) {
 		return
 	}
-	at.isRunning = false
+	at.runGeneration.Add(1)
+	at.runLifecycleMu.Lock()
+	if !at.runActive || at.runStopRequested {
+		at.runLifecycleMu.Unlock()
+		at.stopInProgress.Store(false)
+		return
+	}
+	at.runStopRequested = true
 	runStopCh := at.runStopCh
+	at.isRunningMutex.Lock()
+	at.isRunning = false
 	at.isRunningMutex.Unlock()
-
 	if runStopCh != nil {
 		close(runStopCh)
 	}
+	at.runLifecycleMu.Unlock()
+	at.stopInProgress.Store(false)
 	logger.Info("⏸ Automatic AI trading paused; position monitoring remains active")
+}
+
+// finishRun marks the active decision loop as fully stopped. It is separate
+// from Stop because a cycle may still be in progress after its stop signal.
+func (at *AutoTrader) finishRun(doneCh chan struct{}) {
+	at.runLifecycleMu.Lock()
+	if at.runDoneCh != doneCh {
+		at.runLifecycleMu.Unlock()
+		return
+	}
+	at.runActive = false
+	at.runStopRequested = false
+	at.runDoneCh = nil
+	at.runStopCh = nil
+	at.isRunningMutex.Lock()
+	at.isRunning = false
+	at.isRunningMutex.Unlock()
+	close(doneCh)
+	at.runLifecycleMu.Unlock()
+}
+
+// stopAndWait requests a permanent stop and waits for the active decision
+// loop, including any currently running AI cycle, to exit.
+func (at *AutoTrader) stopAndWait() {
+	at.runLifecycleMu.Lock()
+	at.shutdownRequested = true
+	if at.runActive && !at.runStopRequested {
+		at.runStopRequested = true
+		at.isRunningMutex.Lock()
+		at.isRunning = false
+		at.isRunningMutex.Unlock()
+		if at.runStopCh != nil {
+			close(at.runStopCh)
+		}
+	}
+	doneCh := at.runDoneCh
+	at.runLifecycleMu.Unlock()
+
+	if doneCh != nil {
+		<-doneCh
+	}
 }
 
 // GetID gets trader ID

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -290,20 +291,16 @@ func TestShutdownEndsPaperMonitorWhileTradingCycleIsBlocked(t *testing.T) {
 		at.Shutdown()
 		close(stopDone)
 	}()
-	stoppedPromptly := false
 	select {
 	case <-stopDone:
-		stoppedPromptly = true
+		t.Fatal("Shutdown returned while the automatic decision cycle was still blocked")
 	case <-time.After(100 * time.Millisecond):
 	}
 	close(cycleBlocked)
-	if !stoppedPromptly {
-		select {
-		case <-stopDone:
-		case <-time.After(time.Second):
-			t.Fatal("Shutdown remained blocked after trading cycle was released")
-		}
-		t.Fatal("Shutdown waited for a blocked trading/AI cycle instead of ending the Paper monitor promptly")
+	select {
+	case <-stopDone:
+	case <-time.After(time.Second):
+		t.Fatal("Shutdown remained blocked after trading cycle was released")
 	}
 	select {
 	case <-runDone:
@@ -314,6 +311,97 @@ func TestShutdownEndsPaperMonitorWhileTradingCycleIsBlocked(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	if calls := prices.Calls(); calls != callsAfterShutdown {
 		t.Fatalf("Paper monitor continued after Shutdown: calls %d -> %d", callsAfterShutdown, calls)
+	}
+}
+
+func TestStopConcurrentWithBlockedCycleDoesNotLeaveReplacementRun(t *testing.T) {
+	prices := &mutablePaperPriceSource{price: 100}
+	broker, err := NewPaperBroker(PaperBrokerConfig{InitialBalance: 1_000}, prices)
+	if err != nil {
+		t.Fatalf("NewPaperBroker: %v", err)
+	}
+	at := newMonitorTestAutoTrader(ExecutionModePaper, broker, time.Hour)
+	defer at.Shutdown()
+
+	cycleStarted := make(chan struct{})
+	releaseCycle := make(chan struct{})
+	var cycleCalls atomic.Int32
+	replacementStarted := make(chan struct{}, 1)
+	at.cycleRunner = func() error {
+		if cycleCalls.Add(1) == 1 {
+			close(cycleStarted)
+			<-releaseCycle
+			return nil
+		}
+		select {
+		case replacementStarted <- struct{}{}:
+		default:
+		}
+		return nil
+	}
+
+	runDone := make(chan error, 1)
+	go func() { runDone <- at.Run() }()
+	select {
+	case <-cycleStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first automatic cycle did not start")
+	}
+
+	stopDone := make(chan struct{})
+	go func() {
+		at.Stop()
+		close(stopDone)
+	}()
+	waitForPaperCondition(t, time.Second, func() bool {
+		at.runLifecycleMu.Lock()
+		defer at.runLifecycleMu.Unlock()
+		return at.runStopRequested
+	})
+
+	attemptStarted := make(chan struct{})
+	at.runAttemptHook = func() { close(attemptStarted) }
+	attemptedRunDone := make(chan error, 1)
+	go func() { attemptedRunDone <- at.Run() }()
+	select {
+	case <-attemptStarted:
+	case <-time.After(time.Second):
+		t.Fatal("attempted replacement Run did not start")
+	}
+	close(releaseCycle)
+
+	select {
+	case <-stopDone:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not return promptly")
+	}
+	select {
+	case err := <-attemptedRunDone:
+		if err != nil {
+			t.Fatalf("attempted replacement Run: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("attempted replacement Run did not return")
+	}
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("original Run: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("original Run did not exit after its blocked cycle was released")
+	}
+
+	if calls := cycleCalls.Load(); calls != 1 {
+		t.Fatalf("automatic cycle count = %d, want only the original cycle", calls)
+	}
+	select {
+	case <-replacementStarted:
+		t.Fatal("a replacement decision loop survived Stop")
+	default:
+	}
+	if running := at.GetStatus()["is_running"].(bool); running {
+		t.Fatal("trader remains running after Stop and the original cycle exited")
 	}
 }
 

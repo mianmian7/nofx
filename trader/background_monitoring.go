@@ -96,15 +96,23 @@ func (at *AutoTrader) Shutdown() {
 		return
 	}
 
-	at.Stop()
+	at.stopAndWait()
 	at.monitorLifecycleMu.Lock()
 	if at.monitorsStopped {
+		doneCh := at.monitorShutdownDone
 		at.monitorLifecycleMu.Unlock()
+		if doneCh != nil {
+			<-doneCh
+		}
 		return
 	}
 	at.monitorsStopped = true
 	monitorStopCh := at.stopMonitorCh
 	monitorsStarted := at.monitorsStarted
+	if at.monitorShutdownDone == nil {
+		at.monitorShutdownDone = make(chan struct{})
+	}
+	doneCh := at.monitorShutdownDone
 	at.monitorLifecycleMu.Unlock()
 
 	if monitorsStarted && monitorStopCh != nil {
@@ -112,4 +120,5 @@ func (at *AutoTrader) Shutdown() {
 		at.monitorWg.Wait()
 	}
 	logger.Info("⏹ Automatic trader background monitoring stopped")
+	close(doneCh)
 }
