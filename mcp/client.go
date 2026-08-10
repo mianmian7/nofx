@@ -23,7 +23,7 @@ const (
 )
 
 var (
-	DefaultTimeout = 240 * time.Second
+	DefaultTimeout = 300 * time.Second
 
 	MaxRetryTimes = 3
 
