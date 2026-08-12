@@ -43,6 +43,51 @@ export function mapEquityHistoriesByTraderId(
   )
 }
 
+type ComparisonDataPoint = Record<string, any>
+
+export function rebaseVisibleComparisonData(
+  visibleData: ComparisonDataPoint[],
+  traders: CompetitionTraderData[],
+  selectedHours: number
+): ComparisonDataPoint[] {
+  if (selectedHours === 0) return visibleData
+
+  const baselines = new Map<string, number>()
+
+  return visibleData.map((point) => {
+    let rebasedPoint: ComparisonDataPoint | undefined
+
+    traders.forEach((trader) => {
+      const key = `${trader.trader_id}_pnl_pct`
+      const value = point[key]
+      if (typeof value !== 'number' || Number.isNaN(value)) return
+
+      if (!baselines.has(trader.trader_id)) {
+        baselines.set(trader.trader_id, value)
+      }
+
+      rebasedPoint ??= { ...point }
+      rebasedPoint[key] = value - baselines.get(trader.trader_id)!
+    })
+
+    return rebasedPoint ?? point
+  })
+}
+
+export function buildComparisonDisplayData(
+  combinedData: ComparisonDataPoint[],
+  traders: CompetitionTraderData[],
+  selectedHours: number,
+  maxDisplayPoints = 500
+): ComparisonDataPoint[] {
+  const visibleData =
+    combinedData.length > maxDisplayPoints
+      ? combinedData.slice(-maxDisplayPoints)
+      : combinedData
+
+  return rebaseVisibleComparisonData(visibleData, traders, selectedHours)
+}
+
 export function ComparisonChart({ traders }: ComparisonChartProps) {
   const { language } = useLanguage()
   const [selectedPeriod, setSelectedPeriod] = useState('7d') // Default to 7 days
@@ -228,10 +273,12 @@ export function ComparisonChart({ traders }: ComparisonChartProps) {
   }
 
   const MAX_DISPLAY_POINTS = 500
-  const displayData =
-    combinedData.length > MAX_DISPLAY_POINTS
-      ? combinedData.slice(-MAX_DISPLAY_POINTS)
-      : combinedData
+  const displayData = buildComparisonDisplayData(
+    combinedData,
+    traders,
+    selectedHours,
+    MAX_DISPLAY_POINTS
+  )
 
   // Calculate Y axis domain with better padding
   const calculateYDomain = () => {

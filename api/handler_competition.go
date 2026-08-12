@@ -239,6 +239,33 @@ func floatFromMap(values map[string]interface{}, key string) float64 {
 	return 0
 }
 
+func buildEquityHistory(snapshots []*store.EquitySnapshot, initialBalance float64) ([]map[string]interface{}, time.Time) {
+	history := make([]map[string]interface{}, 0, len(snapshots)+1)
+	var lastSnapshotTime time.Time
+
+	for _, snap := range snapshots {
+		totalPnL := snap.TotalEquity - initialBalance
+		pnlPct := 0.0
+		if initialBalance > 0 {
+			pnlPct = totalPnL / initialBalance * 100
+		}
+
+		history = append(history, map[string]interface{}{
+			"timestamp":         snap.Timestamp,
+			"total_equity":      snap.TotalEquity,
+			"available_balance": equitySnapshotAvailableBalance(snap),
+			"total_pnl":         totalPnL,
+			"total_pnl_pct":     pnlPct,
+			"balance":           snap.Balance,
+		})
+		if snap.Timestamp.After(lastSnapshotTime) {
+			lastSnapshotTime = snap.Timestamp
+		}
+	}
+
+	return history, lastSnapshotTime
+}
+
 // handlePublicTraderList Get public trader list (no authentication required)
 func (s *Server) handlePublicTraderList(c *gin.Context) {
 	// Get trader information from all users
@@ -429,29 +456,9 @@ func (s *Server) getEquityHistoryForTraders(traderIDs []string, hours int) map[s
 			initialBalance = snapshots[0].TotalEquity
 		}
 
-		// Build return rate historical data with PnL percentage
-		history := make([]map[string]interface{}, 0, len(snapshots)+1)
-		var lastSnapshotTime time.Time
-		for _, snap := range snapshots {
-			totalPnL := snap.TotalEquity - initialBalance
-			// Calculate PnL percentage: (current_equity - initial_balance) / initial_balance * 100
-			pnlPct := 0.0
-			if initialBalance > 0 {
-				pnlPct = totalPnL / initialBalance * 100
-			}
-
-			history = append(history, map[string]interface{}{
-				"timestamp":         snap.Timestamp,
-				"total_equity":      snap.TotalEquity,
-				"available_balance": equitySnapshotAvailableBalance(snap),
-				"total_pnl":         totalPnL,
-				"total_pnl_pct":     pnlPct,
-				"balance":           snap.Balance,
-			})
-			if snap.Timestamp.After(lastSnapshotTime) {
-				lastSnapshotTime = snap.Timestamp
-			}
-		}
+		// Keep API values on the trader's lifetime baseline. Short-window chart
+		// rebasing is a presentation concern and must not change leaderboard data.
+		history, lastSnapshotTime := buildEquityHistory(snapshots, initialBalance)
 
 		// Append current real-time data point to ensure chart matches leaderboard
 		// This ensures the latest point is always current, not from a potentially stale snapshot

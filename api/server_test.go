@@ -5,11 +5,28 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"nofx/store"
 
 	"github.com/gin-gonic/gin"
 )
+
+func TestBuildEquityHistoryKeepsLifetimePnLForWindowedSnapshots(t *testing.T) {
+	snapshots := []*store.EquitySnapshot{
+		{Timestamp: time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC), TotalEquity: 120, Balance: 120},
+		{Timestamp: time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC), TotalEquity: 125, Balance: 125},
+	}
+
+	history, _ := buildEquityHistory(snapshots, 100)
+
+	if got := history[0]["total_pnl_pct"]; got != 20.0 {
+		t.Fatalf("windowed history must keep lifetime PnL for the frontend to rebase, got %v", got)
+	}
+	if got := history[1]["total_pnl_pct"]; got != 25.0 {
+		t.Fatalf("expected lifetime PnL 25%%, got %v", got)
+	}
+}
 
 func TestCORSMiddlewareRejectsWildcardAndUnknownOrigins(t *testing.T) {
 	t.Setenv("CORS_ALLOWED_ORIGINS", "*")
