@@ -1440,8 +1440,10 @@ func (b *PaperBroker) flushPendingCloseRecordsLocked() {
 	for len(b.pendingCloseRecords) > 0 {
 		rec := b.pendingCloseRecords[0]
 		if err := b.closeRecorder.RecordPaperClose(rec, b.traderID); err != nil {
-			fmt.Printf("paper close recorder failed for %s %s: %v\n", rec.Symbol, rec.Side, err)
-			return
+			if !strings.Contains(strings.ToLower(err.Error()), "unique constraint failed") {
+				fmt.Printf("paper close recorder failed for %s %s: %v\n", rec.Symbol, rec.Side, err)
+				return
+			}
 		}
 		b.pendingCloseRecords = b.pendingCloseRecords[1:]
 		if err := b.persistLocked(); err != nil {

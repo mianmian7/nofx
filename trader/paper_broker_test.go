@@ -2,6 +2,7 @@ package trader
 
 import (
 	"encoding/json"
+	"errors"
 	"math"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,18 @@ import (
 	"nofx/kernel"
 	"nofx/store"
 )
+
+type duplicatePaperCloseRecorder struct {
+	calls []int64
+}
+
+func (r *duplicatePaperCloseRecorder) RecordPaperClose(close PaperClosedTrade, _ string) error {
+	r.calls = append(r.calls, close.ExitOrderID)
+	if close.ExitOrderID == 1 {
+		return errors.New("UNIQUE constraint failed: trader_positions.exchange_id, trader_positions.exchange_position_id")
+	}
+	return nil
+}
 
 func TestPaperBrokerOpenPriceChangeTakeProfitAndAccounting(t *testing.T) {
 	broker, err := NewPaperBroker(PaperBrokerConfig{
@@ -586,6 +599,32 @@ func TestPaperPerformanceAndFillMetadataSurviveRestart(t *testing.T) {
 	}
 	assertPaperFloat(t, "restored pnl", got.TotalPnL, want.TotalPnL)
 	assertPaperFloat(t, "restored fees", got.TotalFees, want.TotalFees)
+}
+
+func TestPaperBrokerFlushPendingCloseRecordsSkipsDuplicate(t *testing.T) {
+	broker, err := NewPaperBroker(
+		PaperBrokerConfig{InitialBalance: 1_000},
+		fixedPaperPriceSource{"BTCUSDT": 100, "ETHUSDT": 50},
+	)
+	if err != nil {
+		t.Fatalf("NewPaperBroker: %v", err)
+	}
+	recorder := &duplicatePaperCloseRecorder{}
+	broker.traderID = "paper-flush-duplicate"
+	broker.closeRecorder = recorder
+	broker.pendingCloseRecords = []PaperClosedTrade{
+		{ExitOrderID: 1, Symbol: "BTCUSDT", Side: "long"},
+		{ExitOrderID: 2, Symbol: "ETHUSDT", Side: "short"},
+	}
+
+	broker.flushPendingCloseRecords()
+
+	if len(broker.pendingCloseRecords) != 0 {
+		t.Fatalf("pending close records = %#v, want empty", broker.pendingCloseRecords)
+	}
+	if len(recorder.calls) != 2 || recorder.calls[0] != 1 || recorder.calls[1] != 2 {
+		t.Fatalf("recorder calls = %v, want [1 2]", recorder.calls)
+	}
 }
 
 func assertPaperFloat(t *testing.T, label string, got, want float64) {
