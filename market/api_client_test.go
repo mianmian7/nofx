@@ -646,6 +646,31 @@ func TestBinanceCircuitStopsQueuedDistinctRequests(t *testing.T) {
 	}
 }
 
+func TestBinanceCircuitRecoversStaleProbe(t *testing.T) {
+	coordinator := newBinancePublicCoordinator()
+	probeStartedAt := time.Now()
+	coordinator.circuit = binanceCircuitState{
+		active:       true,
+		message:      "temporary network failure",
+		blockedUntil: probeStartedAt.Add(-time.Second),
+	}
+
+	probeRequest, err := coordinator.beforeRequest("/fapi/v1/ticker/price", probeStartedAt)
+	if err != nil || !probeRequest {
+		t.Fatalf("first probe = %v, error = %v; want admitted probe", probeRequest, err)
+	}
+
+	probeRequest, err = coordinator.beforeRequest("/fapi/v1/depth", probeStartedAt.Add(29*time.Second))
+	if err == nil || probeRequest {
+		t.Fatalf("early replacement probe = %v, error = %v; want in-flight probe rejection", probeRequest, err)
+	}
+
+	probeRequest, err = coordinator.beforeRequest("/fapi/v1/depth", probeStartedAt.Add(31*time.Second))
+	if err != nil || !probeRequest {
+		t.Fatalf("replacement probe = %v, error = %v; want stale probe recovery", probeRequest, err)
+	}
+}
+
 func TestGetBinanceDynamicSymbolsRetriesTransientRequestFailure(t *testing.T) {
 	resetBinanceCandidateCaches(t)
 	exchangeInfoCalls := 0

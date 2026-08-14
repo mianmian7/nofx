@@ -29,6 +29,9 @@ const (
 	binanceDefaultRateLimitCooldown = 30 * time.Second
 	binanceDefaultBanCooldown       = 15 * time.Minute
 	binanceProxyFailureCooldown     = 2 * time.Minute
+	// A probe normally completes within three 6s attempts plus retry delays.
+	// Recover defensively if an abnormal callback exit leaves it marked in flight.
+	binancePublicProbeTimeout = 30 * time.Second
 	// A single process can run several traders at once. Serialize public
 	// requests and leave headroom below Binance's per-IP weight window instead
 	// of allowing every distinct symbol to burst through MaxConnsPerHost.
@@ -83,11 +86,12 @@ type binanceKlineCacheEntry struct {
 }
 
 type binanceCircuitState struct {
-	active        bool
-	statusCode    int
-	message       string
-	blockedUntil  time.Time
-	probeInFlight bool
+	active         bool
+	statusCode     int
+	message        string
+	blockedUntil   time.Time
+	probeInFlight  bool
+	probeStartedAt time.Time
 }
 
 type binancePublicCoordinator struct {
@@ -232,11 +236,13 @@ func (coordinator *binancePublicCoordinator) beforeRequest(endpoint string, now 
 	if now.Before(coordinator.circuit.blockedUntil) {
 		return false, coordinator.circuitErrorLocked(endpoint)
 	}
-	if coordinator.circuit.probeInFlight {
+	if coordinator.circuit.probeInFlight && !coordinator.circuit.probeStartedAt.IsZero() &&
+		now.Sub(coordinator.circuit.probeStartedAt) < binancePublicProbeTimeout {
 		return false, coordinator.circuitErrorLocked(endpoint)
 	}
 
 	coordinator.circuit.probeInFlight = true
+	coordinator.circuit.probeStartedAt = now
 	return true, nil
 }
 
@@ -253,6 +259,7 @@ func (coordinator *binancePublicCoordinator) releaseProbeAfterTransientFailure(n
 		return
 	}
 	coordinator.circuit.probeInFlight = false
+	coordinator.circuit.probeStartedAt = time.Time{}
 	coordinator.circuit.blockedUntil = now.Add(binanceDefaultRateLimitCooldown)
 }
 
