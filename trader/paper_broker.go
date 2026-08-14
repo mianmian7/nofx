@@ -146,6 +146,7 @@ type PaperPosition struct {
 
 type PaperPendingOrder struct {
 	OrderID           int64     `json:"order_id"`
+	ClientID          string    `json:"client_id,omitempty"`
 	Symbol            string    `json:"symbol"`
 	Action            string    `json:"action"`
 	Side              string    `json:"side"`
@@ -158,6 +159,7 @@ type PaperPendingOrder struct {
 	StopLoss          float64   `json:"stop_loss,omitempty"`
 	TakeProfit        float64   `json:"take_profit,omitempty"`
 	ReduceOnly        bool      `json:"reduce_only"`
+	TriggerOnMark     bool      `json:"trigger_on_mark,omitempty"`
 	Status            string    `json:"status"`
 	RepriceCount      int       `json:"reprice_count"`
 	CreatedAt         time.Time `json:"created_at"`
@@ -505,7 +507,7 @@ func (b *PaperBroker) ExecuteDecision(decision *kernel.Decision) (PaperFill, err
 	quantity := decision.PositionSizeUSD / fillPrice
 	fee := decision.PositionSizeUSD * b.config.TakerFeeBPS / 10_000
 	requiredMargin := decision.PositionSizeUSD / float64(decision.Leverage)
-	availableBalance := b.balance - b.usedMarginLocked() - b.reservedMarginLocked()
+	availableBalance := b.availableBalanceLocked()
 	if requiredMargin+fee > availableBalance {
 		return PaperFill{}, fmt.Errorf("paper available balance is insufficient for initial margin and fee")
 	}
@@ -698,7 +700,7 @@ func (b *PaperBroker) placeMakerOpen(decision *kernel.Decision) (PaperFill, erro
 			return PaperFill{}, fmt.Errorf("paper maker entry order already pending for %s %s", decision.Symbol, side)
 		}
 	}
-	availableBalance := b.balance - b.usedMarginLocked() - b.reservedMarginLocked()
+	availableBalance := b.availableBalanceLocked()
 	if requiredMargin+estimatedFee > availableBalance {
 		return PaperFill{}, fmt.Errorf("paper available balance is insufficient for maker order margin and fee")
 	}
@@ -750,6 +752,20 @@ func (b *PaperBroker) reservedMarginLocked() float64 {
 		}
 	}
 	return reserved
+}
+
+func (b *PaperBroker) reservedGridFeesLocked() float64 {
+	reserved := 0.0
+	for _, order := range b.pendingOrders {
+		if order.TriggerOnMark && !order.ReduceOnly && (order.Status == "NEW" || order.Status == "PARTIALLY_FILLED") {
+			reserved += order.RemainingQuantity * order.LimitPrice * b.config.MakerFeeBPS / 10_000
+		}
+	}
+	return reserved
+}
+
+func (b *PaperBroker) availableBalanceLocked() float64 {
+	return b.balance - b.usedMarginLocked() - b.reservedMarginLocked() - b.reservedGridFeesLocked()
 }
 
 func (b *PaperBroker) now() time.Time {
@@ -1137,7 +1153,7 @@ func (b *PaperBroker) ProcessPrice(symbol string, price float64, at time.Time) (
 	defer b.mu.Unlock()
 	b.marks[symbol] = price
 	b.markTimes[symbol] = at.UTC()
-	exits := make([]PaperFill, 0, 1)
+	fills := make([]PaperFill, 0, 1)
 	for key, position := range b.positions {
 		if position.Symbol != symbol {
 			continue
@@ -1149,14 +1165,39 @@ func (b *PaperBroker) ProcessPrice(symbol string, price float64, at time.Time) (
 		fill := b.closePositionLocked(position, action, price, at)
 		delete(b.positions, key)
 		b.cancelPendingOrdersLocked(position.Symbol, position.Side, "risk_exit", at.UTC())
-		exits = append(exits, fill)
+		fills = append(fills, fill)
+	}
+	orderIDs := make([]int64, 0)
+	for orderID, order := range b.pendingOrders {
+		if order.TriggerOnMark && strings.EqualFold(order.Symbol, symbol) && paperGridLimitCrossed(order, price) {
+			orderIDs = append(orderIDs, orderID)
+		}
+	}
+	sort.Slice(orderIDs, func(i, j int) bool { return orderIDs[i] < orderIDs[j] })
+	for _, orderID := range orderIDs {
+		order, ok := b.pendingOrders[orderID]
+		if !ok {
+			continue
+		}
+		fill, err := b.applyPendingOpenFillLocked(order, order.RemainingQuantity, price, at.UTC())
+		if err != nil {
+			return fills, err
+		}
+		fills = append(fills, fill)
 	}
 	b.updateDrawdownLocked()
 	if err := b.persistLocked(); err != nil {
 		return nil, err
 	}
 	b.flushPendingCloseRecordsLocked()
-	return exits, nil
+	return fills, nil
+}
+
+func paperGridLimitCrossed(order PaperPendingOrder, mark float64) bool {
+	if order.Action == "open_long" {
+		return mark <= order.LimitPrice
+	}
+	return order.Action == "open_short" && mark >= order.LimitPrice
 }
 
 func (b *PaperBroker) cancelPendingReduceOnlyLocked(symbol, side string) {
@@ -1714,6 +1755,22 @@ func (b *PaperBroker) applyMakerFill(orderID int64, quantity float64, depth *mar
 	if quantity > order.RemainingQuantity {
 		quantity = order.RemainingQuantity
 	}
+	mark := order.LimitPrice
+	if bid, bidErr := firstPaperDepthPrice(depth.Bids); bidErr == nil {
+		if ask, askErr := firstPaperDepthPrice(depth.Asks); askErr == nil {
+			mark = (bid + ask) / 2
+		}
+	}
+	return b.applyPendingOpenFillLocked(order, quantity, mark, at)
+}
+
+func (b *PaperBroker) applyPendingOpenFillLocked(order PaperPendingOrder, quantity, mark float64, at time.Time) (PaperFill, error) {
+	if order.ReduceOnly || quantity <= 0 {
+		return PaperFill{}, fmt.Errorf("paper pending entry order %d is unavailable", order.OrderID)
+	}
+	if quantity > order.RemainingQuantity {
+		quantity = order.RemainingQuantity
+	}
 	notional := quantity * order.LimitPrice
 	fee := notional * b.config.MakerFeeBPS / 10_000
 	key := order.Symbol + ":" + order.Side
@@ -1741,7 +1798,7 @@ func (b *PaperBroker) applyMakerFill(orderID int64, quantity float64, depth *mar
 	status := "PARTIALLY_FILLED"
 	if order.RemainingQuantity <= 1e-12 {
 		status = "FILLED"
-		delete(b.pendingOrders, orderID)
+		delete(b.pendingOrders, order.OrderID)
 		if !order.ReduceOnly && order.TakeProfit > 0 {
 			tp := PaperPendingOrder{
 				OrderID: b.nextID, Symbol: order.Symbol, Action: paperTakeProfitAction(order.Side),
@@ -1756,13 +1813,7 @@ func (b *PaperBroker) applyMakerFill(orderID int64, quantity float64, depth *mar
 		}
 	} else {
 		order.Status = status
-		b.pendingOrders[orderID] = order
-	}
-	mark := order.LimitPrice
-	if bid, bidErr := firstPaperDepthPrice(depth.Bids); bidErr == nil {
-		if ask, askErr := firstPaperDepthPrice(depth.Asks); askErr == nil {
-			mark = (bid + ask) / 2
-		}
+		b.pendingOrders[order.OrderID] = order
 	}
 	b.marks[order.Symbol] = mark
 	b.markTimes[order.Symbol] = at
@@ -1864,6 +1915,7 @@ func (b *PaperBroker) snapshotLocked() PaperSnapshot {
 	unrealized := 0.0
 	usedMargin := b.usedMarginLocked()
 	reservedMargin := b.reservedMarginLocked()
+	reservedFees := b.reservedGridFeesLocked()
 	for _, position := range b.positions {
 		mark := b.marks[position.Symbol]
 		if mark == 0 {
@@ -1898,7 +1950,7 @@ func (b *PaperBroker) snapshotLocked() PaperSnapshot {
 	}
 	return PaperSnapshot{
 		Balance: b.balance, Equity: b.balance + unrealized,
-		AvailableBalance: b.balance - usedMargin - reservedMargin, UsedMargin: usedMargin,
+		AvailableBalance: b.balance - usedMargin - reservedMargin - reservedFees, UsedMargin: usedMargin,
 		RealizedPnL:   b.balance - b.initialBalance,
 		UnrealizedPnL: unrealized, Fees: b.totalFees,
 		OpenPositions: len(b.positions), PendingOrders: len(b.pendingOrders), ClosedTrades: b.closedTrades,
@@ -2060,6 +2112,128 @@ func (b *PaperBroker) closeBySide(symbol, side, action string) (map[string]inter
 
 func (b *PaperBroker) SetLeverage(string, int) error    { return nil }
 func (b *PaperBroker) SetMarginMode(string, bool) error { return nil }
+
+func (b *PaperBroker) PlaceLimitOrder(req *tradertypes.LimitOrderRequest) (*tradertypes.LimitOrderResult, error) {
+	if req == nil {
+		return nil, fmt.Errorf("paper limit order request is required")
+	}
+	symbol := strings.ToUpper(strings.TrimSpace(req.Symbol))
+	if symbol == "" {
+		return nil, fmt.Errorf("paper limit order symbol is required")
+	}
+	if !isFinitePositive(req.Price) {
+		return nil, fmt.Errorf("paper limit order price must be a finite positive value")
+	}
+	if !isFinitePositive(req.Quantity) {
+		return nil, fmt.Errorf("paper limit order quantity must be a finite positive value")
+	}
+	if req.ReduceOnly {
+		return nil, fmt.Errorf("paper grid reduce-only limit orders are not supported")
+	}
+	side := strings.ToUpper(strings.TrimSpace(req.Side))
+	positionSide, action := "LONG", "open_long"
+	if side == "SELL" {
+		positionSide, action = "SHORT", "open_short"
+	} else if side != "BUY" {
+		return nil, fmt.Errorf("paper limit order side %q is not supported", req.Side)
+	}
+	if req.PositionSide != "" && !strings.EqualFold(req.PositionSide, positionSide) {
+		return nil, fmt.Errorf("paper limit order position side %q conflicts with %s", req.PositionSide, side)
+	}
+	leverage := req.Leverage
+	if leverage <= 0 {
+		leverage = 1
+	}
+	mark, err := b.prices.GetMarketPrice(symbol)
+	if err != nil {
+		return nil, fmt.Errorf("paper market price %s: %w", symbol, err)
+	}
+	if !isValidPaperMarkPrice(mark) {
+		return nil, fmt.Errorf("paper market price for %s is invalid", symbol)
+	}
+
+	now := b.now()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	notional := req.Price * req.Quantity
+	requiredMargin := notional / float64(leverage)
+	estimatedFee := notional * b.config.MakerFeeBPS / 10_000
+	availableBalance := b.availableBalanceLocked()
+	if requiredMargin+estimatedFee > availableBalance {
+		return nil, fmt.Errorf("paper available balance is insufficient for limit order margin and fee")
+	}
+	order := PaperPendingOrder{
+		OrderID: b.nextID, ClientID: req.ClientID, Symbol: symbol,
+		Action: action, Side: strings.ToLower(positionSide), LimitPrice: req.Price,
+		Quantity: req.Quantity, RemainingQuantity: req.Quantity,
+		PositionSizeUSD: notional, Leverage: leverage, ReduceOnly: false,
+		TriggerOnMark: true, Status: "NEW", CreatedAt: now, UpdatedAt: now,
+	}
+	b.nextID++
+	b.pendingOrders[order.OrderID] = order
+	b.marks[symbol] = mark
+	b.markTimes[symbol] = now
+	b.recordOrderEventLocked(order, "NEW", "grid_limit", 0, 0)
+
+	status := order.Status
+	if paperGridLimitCrossed(order, mark) {
+		fill, fillErr := b.applyPendingOpenFillLocked(order, order.RemainingQuantity, mark, now)
+		if fillErr != nil {
+			return nil, fillErr
+		}
+		status = fill.Status
+	} else if err := b.persistLocked(); err != nil {
+		return nil, err
+	}
+	return &tradertypes.LimitOrderResult{
+		OrderID: strconv.FormatInt(order.OrderID, 10), ClientID: req.ClientID,
+		Symbol: symbol, Side: side, PositionSide: positionSide,
+		Price: req.Price, Quantity: req.Quantity, Status: status,
+	}, nil
+}
+
+func (b *PaperBroker) CancelOrder(symbol, orderID string) error {
+	id, err := strconv.ParseInt(orderID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid paper order id %q: %w", orderID, err)
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	order, ok := b.pendingOrders[id]
+	if !ok || (symbol != "" && !strings.EqualFold(symbol, order.Symbol)) {
+		return nil
+	}
+	delete(b.pendingOrders, id)
+	order.UpdatedAt = b.now()
+	b.recordOrderEventLocked(order, "CANCELED", "cancel_requested", 0, 0)
+	return b.persistLocked()
+}
+
+func (b *PaperBroker) GetOrderBook(symbol string, depth int) (bids, asks [][]float64, err error) {
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+	if symbol == "" {
+		return nil, nil, fmt.Errorf("paper order book symbol is required")
+	}
+	if depth <= 0 {
+		depth = 1
+	}
+	mark, err := b.prices.GetMarketPrice(symbol)
+	if err != nil {
+		return nil, nil, fmt.Errorf("paper market price %s: %w", symbol, err)
+	}
+	if !isValidPaperMarkPrice(mark) {
+		return nil, nil, fmt.Errorf("paper market price for %s is invalid", symbol)
+	}
+	bids = make([][]float64, 0, depth)
+	asks = make([][]float64, 0, depth)
+	for level := 1; level <= depth; level++ {
+		spread := float64(level) / 1_000
+		bids = append(bids, []float64{mark * (1 - spread), 1})
+		asks = append(asks, []float64{mark * (1 + spread), 1})
+	}
+	return bids, asks, nil
+}
+
 func (b *PaperBroker) CancelAllOrders(symbol string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -2217,3 +2391,4 @@ func paperPendingExchangeSide(order PaperPendingOrder) string {
 }
 
 var _ Trader = (*PaperBroker)(nil)
+var _ tradertypes.GridTrader = (*PaperBroker)(nil)

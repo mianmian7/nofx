@@ -11,6 +11,7 @@ import (
 
 	"nofx/kernel"
 	"nofx/store"
+	tradertypes "nofx/trader/types"
 )
 
 type duplicatePaperCloseRecorder struct {
@@ -624,6 +625,150 @@ func TestPaperBrokerFlushPendingCloseRecordsSkipsDuplicate(t *testing.T) {
 	}
 	if len(recorder.calls) != 2 || recorder.calls[0] != 1 || recorder.calls[1] != 2 {
 		t.Fatalf("recorder calls = %v, want [1 2]", recorder.calls)
+	}
+}
+
+func TestPaperBrokerGridLimitOrdersFillWhenPriceTouches(t *testing.T) {
+	tests := []struct {
+		name         string
+		side         string
+		limitPrice   float64
+		untouched    float64
+		touched      float64
+		positionSide string
+	}{
+		{name: "buy opens long", side: "BUY", limitPrice: 95, untouched: 96, touched: 95, positionSide: "long"},
+		{name: "sell opens short", side: "SELL", limitPrice: 105, untouched: 104, touched: 105, positionSide: "short"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			prices := fixedPaperPriceSource{"MUUSDT": 100}
+			broker, err := NewPaperBroker(PaperBrokerConfig{InitialBalance: 1_000, MakerFeeBPS: 2}, prices)
+			if err != nil {
+				t.Fatalf("NewPaperBroker: %v", err)
+			}
+			result, err := broker.PlaceLimitOrder(&tradertypes.LimitOrderRequest{
+				Symbol: "MUUSDT", Side: tc.side, Price: tc.limitPrice,
+				Quantity: 2, Leverage: 1, ClientID: "grid-test",
+			})
+			if err != nil {
+				t.Fatalf("PlaceLimitOrder: %v", err)
+			}
+			if result.Status != "NEW" || result.OrderID == "" || result.ClientID != "grid-test" {
+				t.Fatalf("limit result = %#v", result)
+			}
+
+			fills, err := broker.ProcessPrice("MUUSDT", tc.untouched, time.Now().UTC())
+			if err != nil {
+				t.Fatalf("untouched ProcessPrice: %v", err)
+			}
+			if len(fills) != 0 || broker.Snapshot().OpenPositions != 0 || broker.Snapshot().PendingOrders != 1 {
+				t.Fatalf("untouched fills=%#v snapshot=%#v", fills, broker.Snapshot())
+			}
+
+			fills, err = broker.ProcessPrice("MUUSDT", tc.touched, time.Now().UTC().Add(time.Second))
+			if err != nil {
+				t.Fatalf("touched ProcessPrice: %v", err)
+			}
+			if len(fills) != 1 || fills[0].Action != "open_"+tc.positionSide || fills[0].Status != "FILLED" || !fills[0].IsMaker {
+				t.Fatalf("fills = %#v", fills)
+			}
+			positions, err := broker.GetPositions()
+			if err != nil || len(positions) != 1 || positions[0]["side"] != tc.positionSide {
+				t.Fatalf("positions = %#v, err=%v", positions, err)
+			}
+			assertPaperFloat(t, "position quantity", positions[0]["quantity"].(float64), 2)
+			assertPaperFloat(t, "position margin", positions[0]["initial_margin"].(float64), tc.limitPrice*2)
+			wantFee := tc.limitPrice * 2 * 2 / 10_000
+			snapshot := broker.Snapshot()
+			assertPaperFloat(t, "balance after fill", snapshot.Balance, 1_000-wantFee)
+			assertPaperFloat(t, "used margin after fill", snapshot.UsedMargin, tc.limitPrice*2)
+			if snapshot.PendingOrders != 0 || snapshot.Fees != wantFee {
+				t.Fatalf("filled snapshot = %#v", snapshot)
+			}
+			if recent := broker.RecentFills(1); len(recent) != 1 || recent[0].OrderID != fills[0].OrderID {
+				t.Fatalf("recent fills = %#v", recent)
+			}
+		})
+	}
+}
+
+func TestPaperBrokerGridLimitOrderCanBeCanceledIdempotently(t *testing.T) {
+	broker, err := NewPaperBroker(PaperBrokerConfig{InitialBalance: 1_000}, fixedPaperPriceSource{"MUUSDT": 100})
+	if err != nil {
+		t.Fatalf("NewPaperBroker: %v", err)
+	}
+	result, err := broker.PlaceLimitOrder(&tradertypes.LimitOrderRequest{
+		Symbol: "MUUSDT", Side: "BUY", Price: 90, Quantity: 1, Leverage: 1,
+	})
+	if err != nil {
+		t.Fatalf("PlaceLimitOrder: %v", err)
+	}
+	if err := broker.CancelOrder("MUUSDT", result.OrderID); err != nil {
+		t.Fatalf("CancelOrder: %v", err)
+	}
+	if err := broker.CancelOrder("MUUSDT", result.OrderID); err != nil {
+		t.Fatalf("second CancelOrder: %v", err)
+	}
+	if snapshot := broker.Snapshot(); snapshot.PendingOrders != 0 || snapshot.OpenPositions != 0 {
+		t.Fatalf("snapshot after cancel = %#v", snapshot)
+	}
+	status, err := broker.GetOrderStatus("MUUSDT", result.OrderID)
+	if err != nil || status["status"] != "CANCELED" {
+		t.Fatalf("canceled status = %#v, err=%v", status, err)
+	}
+}
+
+func TestPaperBrokerGridMarketableLimitOrderFillsImmediately(t *testing.T) {
+	broker, err := NewPaperBroker(PaperBrokerConfig{InitialBalance: 1_000}, fixedPaperPriceSource{"MUUSDT": 100})
+	if err != nil {
+		t.Fatalf("NewPaperBroker: %v", err)
+	}
+	result, err := broker.PlaceLimitOrder(&tradertypes.LimitOrderRequest{
+		Symbol: "MUUSDT", Side: "BUY", Price: 101, Quantity: 1, Leverage: 1,
+	})
+	if err != nil {
+		t.Fatalf("PlaceLimitOrder: %v", err)
+	}
+	if result.Status != "FILLED" || broker.Snapshot().OpenPositions != 1 || broker.Snapshot().PendingOrders != 0 {
+		t.Fatalf("result=%#v snapshot=%#v", result, broker.Snapshot())
+	}
+}
+
+func TestPaperBrokerGridPendingOrdersReserveEstimatedFees(t *testing.T) {
+	broker, err := NewPaperBroker(PaperBrokerConfig{InitialBalance: 100, MakerFeeBPS: 6_000}, fixedPaperPriceSource{"MUUSDT": 100})
+	if err != nil {
+		t.Fatalf("NewPaperBroker: %v", err)
+	}
+	request := &tradertypes.LimitOrderRequest{
+		Symbol: "MUUSDT", Side: "BUY", Price: 40, Quantity: 1, Leverage: 1,
+	}
+	if _, err := broker.PlaceLimitOrder(request); err != nil {
+		t.Fatalf("first PlaceLimitOrder: %v", err)
+	}
+	if _, err := broker.PlaceLimitOrder(request); err == nil {
+		t.Fatal("second PlaceLimitOrder succeeded without enough balance for both reserved fees")
+	}
+	assertPaperFloat(t, "available balance with reserved grid fee", broker.Snapshot().AvailableBalance, 36)
+	if snapshot := broker.Snapshot(); snapshot.PendingOrders != 1 || snapshot.Balance != 100 {
+		t.Fatalf("snapshot after rejected order = %#v", snapshot)
+	}
+}
+
+func TestPaperBrokerGridGetOrderBookReturnsSyntheticDepth(t *testing.T) {
+	broker, err := NewPaperBroker(PaperBrokerConfig{InitialBalance: 1_000}, fixedPaperPriceSource{"MUUSDT": 100})
+	if err != nil {
+		t.Fatalf("NewPaperBroker: %v", err)
+	}
+	bids, asks, err := broker.GetOrderBook("MUUSDT", 3)
+	if err != nil {
+		t.Fatalf("GetOrderBook: %v", err)
+	}
+	if len(bids) != 3 || len(asks) != 3 || len(bids[0]) != 2 || len(asks[0]) != 2 {
+		t.Fatalf("bids=%#v asks=%#v", bids, asks)
+	}
+	if !(bids[0][0] < 100 && asks[0][0] > 100 && bids[0][0] > bids[1][0] && asks[0][0] < asks[1][0]) {
+		t.Fatalf("synthetic depth is not ordered around mark: bids=%#v asks=%#v", bids, asks)
 	}
 }
 
