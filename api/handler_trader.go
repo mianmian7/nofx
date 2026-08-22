@@ -1183,13 +1183,12 @@ func (s *Server) handleStartTrader(c *gin.Context) {
 		}
 	}
 
-	// Start trader
-	go func() {
-		logger.Infof("▶️  Starting trader %s (%s)", traderID, trader.GetName())
-		if err := trader.Run(); err != nil {
-			logger.Infof("❌ Trader %s runtime error: %v", trader.GetName(), err)
-		}
-	}()
+	// Start trader through the manager so manual starts use the same model-aware
+	// cycle phase plan as bulk startup and database restoration.
+	if err := s.traderManager.StartTrader(traderID); err != nil {
+		SafeError(c, http.StatusInternalServerError, "Unable to start trader runtime", err)
+		return
+	}
 
 	// Update running status in database
 	err = s.store.Trader().UpdateStatus(userID, traderID, true)

@@ -104,25 +104,55 @@ func (tm *TraderManager) sortedTraderIDsLocked() []string {
 	return traderIDs
 }
 
+func (tm *TraderManager) startupDelaysLocked() map[string]time.Duration {
+	inputs := make([]startupStaggerInput, 0, len(tm.traders))
+	for traderID, at := range tm.traders {
+		inputs = append(inputs, startupStaggerInput{
+			ID:              traderID,
+			Name:            at.GetName(),
+			ModelKey:        at.GetAIModelScheduleIdentity(),
+			ScanInterval:    at.GetScanInterval(),
+			ConfiguredDelay: at.GetStartupDelay(),
+		})
+	}
+	return planStartupStagger(inputs)
+}
+
+func (tm *TraderManager) launchTraderLocked(traderID, action string, startupDelay time.Duration, onError func(error)) error {
+	at, exists := tm.traders[traderID]
+	if !exists {
+		return fmt.Errorf("trader ID '%s' does not exist", traderID)
+	}
+	go func() {
+		logger.Infof("%s ▶️ %s; first cycle delay=%v", traderLogTag(traderID, at.GetName()), action, startupDelay)
+		if err := at.RunWithStartupDelay(startupDelay); err != nil {
+			logger.Warnf("%s runtime error: %v", traderLogTag(traderID, at.GetName()), err)
+			if onError != nil {
+				onError(err)
+			}
+		}
+	}()
+	return nil
+}
+
+// StartTrader starts one trader using the same model-aware phase plan as bulk
+// startup and database restoration.
+func (tm *TraderManager) StartTrader(traderID string) error {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+	delays := tm.startupDelaysLocked()
+	return tm.launchTraderLocked(traderID, "Starting trader runtime", delays[traderID], nil)
+}
+
 // StartAll starts all traders
 func (tm *TraderManager) StartAll() {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
 
 	logger.Info("🚀 Starting all traders...")
-	traderIDs := tm.sortedTraderIDsLocked()
-	for traderIndex, traderID := range traderIDs {
-		at := tm.traders[traderID]
-		go func(index int, traderID string, at *trader.AutoTrader) {
-			logger.Infof("%s ▶️ Starting trader runtime", traderLogTag(traderID, at.GetName()))
-			startupDelay := at.GetStartupDelay()
-			if startupDelay <= 0 {
-				startupDelay = time.Duration(index) * 5 * time.Minute
-			}
-			if err := at.RunWithStartupDelay(startupDelay); err != nil {
-				logger.Warnf("%s runtime error: %v", traderLogTag(traderID, at.GetName()), err)
-			}
-		}(traderIndex, traderID, at)
+	delays := tm.startupDelaysLocked()
+	for _, traderID := range tm.sortedTraderIDsLocked() {
+		_ = tm.launchTraderLocked(traderID, "Starting trader runtime", delays[traderID], nil)
 	}
 }
 
@@ -163,23 +193,12 @@ func (tm *TraderManager) AutoStartRunningTraders(st *store.Store) {
 	defer tm.mu.RUnlock()
 
 	startedCount := 0
+	delays := tm.startupDelaysLocked()
 	traderIDs := tm.sortedTraderIDsLocked()
-	runningIndex := 0
 	for _, traderID := range traderIDs {
-		at := tm.traders[traderID]
 		if runningTraderIDs[traderID] {
-			go func(index int, traderID string, at *trader.AutoTrader) {
-				logger.Infof("%s ▶️ Auto-restoring trader runtime", traderLogTag(traderID, at.GetName()))
-				startupDelay := at.GetStartupDelay()
-				if startupDelay <= 0 {
-					startupDelay = time.Duration(index) * 5 * time.Minute
-				}
-				if err := at.RunWithStartupDelay(startupDelay); err != nil {
-					logger.Warnf("%s runtime error: %v", traderLogTag(traderID, at.GetName()), err)
-				}
-			}(runningIndex, traderID, at)
+			_ = tm.launchTraderLocked(traderID, "Auto-restoring trader runtime", delays[traderID], nil)
 			startedCount++
-			runningIndex++
 		}
 	}
 
@@ -569,6 +588,17 @@ func (tm *TraderManager) loadUserTradersFromStore(st *store.Store, userID string
 			delete(tm.loadErrors, traderCfg.ID)
 		}
 	}
+	if autoStart {
+		delays := tm.startupDelaysLocked()
+		for _, traderCfg := range traders {
+			if traderCfg.IsRunning {
+				cfg := traderCfg
+				_ = tm.launchTraderLocked(cfg.ID, "Auto-restoring trader runtime", delays[cfg.ID], func(error) {
+					_ = st.Trader().UpdateStatus(cfg.UserID, cfg.ID, false)
+				})
+			}
+		}
+	}
 
 	return nil
 }
@@ -668,6 +698,15 @@ func (tm *TraderManager) LoadTradersFromStore(st *store.Store) error {
 		if err != nil {
 			logger.Warnf("%s failed to add trader: %v", traderLogTag(traderCfg.ID, traderCfg.Name), err)
 			continue
+		}
+	}
+	delays := tm.startupDelaysLocked()
+	for _, traderCfg := range allTraders {
+		if traderCfg.IsRunning {
+			cfg := traderCfg
+			_ = tm.launchTraderLocked(cfg.ID, "Auto-restoring trader runtime", delays[cfg.ID], func(error) {
+				_ = st.Trader().UpdateStatus(cfg.UserID, cfg.ID, false)
+			})
 		}
 	}
 
@@ -916,21 +955,6 @@ func (tm *TraderManager) addTraderFromStore(traderCfg *store.Trader, aiModelCfg 
 	tm.traders[traderCfg.ID] = at
 	startBackgroundMonitoringIfRunning(at, traderCfg.IsRunning && autoStart)
 	logger.Infof("✓ Trader '%s' (%s + %s/%s) loaded to memory", traderCfg.Name, aiModelCfg.Provider, exchangeCfg.ExchangeType, exchangeCfg.AccountName)
-
-	// Auto-start if trader was running before shutdown
-	if traderCfg.IsRunning && autoStart {
-		logger.Infof("%s 🔄 Auto-starting trader (was running before shutdown)...", traderLogTag(traderCfg.ID, traderCfg.Name))
-		go func(trader *trader.AutoTrader, traderName, traderID, userID string) {
-			if err := trader.Run(); err != nil {
-				logger.Warnf("%s trader stopped with error: %v", traderLogTag(traderID, traderName), err)
-				// Update database to reflect stopped state
-				if st != nil {
-					_ = st.Trader().UpdateStatus(userID, traderID, false)
-				}
-			}
-		}(at, traderCfg.Name, traderCfg.ID, traderCfg.UserID)
-		logger.Infof("%s ✅ Trader auto-started successfully", traderLogTag(traderCfg.ID, traderCfg.Name))
-	}
 
 	return nil
 }
