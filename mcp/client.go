@@ -207,6 +207,17 @@ func (client *Client) CallWithMessagesWithMetadata(metadata CallMetadata, system
 	if metadata.Model == "" {
 		metadata.Model = client.Model
 	}
+	admissionTimeout := DefaultTimeout
+	if client.Cfg != nil && client.Cfg.Timeout > 0 {
+		admissionTimeout = client.Cfg.Timeout
+	}
+	admissionCtx, cancelAdmission := context.WithTimeout(context.Background(), admissionTimeout)
+	defer cancelAdmission()
+	releaseAdmission, err := client.acquireModelRequest(metadata, client.Model, admissionCtx)
+	if err != nil {
+		return "", fmt.Errorf("AI request admission failed: %w", err)
+	}
+	defer releaseAdmission()
 	maxAttempts := client.maxAttempts()
 	totalStart := time.Now()
 	var lastErr error
@@ -632,6 +643,11 @@ func (client *Client) CallWithRequest(req *Request) (string, error) {
 		metadata.Model = req.Model
 	}
 	req.Metadata = metadata
+	releaseAdmission, err := client.acquireModelRequest(metadata, req.Model, contextFromRequest(req))
+	if err != nil {
+		return "", fmt.Errorf("AI request admission failed: %w", err)
+	}
+	defer releaseAdmission()
 	maxAttempts := client.maxAttempts()
 	totalStart := time.Now()
 	var lastErr error
@@ -687,6 +703,11 @@ func (client *Client) CallWithRequestFull(req *Request) (*LLMResponse, error) {
 		metadata.Model = req.Model
 	}
 	req.Metadata = metadata
+	releaseAdmission, err := client.acquireModelRequest(metadata, req.Model, contextFromRequest(req))
+	if err != nil {
+		return nil, fmt.Errorf("AI request admission failed: %w", err)
+	}
+	defer releaseAdmission()
 	maxAttempts := client.maxAttempts()
 	totalStart := time.Now()
 	var lastErr error
@@ -912,6 +933,19 @@ func (client *Client) CallWithRequestStream(req *Request, onChunk func(string)) 
 		req.Model = client.Model
 	}
 	req.Stream = true
+	metadata := normalizeCallMetadata(req.Metadata)
+	if metadata.Provider == "" {
+		metadata.Provider = client.Provider
+	}
+	if metadata.Model == "" {
+		metadata.Model = req.Model
+	}
+	req.Metadata = metadata
+	releaseAdmission, err := client.acquireModelRequest(metadata, req.Model, contextFromRequest(req))
+	if err != nil {
+		return "", fmt.Errorf("AI request admission failed: %w", err)
+	}
+	defer releaseAdmission()
 
 	requestBody := client.Hooks.BuildRequestBodyFromRequest(req)
 	jsonData, err := client.Hooks.MarshalRequestBody(requestBody)
