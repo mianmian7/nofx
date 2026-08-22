@@ -1,6 +1,7 @@
 package market
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -15,11 +16,14 @@ import (
 type MarketDataProvider interface {
 	Exchange() string
 	NormalizeSymbol(symbol string) string
+	Capabilities() MarketCapability
 
 	GetCurrentPrice(symbol string) (float64, error)
+	GetCurrentPriceFresh(symbol string) (float64, error)
 	GetKlines(symbol, interval string, limit int) ([]Kline, error)
 	GetKlinesFresh(symbol, interval string, limit int) ([]Kline, error)
 	GetDepth(symbol string, limit int) (*DepthSnapshot, error)
+	GetDepthFresh(symbol string, limit int) (*DepthSnapshot, error)
 	GetFundingSnapshot(symbol string) (*FundingSnapshot, error)
 	GetFundingHistory(symbol string, startTime, endTime int64) ([]FundingEvent, error)
 	GetOpenInterest(symbol string) (*OIData, error)
@@ -32,36 +36,74 @@ type MarketDataProvider interface {
 // exchange-neutral market-data interface. APIClient retains ownership of the
 // Binance proxy, cache, fresh/stale, singleflight, and rate-limit behavior.
 type BinanceMarketDataProvider struct {
-	client *APIClient
+	client          *APIClient
+	streamDepth     bool
+	redundantKlines bool
 }
 
 func NewBinanceMarketDataProvider(client *APIClient) *BinanceMarketDataProvider {
 	if client == nil {
 		client = NewAPIClient()
 	}
-	return &BinanceMarketDataProvider{client: client}
+	liveUpstreams := strings.Contains(strings.ToLower(client.binanceBaseURL()), "binance.com")
+	return &BinanceMarketDataProvider{client: client, streamDepth: liveUpstreams, redundantKlines: liveUpstreams}
 }
 
 func (provider *BinanceMarketDataProvider) Exchange() string { return "binance" }
+func (provider *BinanceMarketDataProvider) Capabilities() MarketCapability {
+	return TradingCapabilities
+}
 
 func (provider *BinanceMarketDataProvider) NormalizeSymbol(symbol string) string {
 	return NormalizeForExchange("binance", symbol)
 }
 
 func (provider *BinanceMarketDataProvider) GetCurrentPrice(symbol string) (float64, error) {
-	return provider.client.GetCurrentPrice(provider.NormalizeSymbol(symbol))
+	return provider.GetCurrentPriceFresh(symbol)
+}
+
+func (provider *BinanceMarketDataProvider) GetCurrentPriceFresh(symbol string) (float64, error) {
+	return provider.client.GetCurrentPriceFresh(provider.NormalizeSymbol(symbol))
 }
 
 func (provider *BinanceMarketDataProvider) GetKlines(symbol, interval string, limit int) ([]Kline, error) {
-	return provider.client.GetKlines(provider.NormalizeSymbol(symbol), interval, limit)
+	return provider.GetKlinesFresh(symbol, interval, limit)
 }
 
 func (provider *BinanceMarketDataProvider) GetKlinesFresh(symbol, interval string, limit int) ([]Kline, error) {
-	return provider.client.GetKlinesFresh(provider.NormalizeSymbol(symbol), interval, limit)
+	normalizedSymbol := provider.NormalizeSymbol(symbol)
+	if provider.redundantKlines {
+		klines, proof, err := hedgedFreshKlines(context.Background(), provider.Exchange(), normalizedSymbol, interval,
+			func(ctx context.Context) ([]Kline, error) {
+				return provider.client.GetKlinesFreshContext(ctx, normalizedSymbol, interval, limit)
+			},
+			func(ctx context.Context) ([]Kline, error) {
+				return getKlinesFromCoinAnkFreshContext(ctx, normalizedSymbol, interval, provider.Exchange(), limit)
+			},
+		)
+		recordKlineHealth(provider.Exchange(), normalizedSymbol, interval, proof, err)
+		return klines, err
+	}
+	klines, err := provider.client.GetKlinesFresh(normalizedSymbol, interval, limit)
+	recordKlineHealth(provider.Exchange(), normalizedSymbol, interval, proofFromKlines(provider.Exchange(), "primary-rest", klines), err)
+	return klines, err
 }
 
 func (provider *BinanceMarketDataProvider) GetDepth(symbol string, limit int) (*DepthSnapshot, error) {
-	return provider.client.GetDepth(provider.NormalizeSymbol(symbol), limit)
+	return provider.GetDepthFresh(symbol, limit)
+}
+
+func (provider *BinanceMarketDataProvider) GetDepthFresh(symbol string, limit int) (*DepthSnapshot, error) {
+	if provider.streamDepth {
+		if depth, err := streamedDepth(provider.Exchange(), provider.NormalizeSymbol(symbol), limit); err == nil {
+			return depth, nil
+		}
+	}
+	depth, err := provider.client.GetDepthFresh(provider.NormalizeSymbol(symbol), limit)
+	if err == nil {
+		recordDepthRESTFallback(provider.Exchange(), symbol, depth)
+	}
+	return depth, err
 }
 
 func (provider *BinanceMarketDataProvider) GetFundingSnapshot(symbol string) (*FundingSnapshot, error) {
@@ -120,7 +162,8 @@ func NewUnavailableMarketDataProvider(exchange string, err error) MarketDataProv
 	}
 }
 
-func (provider *unavailableMarketDataProvider) Exchange() string { return provider.exchange }
+func (provider *unavailableMarketDataProvider) Exchange() string               { return provider.exchange }
+func (provider *unavailableMarketDataProvider) Capabilities() MarketCapability { return 0 }
 
 func (provider *unavailableMarketDataProvider) NormalizeSymbol(symbol string) string {
 	return NormalizeForExchange(provider.exchange, symbol)
@@ -134,6 +177,10 @@ func (provider *unavailableMarketDataProvider) GetCurrentPrice(string) (float64,
 	return 0, provider.unavailableError()
 }
 
+func (provider *unavailableMarketDataProvider) GetCurrentPriceFresh(string) (float64, error) {
+	return 0, provider.unavailableError()
+}
+
 func (provider *unavailableMarketDataProvider) GetKlines(string, string, int) ([]Kline, error) {
 	return nil, provider.unavailableError()
 }
@@ -143,6 +190,10 @@ func (provider *unavailableMarketDataProvider) GetKlinesFresh(string, string, in
 }
 
 func (provider *unavailableMarketDataProvider) GetDepth(string, int) (*DepthSnapshot, error) {
+	return nil, provider.unavailableError()
+}
+
+func (provider *unavailableMarketDataProvider) GetDepthFresh(string, int) (*DepthSnapshot, error) {
 	return nil, provider.unavailableError()
 }
 
@@ -175,13 +226,23 @@ func newCoinAnkMarketDataProvider(exchange string) *coinAnkMarketDataProvider {
 }
 
 func (provider *coinAnkMarketDataProvider) Exchange() string { return provider.exchange }
+func (provider *coinAnkMarketDataProvider) Capabilities() MarketCapability {
+	if provider.exchange == "kucoin" {
+		return 0
+	}
+	return CapabilityPrice | CapabilityKlines
+}
 
 func (provider *coinAnkMarketDataProvider) NormalizeSymbol(symbol string) string {
 	return NormalizeForExchange(provider.exchange, symbol)
 }
 
 func (provider *coinAnkMarketDataProvider) GetCurrentPrice(symbol string) (float64, error) {
-	klines, err := provider.GetKlines(symbol, "1m", 1)
+	return provider.GetCurrentPriceFresh(symbol)
+}
+
+func (provider *coinAnkMarketDataProvider) GetCurrentPriceFresh(symbol string) (float64, error) {
+	klines, err := provider.GetKlinesFresh(symbol, "1m", 1)
 	if err != nil {
 		return 0, err
 	}
@@ -192,7 +253,7 @@ func (provider *coinAnkMarketDataProvider) GetCurrentPrice(symbol string) (float
 }
 
 func (provider *coinAnkMarketDataProvider) GetKlines(symbol, interval string, limit int) ([]Kline, error) {
-	return getKlinesFromCoinAnk(provider.NormalizeSymbol(symbol), interval, provider.exchange, limit)
+	return provider.GetKlinesFresh(symbol, interval, limit)
 }
 
 func (provider *coinAnkMarketDataProvider) GetKlinesFresh(symbol, interval string, limit int) ([]Kline, error) {
@@ -201,6 +262,10 @@ func (provider *coinAnkMarketDataProvider) GetKlinesFresh(symbol, interval strin
 
 func (provider *coinAnkMarketDataProvider) GetDepth(string, int) (*DepthSnapshot, error) {
 	return nil, fmt.Errorf("%s public depth provider is not implemented", provider.exchange)
+}
+
+func (provider *coinAnkMarketDataProvider) GetDepthFresh(symbol string, limit int) (*DepthSnapshot, error) {
+	return provider.GetDepth(symbol, limit)
 }
 
 func (provider *coinAnkMarketDataProvider) GetFundingSnapshot(string) (*FundingSnapshot, error) {

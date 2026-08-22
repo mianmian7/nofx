@@ -16,6 +16,7 @@ type Data struct {
 	FundingRate       float64
 	IntradaySeries    *IntradayData
 	LongerTermContext *LongerTermData
+	FreshnessProofs   map[string]FreshnessProof `json:"freshness_proofs,omitempty"`
 	// Multi-timeframe data (new)
 	TimeframeData map[string]*TimeframeSeriesData `json:"timeframe_data,omitempty"`
 }
@@ -151,6 +152,10 @@ type DepthSnapshot struct {
 	TransactionTime int64      `json:"T,omitempty"`
 	Bids            [][]string `json:"bids"`
 	Asks            [][]string `json:"asks"`
+	Exchange        string     `json:"exchange,omitempty"`
+	Transport       string     `json:"transport,omitempty"`
+	ReceivedAt      time.Time  `json:"received_at,omitempty"`
+	Fresh           bool       `json:"fresh"`
 }
 
 // BinanceDepthSnapshot remains as an alias for compatibility with existing

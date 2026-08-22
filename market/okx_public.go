@@ -1,6 +1,7 @@
 package market
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -37,7 +38,13 @@ const (
 // not need API credentials and deliberately uses the native OKX endpoints so
 // the AI, paper broker, and UI all observe the same venue.
 type OKXMarketDataProvider struct {
-	httpClient nativePublicHTTPClient
+	httpClient               nativePublicHTTPClient
+	streamDepth              bool
+	redundantKlines          bool
+	priceStream              priceStreamSnapshot
+	fundingStream            fundingStreamSnapshot
+	marketRESTBudget         time.Duration
+	marketRESTAttemptTimeout time.Duration
 }
 
 func NewOKXMarketDataProvider() *OKXMarketDataProvider {
@@ -48,10 +55,22 @@ func NewOKXMarketDataProviderWithHTTPClient(baseURL string, client *http.Client)
 	if strings.TrimSpace(baseURL) == "" {
 		baseURL = okxPublicBaseURL
 	}
-	return &OKXMarketDataProvider{httpClient: newNativePublicHTTPClient(baseURL, client)}
+	provider := &OKXMarketDataProvider{
+		httpClient:               newNativePublicHTTPClient(baseURL, client),
+		streamDepth:              strings.Contains(strings.ToLower(baseURL), "okx.com"),
+		redundantKlines:          strings.Contains(strings.ToLower(baseURL), "okx.com"),
+		marketRESTBudget:         okxMarketRESTBudget,
+		marketRESTAttemptTimeout: okxMarketAttemptTimeout,
+	}
+	if strings.Contains(strings.ToLower(baseURL), "okx.com") {
+		provider.priceStream = streamedOKXPrice
+		provider.fundingStream = streamedOKXFunding
+	}
+	return provider
 }
 
-func (provider *OKXMarketDataProvider) Exchange() string { return "okx" }
+func (provider *OKXMarketDataProvider) Exchange() string               { return "okx" }
+func (provider *OKXMarketDataProvider) Capabilities() MarketCapability { return TradingCapabilities }
 
 func (provider *OKXMarketDataProvider) NormalizeSymbol(symbol string) string {
 	return NormalizeForExchange("okx", symbol)
@@ -66,28 +85,68 @@ func (provider *OKXMarketDataProvider) exchangeSymbol(symbol string) string {
 }
 
 func (provider *OKXMarketDataProvider) GetCurrentPrice(symbol string) (float64, error) {
-	data, err := provider.requestTicker(symbol)
+	return provider.GetCurrentPriceFresh(symbol)
+}
+
+func (provider *OKXMarketDataProvider) GetCurrentPriceFresh(symbol string) (float64, error) {
+	normalized := provider.NormalizeSymbol(symbol)
+	var streamErr error
+	if provider.priceStream != nil {
+		price, _, err := provider.priceStream(normalized)
+		if err == nil {
+			return price, nil
+		}
+		streamErr = err
+	}
+	budget := provider.marketRESTBudget
+	if budget <= 0 {
+		budget = okxMarketRESTBudget
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	data, err := provider.requestTickerContext(ctx, normalized)
 	if err != nil {
+		sharedOKXStreams.recordPriceREST(normalized, nil, err)
+		if streamErr != nil {
+			return 0, fmt.Errorf("OKX price sources unavailable for %s (stream: %v; REST: %w)", normalized, streamErr, err)
+		}
 		return 0, err
 	}
 	if len(data) == 0 {
-		return 0, fmt.Errorf("OKX returned no ticker for %s", provider.NormalizeSymbol(symbol))
+		err := fmt.Errorf("OKX returned no ticker for %s", provider.NormalizeSymbol(symbol))
+		sharedOKXStreams.recordPriceREST(normalized, nil, err)
+		return 0, err
+	}
+	if !strings.EqualFold(data[0].InstID, provider.exchangeSymbol(normalized)) {
+		err := fmt.Errorf("OKX ticker %s returned instrument %s", normalized, data[0].InstID)
+		sharedOKXStreams.recordPriceREST(normalized, nil, err)
+		return 0, err
+	}
+	if _, timestampErr := validateFreshSourceTimestamp("OKX", normalized, "ticker", parseOptionalInt64(data[0].Ts), okxPriceFreshness); timestampErr != nil {
+		err := timestampErr
+		sharedOKXStreams.recordPriceREST(normalized, nil, err)
+		return 0, err
 	}
 	price, err := parsePublicFloat(data[0].Last, "OKX last price")
 	if err != nil {
-		return 0, fmt.Errorf("invalid OKX price for %s: %w", symbol, err)
+		err = fmt.Errorf("invalid OKX price for %s: %w", symbol, err)
+		sharedOKXStreams.recordPriceREST(normalized, nil, err)
+		return 0, err
 	}
 	if price <= 0 {
-		return 0, fmt.Errorf("invalid OKX price for %s: %.8f", symbol, price)
+		err := fmt.Errorf("invalid OKX price for %s: %.8f", symbol, price)
+		sharedOKXStreams.recordPriceREST(normalized, nil, err)
+		return 0, err
 	}
+	sharedOKXStreams.recordPriceREST(normalized, &data[0], nil)
 	return price, nil
 }
 
 func (provider *OKXMarketDataProvider) GetKlines(symbol, interval string, limit int) ([]Kline, error) {
-	return provider.getKlines(symbol, interval, limit, false)
+	return provider.GetKlinesFresh(symbol, interval, limit)
 }
 
-func (provider *OKXMarketDataProvider) getKlines(symbol, interval string, limit int, requireFresh bool) ([]Kline, error) {
+func (provider *OKXMarketDataProvider) getKlines(symbol, interval string, limit int) ([]Kline, error) {
 	bar, err := okxBarInterval(interval)
 	if err != nil {
 		return nil, err
@@ -103,12 +162,7 @@ func (provider *OKXMarketDataProvider) getKlines(symbol, interval string, limit 
 		"bar":    {bar},
 		"limit":  {strconv.Itoa(limit)},
 	}
-	var body []byte
-	if requireFresh {
-		body, err = provider.httpClient.getFresh(okxPublicCandlesPath, query)
-	} else {
-		body, err = provider.httpClient.get(okxPublicCandlesPath, query)
-	}
+	body, err := provider.httpClient.getFresh(okxPublicCandlesPath, query)
 	if err != nil {
 		return nil, err
 	}
@@ -161,26 +215,46 @@ func (provider *OKXMarketDataProvider) getKlines(symbol, interval string, limit 
 		})
 	}
 	sort.SliceStable(klines, func(left, right int) bool { return klines[left].OpenTime < klines[right].OpenTime })
-	if requireFresh {
-		if err := validateFreshPublicKlines("OKX", provider.NormalizeSymbol(symbol), bar, klines, okxIntervalDuration(bar)); err != nil {
-			return nil, err
-		}
+	if err := validateFreshPublicKlines("OKX", provider.NormalizeSymbol(symbol), bar, klines, okxIntervalDuration(bar)); err != nil {
+		return nil, err
 	}
 	return klines, nil
 }
 
 func (provider *OKXMarketDataProvider) GetKlinesFresh(symbol, interval string, limit int) ([]Kline, error) {
-	return provider.getKlines(symbol, interval, limit, true)
+	if provider.redundantKlines {
+		normalizedSymbol := provider.NormalizeSymbol(symbol)
+		klines, proof, err := hedgedFreshKlines(context.Background(), provider.Exchange(), normalizedSymbol, interval,
+			func(context.Context) ([]Kline, error) { return provider.getKlines(normalizedSymbol, interval, limit) },
+			func(ctx context.Context) ([]Kline, error) {
+				return getKlinesFromCoinAnkFreshContext(ctx, normalizedSymbol, interval, provider.Exchange(), limit)
+			},
+		)
+		recordKlineHealth(provider.Exchange(), normalizedSymbol, interval, proof, err)
+		return klines, err
+	}
+	klines, err := provider.getKlines(symbol, interval, limit)
+	recordKlineHealth(provider.Exchange(), provider.NormalizeSymbol(symbol), interval, proofFromKlines(provider.Exchange(), "primary-rest", klines), err)
+	return klines, err
 }
 
 func (provider *OKXMarketDataProvider) GetDepth(symbol string, limit int) (*DepthSnapshot, error) {
+	return provider.GetDepthFresh(symbol, limit)
+}
+
+func (provider *OKXMarketDataProvider) GetDepthFresh(symbol string, limit int) (*DepthSnapshot, error) {
+	if provider.streamDepth {
+		if depth, err := streamedDepth(provider.Exchange(), provider.NormalizeSymbol(symbol), limit); err == nil {
+			return depth, nil
+		}
+	}
 	if limit <= 0 {
 		limit = 20
 	}
 	if limit > 400 {
 		limit = 400
 	}
-	body, err := provider.httpClient.get(okxPublicBooksPath, url.Values{
+	body, err := provider.httpClient.getFresh(okxPublicBooksPath, url.Values{
 		"instId": {provider.exchangeSymbol(symbol)},
 		"sz":     {strconv.Itoa(limit)},
 	})
@@ -199,18 +273,52 @@ func (provider *OKXMarketDataProvider) GetDepth(symbol string, limit int) (*Dept
 	if len(books) == 0 {
 		return nil, fmt.Errorf("OKX returned no order book for %s", symbol)
 	}
-	return &DepthSnapshot{
+	depth := &DepthSnapshot{
 		LastUpdateID:    parseOptionalRawInt64(books[0].Seq),
 		EventTime:       parseOptionalRawInt64(books[0].Ts),
 		TransactionTime: parseOptionalRawInt64(books[0].Ts),
 		Bids:            normalizeDepthLevels(books[0].Bids),
 		Asks:            normalizeDepthLevels(books[0].Asks),
-	}, nil
+		Exchange:        "okx",
+		Transport:       "rest",
+		ReceivedAt:      time.Now().UTC(),
+		Fresh:           true,
+	}
+	recordDepthRESTFallback(provider.Exchange(), symbol, depth)
+	return depth, nil
 }
 
 func (provider *OKXMarketDataProvider) GetFundingSnapshot(symbol string) (*FundingSnapshot, error) {
+	normalized := provider.NormalizeSymbol(symbol)
+	var streamErr error
+	if provider.fundingStream != nil {
+		snapshot, _, err := provider.fundingStream(normalized)
+		if err == nil {
+			return snapshot, nil
+		}
+		streamErr = err
+	}
+	budget := provider.marketRESTBudget
+	if budget <= 0 {
+		budget = okxMarketRESTBudget
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	snapshot, err := provider.getFundingSnapshotREST(ctx, normalized)
+	sharedOKXStreams.recordFundingREST(normalized, snapshot, err)
+	if err != nil && streamErr != nil {
+		return nil, fmt.Errorf("OKX funding sources unavailable for %s (stream: %v; REST: %w)", normalized, streamErr, err)
+	}
+	return snapshot, err
+}
+
+func (provider *OKXMarketDataProvider) getFundingSnapshotREST(ctx context.Context, symbol string) (*FundingSnapshot, error) {
 	instID := provider.exchangeSymbol(symbol)
-	body, err := provider.httpClient.get(okxPublicFundingPath, url.Values{"instId": {instID}})
+	attemptTimeout := provider.marketRESTAttemptTimeout
+	if attemptTimeout <= 0 {
+		attemptTimeout = okxMarketAttemptTimeout
+	}
+	body, err := provider.httpClient.getFreshContext(ctx, okxPublicFundingPath, url.Values{"instId": {instID}}, attemptTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -230,21 +338,29 @@ func (provider *OKXMarketDataProvider) GetFundingSnapshot(symbol string) (*Fundi
 	if err != nil {
 		return nil, err
 	}
-	markBody, markErr := provider.httpClient.get(okxPublicMarkPricePath, url.Values{
+	markBody, markErr := provider.httpClient.getFreshContext(ctx, okxPublicMarkPricePath, url.Values{
 		"instType": {"SWAP"},
 		"instId":   {instID},
-	})
+	}, attemptTimeout)
 	if markErr != nil {
 		return nil, fmt.Errorf("OKX funding mark price for %s: %w", symbol, markErr)
 	}
 	var marks []struct {
+		InstID    string `json:"instId"`
 		MarkPrice string `json:"markPx"`
+		Ts        string `json:"ts"`
 	}
 	if err := decodePublicEnvelope(markBody, "OKX", &marks); err != nil {
 		return nil, fmt.Errorf("OKX funding mark price for %s: %w", symbol, err)
 	}
 	if len(marks) == 0 {
 		return nil, fmt.Errorf("OKX returned no mark price for %s", symbol)
+	}
+	if !strings.EqualFold(funding[0].InstID, instID) {
+		return nil, fmt.Errorf("OKX funding %s returned instrument %s", symbol, funding[0].InstID)
+	}
+	if !strings.EqualFold(marks[0].InstID, instID) {
+		return nil, fmt.Errorf("OKX funding mark price %s returned instrument %s", symbol, marks[0].InstID)
 	}
 	markPrice, err := parsePublicFloat(marks[0].MarkPrice, "OKX mark price")
 	if err != nil || !validOKXMarkPrice(markPrice) {
@@ -253,12 +369,27 @@ func (provider *OKXMarketDataProvider) GetFundingSnapshot(symbol string) (*Fundi
 		}
 		return nil, fmt.Errorf("invalid OKX mark price for %s: %.8f", symbol, markPrice)
 	}
+	fundingTime := parseOptionalInt64(funding[0].Ts)
+	if _, err := validateFreshSourceTimestamp("OKX", symbol, "funding", fundingTime, okxFundingFreshness); err != nil {
+		return nil, err
+	}
+	markTime := parseOptionalInt64(marks[0].Ts)
+	if _, err := validateFreshSourceTimestamp("OKX", symbol, "mark price", markTime, okxMarkFreshness); err != nil {
+		return nil, err
+	}
+	componentSkew := time.Duration(fundingTime-markTime) * time.Millisecond
+	if componentSkew < 0 {
+		componentSkew = -componentSkew
+	}
+	if componentSkew > okxFundingComponentMaxSkew {
+		return nil, fmt.Errorf("OKX funding components for %s differ by %s", symbol, componentSkew)
+	}
 	return &FundingSnapshot{
 		Symbol:          provider.NormalizeSymbol(symbol),
 		MarkPrice:       markPrice,
 		Rate:            rate,
 		NextFundingTime: parseOptionalInt64(funding[0].NextFundingTime),
-		Time:            parseOptionalInt64(funding[0].Ts),
+		Time:            fundingTime,
 	}, nil
 }
 
@@ -281,7 +412,7 @@ func (provider *OKXMarketDataProvider) GetFundingHistory(symbol string, startTim
 		if after > 0 {
 			query.Set("after", strconv.FormatInt(after, 10))
 		}
-		body, err := provider.httpClient.get(okxPublicFundingHistoryPath, query)
+		body, err := provider.httpClient.getFresh(okxPublicFundingHistoryPath, query)
 		if err != nil {
 			return nil, fmt.Errorf("OKX funding history request for %s: %w", canonicalSymbol, err)
 		}
@@ -375,7 +506,7 @@ func (provider *OKXMarketDataProvider) getHistoricalMarkPrice(symbol string, fun
 			"limit":  {strconv.Itoa(okxMarkCandlePageLimit)},
 			"after":  {strconv.FormatInt(after, 10)},
 		}
-		body, err := provider.httpClient.get(okxPublicHistoryMarkPath, query)
+		body, err := provider.httpClient.getFresh(okxPublicHistoryMarkPath, query)
 		if err != nil {
 			return 0, fmt.Errorf("OKX historical mark price for %s at %d: request failed: %w", symbol, fundingTime, err)
 		}
@@ -434,7 +565,7 @@ func validOKXMarkPrice(value float64) bool {
 }
 
 func (provider *OKXMarketDataProvider) GetOpenInterest(symbol string) (*OIData, error) {
-	body, err := provider.httpClient.get(okxPublicOpenInterestPath, url.Values{
+	body, err := provider.httpClient.getFresh(okxPublicOpenInterestPath, url.Values{
 		"instType": {"SWAP"},
 		"instId":   {provider.exchangeSymbol(symbol)},
 	})
@@ -466,7 +597,7 @@ func (provider *OKXMarketDataProvider) GetOpenInterest(symbol string) (*OIData, 
 
 func (provider *OKXMarketDataProvider) GetContractSpec(symbol string) (*ContractSpec, error) {
 	canonicalSymbol := provider.NormalizeSymbol(symbol)
-	body, err := provider.httpClient.get(okxPublicInstrumentsPath, url.Values{
+	body, err := provider.httpClient.getFresh(okxPublicInstrumentsPath, url.Values{
 		"instType": {"SWAP"},
 		"instId":   {provider.exchangeSymbol(canonicalSymbol)},
 	})
@@ -520,7 +651,7 @@ func (provider *OKXMarketDataProvider) GetContractSpec(symbol string) (*Contract
 }
 
 func (provider *OKXMarketDataProvider) ListPerpetualSymbols(limit int) ([]string, error) {
-	body, err := provider.httpClient.get(okxPublicTickersPath, url.Values{"instType": {"SWAP"}})
+	body, err := provider.httpClient.getFresh(okxPublicTickersPath, url.Values{"instType": {"SWAP"}})
 	if err != nil {
 		return nil, err
 	}
@@ -561,7 +692,7 @@ func (provider *OKXMarketDataProvider) ListPerpetualSymbols(limit int) ([]string
 
 func (provider *OKXMarketDataProvider) ValidateMarketAvailability(symbol string) (*MarketAvailability, error) {
 	canonicalSymbol := provider.NormalizeSymbol(symbol)
-	body, err := provider.httpClient.get(okxPublicInstrumentsPath, url.Values{
+	body, err := provider.httpClient.getFresh(okxPublicInstrumentsPath, url.Values{
 		"instType": {"SWAP"},
 		"instId":   {provider.exchangeSymbol(canonicalSymbol)},
 	})
@@ -586,18 +717,26 @@ func (provider *OKXMarketDataProvider) ValidateMarketAvailability(symbol string)
 	return &MarketAvailability{Symbol: canonicalSymbol, Price: price, CheckedAt: time.Now().UTC()}, nil
 }
 
-func (provider *OKXMarketDataProvider) requestTicker(symbol string) ([]struct {
+type okxTickerRow struct {
 	InstID string `json:"instId"`
 	Last   string `json:"last"`
-}, error) {
-	body, err := provider.httpClient.get(okxPublicTickerPath, url.Values{"instId": {provider.exchangeSymbol(symbol)}})
+	Ts     string `json:"ts"`
+}
+
+func (provider *OKXMarketDataProvider) requestTicker(symbol string) ([]okxTickerRow, error) {
+	return provider.requestTickerContext(context.Background(), symbol)
+}
+
+func (provider *OKXMarketDataProvider) requestTickerContext(ctx context.Context, symbol string) ([]okxTickerRow, error) {
+	attemptTimeout := provider.marketRESTAttemptTimeout
+	if attemptTimeout <= 0 {
+		attemptTimeout = okxMarketAttemptTimeout
+	}
+	body, err := provider.httpClient.getFreshContext(ctx, okxPublicTickerPath, url.Values{"instId": {provider.exchangeSymbol(symbol)}}, attemptTimeout)
 	if err != nil {
 		return nil, err
 	}
-	var tickers []struct {
-		InstID string `json:"instId"`
-		Last   string `json:"last"`
-	}
+	var tickers []okxTickerRow
 	if err := decodePublicEnvelope(body, "OKX", &tickers); err != nil {
 		return nil, err
 	}
@@ -606,14 +745,52 @@ func (provider *OKXMarketDataProvider) requestTicker(symbol string) ([]struct {
 
 func okxBarInterval(interval string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(interval)) {
-	case "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "3d", "1w":
+	case "1m", "3m", "5m", "15m", "30m":
 		return strings.ToLower(strings.TrimSpace(interval)), nil
+	case "1h":
+		return "1H", nil
+	case "2h":
+		return "2H", nil
+	case "4h":
+		return "4H", nil
+	case "6h":
+		return "6H", nil
+	case "12h":
+		return "12H", nil
+	case "1d":
+		return "1D", nil
+	case "2d":
+		return "2D", nil
+	case "3d":
+		return "3D", nil
+	case "5d":
+		return "5D", nil
+	case "1w":
+		return "1W", nil
+	case "1M", "1mo", "1month":
+		return "1M", nil
 	default:
 		return "", fmt.Errorf("unsupported OKX candle interval: %s", interval)
 	}
 }
 
 func okxIntervalDuration(bar string) time.Duration {
-	minutes := map[string]int{"1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "2h": 120, "4h": 240, "6h": 360, "12h": 720, "1d": 1440, "3d": 4320, "1w": 10080}
-	return time.Duration(minutes[bar]) * time.Minute
+	minutes := map[string]int{
+		"1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30,
+		"1h": 60, "1H": 60,
+		"2h": 120, "2H": 120,
+		"4h": 240, "4H": 240,
+		"6h": 360, "6H": 360,
+		"12h": 720, "12H": 720,
+		"1d": 1440, "1D": 1440,
+		"2d": 2880, "2D": 2880,
+		"3d": 4320, "3D": 4320,
+		"5d": 7200, "5D": 7200,
+		"1w": 10080, "1W": 10080,
+		"1M": 43200,
+	}
+	if d, ok := minutes[bar]; ok {
+		return time.Duration(d) * time.Minute
+	}
+	return 15 * time.Minute
 }

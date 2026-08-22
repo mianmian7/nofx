@@ -26,6 +26,7 @@ func TestNativeProvidersNormalizeCanonicalSymbols(t *testing.T) {
 }
 
 func TestBinanceProviderUsesExistingAPIClient(t *testing.T) {
+	nowMs := time.Now().Add(-time.Minute).UnixMilli()
 	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/fapi/v1/klines" {
 			t.Fatalf("unexpected Binance path %s", request.URL.Path)
@@ -34,7 +35,7 @@ func TestBinanceProviderUsesExistingAPIClient(t *testing.T) {
 			t.Fatalf("unexpected Binance symbol %q", request.URL.Query().Get("symbol"))
 		}
 		responseWriter.Header().Set("Content-Type", "application/json")
-		_, _ = responseWriter.Write([]byte(`[[1000,"10","11","9","10.5","2",1999,"21",4,"1","10.5"]]`))
+		_, _ = responseWriter.Write([]byte(`[[` + strconv.FormatInt(nowMs, 10) + `,"10","11","9","10.5","2",` + strconv.FormatInt(nowMs+59_999, 10) + `,"21",4,"1","10.5"]]`))
 	}))
 	defer server.Close()
 
@@ -79,13 +80,16 @@ func TestBinanceProviderUsesExactContractFilters(t *testing.T) {
 }
 
 func TestOKXProviderParsesMarketDataAndContractSpec(t *testing.T) {
+	nowMs := time.Now().Add(-time.Minute).UnixMilli()
+	snapshotNowMs := time.Now().UnixMilli()
+	previousMs := nowMs - time.Minute.Milliseconds()
 	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
 		query := request.URL.Query()
 		if request.URL.Path == "/api/v5/market/candles" {
 			if query.Get("instId") != "BTC-USDT-SWAP" || query.Get("bar") != "1m" {
 				t.Fatalf("unexpected OKX candle query: %s", request.URL.RawQuery)
 			}
-			writeJSON(responseWriter, `{"code":"0","data":[["2000","20","21","19","20.5","3","0","61.5","5","0"],["1000","10","11","9","10.5","2","0","21","4","0"]]}`)
+			writeJSON(responseWriter, `{"code":"0","data":[["`+strconv.FormatInt(nowMs, 10)+`","20","21","19","20.5","3","0","61.5","5","0"],["`+strconv.FormatInt(previousMs, 10)+`","10","11","9","10.5","2","0","21","4","0"]]}`)
 			return
 		}
 		if request.URL.Path == "/api/v5/market/books" {
@@ -93,14 +97,14 @@ func TestOKXProviderParsesMarketDataAndContractSpec(t *testing.T) {
 			return
 		}
 		if request.URL.Path == "/api/v5/public/funding-rate" {
-			writeJSON(responseWriter, `{"code":"0","data":[{"instId":"BTC-USDT-SWAP","fundingRate":"0.0012","nextFundingTime":"4000","ts":"3000"}]}`)
+			writeJSON(responseWriter, `{"code":"0","data":[{"instId":"BTC-USDT-SWAP","fundingRate":"0.0012","nextFundingTime":"4000","ts":"`+strconv.FormatInt(snapshotNowMs, 10)+`"}]}`)
 			return
 		}
 		if request.URL.Path == "/api/v5/public/mark-price" {
 			if query.Get("instType") != "SWAP" || query.Get("instId") != "BTC-USDT-SWAP" {
 				t.Fatalf("unexpected OKX mark price query: %s", request.URL.RawQuery)
 			}
-			writeJSON(responseWriter, `{"code":"0","data":[{"instId":"BTC-USDT-SWAP","markPx":"20.8"}]}`)
+			writeJSON(responseWriter, `{"code":"0","data":[{"instId":"BTC-USDT-SWAP","markPx":"20.8","ts":"`+strconv.FormatInt(snapshotNowMs, 10)+`"}]}`)
 			return
 		}
 		if request.URL.Path == "/api/v5/public/open-interest" {
@@ -120,13 +124,16 @@ func TestOKXProviderParsesMarketDataAndContractSpec(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OKX GetKlines returned error: %v", err)
 	}
-	if len(klines) != 2 || klines[0].OpenTime != 1000 || klines[1].OpenTime != 2000 {
+	if len(klines) != 2 || klines[0].OpenTime != previousMs || klines[1].OpenTime != nowMs {
 		t.Fatalf("OKX candles were not sorted ascending: %#v", klines)
 	}
 
 	depth, err := provider.GetDepth("BTCUSDT", 20)
 	if err != nil || len(depth.Bids) != 1 || depth.Bids[0][0] != "20" || depth.LastUpdateID != 7 {
 		t.Fatalf("unexpected OKX depth: %#v, error=%v", depth, err)
+	}
+	if !depth.Fresh || depth.Exchange != "okx" || depth.Transport != "rest" || depth.ReceivedAt.IsZero() {
+		t.Fatalf("OKX depth lost freshness proof: %#v", depth)
 	}
 	funding, err := provider.GetFundingSnapshot("BTCUSDT")
 	if err != nil || funding.Rate != 0.0012 || funding.NextFundingTime != 4000 {
@@ -162,13 +169,16 @@ func TestOKXProviderParsesNumericDepthSequence(t *testing.T) {
 }
 
 func TestBitgetProviderParsesMarketDataAndContractSpec(t *testing.T) {
+	nowMs := time.Now().Add(-time.Minute).UnixMilli()
+	snapshotNowMs := time.Now().UnixMilli()
+	previousMs := nowMs - time.Minute.Milliseconds()
 	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
 		query := request.URL.Query()
 		if request.URL.Path == "/api/v2/mix/market/candles" {
 			if query.Get("symbol") != "BTCUSDT" || query.Get("granularity") != "1m" {
 				t.Fatalf("unexpected Bitget candle query: %s", request.URL.RawQuery)
 			}
-			writeJSON(responseWriter, `{"code":"00000","data":[["2000","20","21","19","20.5","3","61.5"],["1000","10","11","9","10.5","2","21"]]}`)
+			writeJSON(responseWriter, `{"code":"00000","data":[["`+strconv.FormatInt(nowMs, 10)+`","20","21","19","20.5","3","61.5"],["`+strconv.FormatInt(previousMs, 10)+`","10","11","9","10.5","2","21"]]}`)
 			return
 		}
 		if request.URL.Path == "/api/v2/mix/market/orderbook" {
@@ -186,7 +196,7 @@ func TestBitgetProviderParsesMarketDataAndContractSpec(t *testing.T) {
 			if query.Get("symbol") != "BTCUSDT" || query.Get("productType") != "USDT-FUTURES" {
 				t.Fatalf("unexpected Bitget symbol-price query: %s", request.URL.RawQuery)
 			}
-			writeJSON(responseWriter, `{"code":"00000","data":[{"symbol":"BTCUSDT","price":"805.2","indexPrice":"804.0728898231652706","markPrice":"805.17","ts":"3000"}]}`)
+			writeJSON(responseWriter, `{"code":"00000","data":[{"symbol":"BTCUSDT","price":"805.2","indexPrice":"804.0728898231652706","markPrice":"805.17","ts":"`+strconv.FormatInt(snapshotNowMs, 10)+`"}]}`)
 			return
 		}
 		if request.URL.Path == "/api/v2/mix/market/history-fund-rate" {
@@ -229,15 +239,18 @@ func TestBitgetProviderParsesMarketDataAndContractSpec(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Bitget GetKlines returned error: %v", err)
 	}
-	if len(klines) != 2 || klines[0].OpenTime != 1000 || klines[1].OpenTime != 2000 {
+	if len(klines) != 2 || klines[0].OpenTime != previousMs || klines[1].OpenTime != nowMs {
 		t.Fatalf("Bitget candles were not sorted ascending: %#v", klines)
 	}
 	depth, err := provider.GetDepth("BTCUSDT", 20)
 	if err != nil || len(depth.Asks) != 1 || depth.Asks[0][0] != "21" {
 		t.Fatalf("unexpected Bitget depth: %#v, error=%v", depth, err)
 	}
+	if !depth.Fresh || depth.Exchange != "bitget" || depth.Transport != "rest" || depth.ReceivedAt.IsZero() {
+		t.Fatalf("Bitget depth lost freshness proof: %#v", depth)
+	}
 	funding, err := provider.GetFundingSnapshot("BTCUSDT")
-	if err != nil || funding.Rate != 0.002 || funding.MarkPrice != 805.17 || funding.IndexPrice != 804.0728898231652706 || funding.NextFundingTime != 4000 || funding.Time != 3000 {
+	if err != nil || funding.Rate != 0.002 || funding.MarkPrice != 805.17 || funding.IndexPrice != 804.0728898231652706 || funding.NextFundingTime != 4000 || funding.Time != snapshotNowMs {
 		t.Fatalf("unexpected Bitget funding: %#v, error=%v", funding, err)
 	}
 	history, err := provider.GetFundingHistory("BTCUSDT", 1000000, 2000000)
@@ -254,6 +267,24 @@ func TestBitgetProviderParsesMarketDataAndContractSpec(t *testing.T) {
 	spec, err := provider.GetContractSpec("BTCUSDT")
 	if err != nil || spec.PriceTick != 0.1 || spec.QuantityStep != 0.001 || spec.MinQuantity != 0.001 {
 		t.Fatalf("unexpected Bitget contract spec: %#v, error=%v", spec, err)
+	}
+}
+
+func TestBitgetProviderParsesCurrentSizeOpenInterest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != bitgetPublicOpenInterestPath {
+			t.Fatalf("unexpected Bitget path %s", request.URL.Path)
+		}
+		writeJSON(responseWriter, `{"code":"00000","data":{"openInterestList":[{"symbol":"SNDKUSDT","size":"46975.254000000053"}],"ts":"1786893976234"}}`)
+	}))
+	defer server.Close()
+	provider := NewBitgetMarketDataProviderWithHTTPClient(server.URL, server.Client())
+	oi, err := provider.GetOpenInterest("SNDKUSDT")
+	if err != nil {
+		t.Fatalf("GetOpenInterest: %v", err)
+	}
+	if oi.Latest != 46975.254000000053 || oi.Unit != "base" {
+		t.Fatalf("open interest = %#v", oi)
 	}
 }
 
@@ -404,5 +435,28 @@ func TestMarketDataProviderFactorySharesNativeProviderCache(t *testing.T) {
 	}
 	if _, ok := bitgetProvider.(*BitgetMarketDataProvider); !ok {
 		t.Fatalf("Bitget factory returned %T", bitgetProvider)
+	}
+}
+
+func TestOKXBarIntervalFormatting(t *testing.T) {
+	cases := map[string]string{
+		"1m":  "1m",
+		"15m": "15m",
+		"1h":  "1H",
+		"1H":  "1H",
+		"2h":  "2H",
+		"4h":  "4H",
+		"4H":  "4H",
+		"1d":  "1D",
+		"1w":  "1W",
+	}
+	for input, want := range cases {
+		got, err := okxBarInterval(input)
+		if err != nil {
+			t.Fatalf("okxBarInterval(%q) returned error: %v", input, err)
+		}
+		if got != want {
+			t.Fatalf("okxBarInterval(%q) = %q, want %q", input, got, want)
+		}
 	}
 }

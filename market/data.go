@@ -36,7 +36,7 @@ func GetWithExchange(symbol, exchange string) (*Data, error) {
 		if providerErr != nil {
 			return nil, providerErr
 		}
-		return getWithTimeframesFromProvider(provider, symbol, []string{"3m", "4h"}, "3m", 100, false)
+		return getWithTimeframesFromProvider(provider, symbol, []string{"3m", "4h"}, "3m", 100)
 	}
 
 	var klines3m, klines4h []Kline
@@ -187,7 +187,7 @@ func GetWithTimeframesForExchange(exchange, symbol string, timeframes []string, 
 	if err != nil {
 		return nil, err
 	}
-	return getWithTimeframesFromProvider(provider, symbol, timeframes, primaryTimeframe, count, false)
+	return getWithTimeframesFromProvider(provider, symbol, timeframes, primaryTimeframe, count)
 }
 
 // GetWithTimeframesFreshForExchange is the fail-closed exchange-aware variant
@@ -197,19 +197,20 @@ func GetWithTimeframesFreshForExchange(exchange, symbol string, timeframes []str
 	if err != nil {
 		return nil, err
 	}
-	return getWithTimeframesFromProvider(provider, symbol, timeframes, primaryTimeframe, count, true)
+	return getWithTimeframesFromProvider(provider, symbol, timeframes, primaryTimeframe, count)
 }
 
-// GetWithTimeframesForProvider is useful when a caller owns a provider and
-// wants to reuse its HTTP client and caches across several symbols.
-func GetWithTimeframesForProvider(provider MarketDataProvider, symbol string, timeframes []string, primaryTimeframe string, count int, requireFresh bool) (*Data, error) {
+// GetWithTimeframesForProvider is the only provider-backed trading-analysis
+// entry point. It always requires fresh data; callers cannot opt into a stale
+// or cached snapshot.
+func GetWithTimeframesForProvider(provider MarketDataProvider, symbol string, timeframes []string, primaryTimeframe string, count int) (*Data, error) {
 	if provider == nil {
 		return nil, fmt.Errorf("market data provider is nil")
 	}
-	return getWithTimeframesFromProvider(provider, symbol, timeframes, primaryTimeframe, count, requireFresh)
+	return getWithTimeframesFromProvider(provider, symbol, timeframes, primaryTimeframe, count)
 }
 
-func getWithTimeframesFromProvider(provider MarketDataProvider, symbol string, timeframes []string, primaryTimeframe string, count int, requireFresh bool) (*Data, error) {
+func getWithTimeframesFromProvider(provider MarketDataProvider, symbol string, timeframes []string, primaryTimeframe string, count int) (*Data, error) {
 	symbol = provider.NormalizeSymbol(symbol)
 
 	if len(timeframes) == 0 {
@@ -235,35 +236,34 @@ func getWithTimeframesFromProvider(provider MarketDataProvider, symbol string, t
 
 	// Store data for all timeframes
 	timeframeData := make(map[string]*TimeframeSeriesData)
+	freshnessProofs := make(map[string]FreshnessProof)
 	var primaryKlines []Kline
 	klinesByTimeframe := make(map[string][]Kline)
 
 	// Get K-line data for each timeframe
 	for _, tf := range timeframes {
-		var klines []Kline
-		var err error
-
-		if requireFresh {
-			klines, err = provider.GetKlinesFresh(symbol, tf, 200)
-		} else {
-			klines, err = provider.GetKlines(symbol, tf, 200)
-		}
+		klines, err := provider.GetKlinesFresh(symbol, tf, 200)
 		if err != nil {
 			logger.Infof("Failed to get %s %s K-line from %s: %v", symbol, tf, provider.Exchange(), err)
-			if requireFresh {
-				return nil, fmt.Errorf("fresh %s K-line unavailable: %w", tf, err)
-			}
-			continue
+			return nil, &MarketDataUnavailableError{Exchange: provider.Exchange(), Symbol: symbol, Capability: CapabilityKlines, Cause: fmt.Errorf("fresh %s K-line unavailable: %w", tf, err)}
 		}
 
 		if len(klines) == 0 {
 			logger.Infof("%s %s K-line data from %s is empty", symbol, tf, provider.Exchange())
-			if requireFresh {
-				return nil, fmt.Errorf("fresh %s K-line data is empty", tf)
-			}
-			continue
+			return nil, &MarketDataUnavailableError{Exchange: provider.Exchange(), Symbol: symbol, Capability: CapabilityKlines, Cause: fmt.Errorf("fresh %s K-line data is empty", tf)}
 		}
 		klinesByTimeframe[tf] = klines
+		sourceTime := time.UnixMilli(klines[len(klines)-1].OpenTime).UTC()
+		receivedAt := time.Now().UTC()
+		freshnessProofs[tf] = FreshnessProof{
+			Exchange:   provider.Exchange(),
+			Transport:  "rest",
+			SourceTime: sourceTime,
+			ReceivedAt: receivedAt,
+			Age:        receivedAt.Sub(sourceTime),
+			SequenceOK: true,
+			Reconciled: true,
+		}
 
 		// Save primary timeframe K-lines for calculating base indicators
 		if tf == primaryTimeframe {
@@ -296,32 +296,38 @@ func getWithTimeframesFromProvider(provider MarketDataProvider, symbol string, t
 	priceChange1h := calculatePriceChangeByBars(primaryKlines, primaryTimeframe, 60)  // 1 hour
 	priceChange4h := calculatePriceChangeByBars(primaryKlines, primaryTimeframe, 240) // 4 hours
 
-	// Get OI data from the same exchange. OI is optional for prompt analysis,
-	// but never silently sourced from Binance for a different venue.
+	// Every declared trading field is required. Returning a zero value after an
+	// upstream error would make an incomplete context indistinguishable from a
+	// real zero reading.
 	oiData, err := provider.GetOpenInterest(symbol)
 	if err != nil {
-		oiData = &OIData{Latest: 0, Average: 0}
+		return nil, &MarketDataUnavailableError{Exchange: provider.Exchange(), Symbol: symbol, Capability: CapabilityOpenInterest, Cause: err}
+	}
+	if oiData == nil {
+		return nil, &MarketDataUnavailableError{Exchange: provider.Exchange(), Symbol: symbol, Capability: CapabilityOpenInterest, Cause: fmt.Errorf("empty open-interest response")}
 	}
 
-	// Get funding from the same exchange. Current funding is optional because
-	// some legacy CoinAnk-only providers do not expose it.
-	fundingRate := 0.0
-	if fundingSnapshot, fundingErr := provider.GetFundingSnapshot(symbol); fundingErr == nil && fundingSnapshot != nil {
-		fundingRate = fundingSnapshot.Rate
+	fundingSnapshot, fundingErr := provider.GetFundingSnapshot(symbol)
+	if fundingErr != nil {
+		return nil, &MarketDataUnavailableError{Exchange: provider.Exchange(), Symbol: symbol, Capability: CapabilityFunding, Cause: fundingErr}
+	}
+	if fundingSnapshot == nil {
+		return nil, &MarketDataUnavailableError{Exchange: provider.Exchange(), Symbol: symbol, Capability: CapabilityFunding, Cause: fmt.Errorf("empty funding response")}
 	}
 
 	data := &Data{
-		Symbol:        symbol,
-		Exchange:      provider.Exchange(),
-		CurrentPrice:  currentPrice,
-		PriceChange1h: priceChange1h,
-		PriceChange4h: priceChange4h,
-		CurrentEMA20:  currentEMA20,
-		CurrentMACD:   currentMACD,
-		CurrentRSI7:   currentRSI7,
-		OpenInterest:  oiData,
-		FundingRate:   fundingRate,
-		TimeframeData: timeframeData,
+		Symbol:          symbol,
+		Exchange:        provider.Exchange(),
+		CurrentPrice:    currentPrice,
+		PriceChange1h:   priceChange1h,
+		PriceChange4h:   priceChange4h,
+		CurrentEMA20:    currentEMA20,
+		CurrentMACD:     currentMACD,
+		CurrentRSI7:     currentRSI7,
+		OpenInterest:    oiData,
+		FundingRate:     fundingSnapshot.Rate,
+		FreshnessProofs: freshnessProofs,
+		TimeframeData:   timeframeData,
 	}
 	if intradayKlines, ok := klinesByTimeframe["3m"]; ok {
 		data.IntradaySeries = calculateIntradaySeries(intradayKlines)

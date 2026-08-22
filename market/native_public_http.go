@@ -1,6 +1,7 @@
 package market
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -54,7 +55,18 @@ func (client nativePublicHTTPClient) getFresh(path string, query url.Values) ([]
 	return client.getWithCache(path, query, false)
 }
 
+func (client nativePublicHTTPClient) getFreshContext(ctx context.Context, path string, query url.Values, attemptTimeout time.Duration) ([]byte, error) {
+	return client.getWithCacheContext(ctx, path, query, false, attemptTimeout)
+}
+
 func (client nativePublicHTTPClient) getWithCache(path string, query url.Values, allowCache bool) ([]byte, error) {
+	return client.getWithCacheContext(context.Background(), path, query, allowCache, 0)
+}
+
+func (client nativePublicHTTPClient) getWithCacheContext(ctx context.Context, path string, query url.Values, allowCache bool, attemptTimeout time.Duration) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	cacheKey := path
 	if encodedQuery := query.Encode(); encodedQuery != "" {
 		cacheKey += "?" + encodedQuery
@@ -76,26 +88,44 @@ func (client nativePublicHTTPClient) getWithCache(path string, query url.Values,
 	}
 	var lastErr error
 	for attempt := 1; attempt <= nativePublicMaxAttempts; attempt++ {
-		request, err := http.NewRequest(http.MethodGet, requestURL, nil)
+		requestCtx := ctx
+		var cancel context.CancelFunc
+		if attemptTimeout > 0 {
+			requestCtx, cancel = context.WithTimeout(ctx, attemptTimeout)
+		}
+		request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, requestURL, nil)
 		if err != nil {
+			if cancel != nil {
+				cancel()
+			}
 			return nil, err
 		}
 		request.Header.Set("Accept", "application/json")
 		response, err := client.client.Do(request)
 		if err != nil {
+			if cancel != nil {
+				cancel()
+			}
 			lastErr = fmt.Errorf("public market request %s: %w", path, err)
 			if attempt < nativePublicMaxAttempts {
-				time.Sleep(nativePublicRetryDelay)
+				if !waitNativePublicRetry(ctx, nativePublicRetryDelay) {
+					return nil, fmt.Errorf("public market request %s: %w", path, ctx.Err())
+				}
 				continue
 			}
 			return nil, lastErr
 		}
 		body, readErr := io.ReadAll(response.Body)
 		response.Body.Close()
+		if cancel != nil {
+			cancel()
+		}
 		if readErr != nil {
 			lastErr = fmt.Errorf("read public market response %s: %w", path, readErr)
 			if attempt < nativePublicMaxAttempts {
-				time.Sleep(nativePublicRetryDelay)
+				if !waitNativePublicRetry(ctx, nativePublicRetryDelay) {
+					return nil, fmt.Errorf("public market request %s: %w", path, ctx.Err())
+				}
 				continue
 			}
 			return nil, lastErr
@@ -107,7 +137,9 @@ func (client nativePublicHTTPClient) getWithCache(path string, query url.Values,
 			}
 			lastErr = fmt.Errorf("public market request %s failed with HTTP %d: %s", path, response.StatusCode, message)
 			if nativePublicRetryableStatus(response.StatusCode) && attempt < nativePublicMaxAttempts {
-				time.Sleep(nativePublicRetryDelay)
+				if !waitNativePublicRetry(ctx, nativePublicRetryDelay) {
+					return nil, fmt.Errorf("public market request %s: %w", path, ctx.Err())
+				}
 				continue
 			}
 			return nil, lastErr
@@ -123,6 +155,17 @@ func (client nativePublicHTTPClient) getWithCache(path string, query url.Values,
 		return body, nil
 	}
 	return nil, lastErr
+}
+
+func waitNativePublicRetry(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func nativePublicRetryableStatus(statusCode int) bool {

@@ -6,6 +6,8 @@ package binanceguard
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -16,6 +18,13 @@ import (
 // headroom for endpoints whose individual request weight is higher than one
 // without making a multi-symbol market-data scan wait for the HTTP timeout.
 const defaultRequestInterval = 150 * time.Millisecond
+
+const (
+	defaultMaxCriticalPending = 256
+	defaultMaxNormalPending   = 256
+)
+
+var ErrAdmissionQueueFull = errors.New("binance admission queue is full")
 
 var defaultLimiter = newLimiter(defaultRequestInterval)
 
@@ -38,6 +47,27 @@ type requestWaiter struct {
 	released bool
 }
 
+// AdmissionError distinguishes process-local queue pressure/cancellation from
+// an error returned by Binance, a proxy, DNS, TLS, or the network transport.
+// Callers must never use an AdmissionError to mark an upstream as unavailable.
+type AdmissionError struct {
+	Cause error
+}
+
+func (admissionError *AdmissionError) Error() string {
+	if admissionError == nil || admissionError.Cause == nil {
+		return "binance request admission unavailable"
+	}
+	return fmt.Sprintf("binance request admission unavailable: %v", admissionError.Cause)
+}
+
+func (admissionError *AdmissionError) Unwrap() error {
+	if admissionError == nil {
+		return nil
+	}
+	return admissionError.Cause
+}
+
 // Limiter serializes request admission and spaces consecutive requests. The
 // gate is deliberately process-wide: public market data and signed futures
 // requests consume the same Binance IP quota.
@@ -50,6 +80,8 @@ type Limiter struct {
 	dispatching   bool
 	inFlight      bool
 	criticalBurst int
+	maxCritical   int
+	maxNormal     int
 }
 
 const maxCriticalBurst = 8
@@ -59,8 +91,31 @@ func newLimiter(interval time.Duration) *Limiter {
 		interval = 0
 	}
 	return &Limiter{
-		interval: interval,
+		interval:    interval,
+		maxCritical: defaultMaxCriticalPending,
+		maxNormal:   defaultMaxNormalPending,
 	}
+}
+
+// NewLimiter creates an independent bounded admission queue. Production
+// Binance clients normally use Acquire, while tests and isolated clients can
+// use a local limiter without sharing process-global timing state.
+func NewLimiter(interval time.Duration) *Limiter {
+	return newLimiter(interval)
+}
+
+// Acquire waits for the process-wide Binance request slot at the requested
+// priority. The returned release function must be called exactly once.
+func Acquire(ctx context.Context, priority Priority) (func(), error) {
+	return defaultLimiter.acquireWithPriority(ctx, priority)
+}
+
+// Acquire waits for this limiter's request slot at the requested priority.
+func (limiter *Limiter) Acquire(ctx context.Context, priority Priority) (func(), error) {
+	if limiter == nil {
+		return nil, &AdmissionError{Cause: errors.New("binance admission limiter is nil")}
+	}
+	return limiter.acquireWithPriority(ctx, priority)
 }
 
 func (limiter *Limiter) acquire(ctx context.Context) (func(), error) {
@@ -77,6 +132,10 @@ func (limiter *Limiter) acquireWithPriority(ctx context.Context, priority Priori
 	}
 
 	limiter.mu.Lock()
+	if limiter.queueFullLocked(priority) {
+		limiter.mu.Unlock()
+		return nil, &AdmissionError{Cause: ErrAdmissionQueueFull}
+	}
 	if priority == PriorityCritical {
 		limiter.critical = append(limiter.critical, waiter)
 	} else {
@@ -101,8 +160,27 @@ func (limiter *Limiter) acquireWithPriority(ctx context.Context, priority Priori
 			// queue cannot remain blocked.
 			limiter.release(waiter)
 		}
-		return nil, ctx.Err()
+		return nil, &AdmissionError{Cause: ctx.Err()}
 	}
+}
+
+func (limiter *Limiter) queueFullLocked(priority Priority) bool {
+	queue := limiter.normal
+	limit := limiter.maxNormal
+	if priority == PriorityCritical {
+		queue = limiter.critical
+		limit = limiter.maxCritical
+	}
+	if limit <= 0 {
+		return false
+	}
+	pending := 0
+	for _, waiter := range queue {
+		if waiter != nil && !waiter.canceled {
+			pending++
+		}
+	}
+	return pending >= limit
 }
 
 func (limiter *Limiter) release(waiter *requestWaiter) {

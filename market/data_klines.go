@@ -15,14 +15,18 @@ import (
 
 // getKlinesFromCoinAnk fetches kline data from CoinAnk API (replacement for WSMonitorCli)
 func getKlinesFromCoinAnk(symbol, interval, exchange string, limit int) ([]Kline, error) {
-	return getKlinesFromCoinAnkWithFreshness(symbol, interval, exchange, limit, false)
+	return getKlinesFromCoinAnkWithFreshness(context.Background(), symbol, interval, exchange, limit, false)
 }
 
 func getKlinesFromCoinAnkFresh(symbol, interval, exchange string, limit int) ([]Kline, error) {
-	return getKlinesFromCoinAnkWithFreshness(symbol, interval, exchange, limit, true)
+	return getKlinesFromCoinAnkFreshContext(context.Background(), symbol, interval, exchange, limit)
 }
 
-func getKlinesFromCoinAnkWithFreshness(symbol, interval, exchange string, limit int, requireFresh bool) ([]Kline, error) {
+func getKlinesFromCoinAnkFreshContext(ctx context.Context, symbol, interval, exchange string, limit int) ([]Kline, error) {
+	return getKlinesFromCoinAnkWithFreshness(ctx, symbol, interval, exchange, limit, true)
+}
+
+func getKlinesFromCoinAnkWithFreshness(ctx context.Context, symbol, interval, exchange string, limit int, requireFresh bool) ([]Kline, error) {
 	// Map interval string to coinank enum
 	var coinankInterval coinank_enum.Interval
 	switch interval {
@@ -80,7 +84,6 @@ func getKlinesFromCoinAnkWithFreshness(symbol, interval, exchange string, limit 
 	}
 
 	// Call CoinAnk free/open API (no authentication required)
-	ctx := context.Background()
 	ts := time.Now().UnixMilli()
 	// Use "To" side to search backward from current time (get historical klines)
 	coinankKlines, err := coinank_api.Kline(ctx, symbol, coinankExchange, ts, coinank_enum.To, limit, coinankInterval)

@@ -9,6 +9,7 @@ import (
 	"nofx/crypto"
 	"nofx/logger"
 	"nofx/manager"
+	"nofx/market"
 	"nofx/store"
 	"os"
 	"strings"
@@ -196,6 +197,7 @@ func (s *Server) setupRoutes() {
 	{
 		// Health check
 		api.Any("/health", s.handleHealth)
+		api.GET("/market-data/health", s.handleMarketDataHealth)
 
 		// Admin login (used in admin mode, public)
 
@@ -504,6 +506,11 @@ func (s *Server) handleHealth(c *gin.Context) {
 		"status": "ok",
 		"time":   c.Request.Context().Value("time"),
 	})
+}
+
+func (s *Server) handleMarketDataHealth(c *gin.Context) {
+	health := market.LiveFeedHealthSnapshot()
+	c.JSON(http.StatusOK, health)
 }
 
 // handleGetSystemConfig Get system configuration (configuration that client needs to know)

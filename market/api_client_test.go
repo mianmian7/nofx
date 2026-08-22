@@ -1,6 +1,7 @@
 package market
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -8,12 +9,51 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"nofx/hook"
+	"nofx/market/binanceguard"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestNewBinancePublicTransportUsesConfiguredProxy(t *testing.T) {
+	var gotRequest bool
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotRequest = true
+		if r.URL.String() != "http://binance.test/fapi/v1/ping" {
+			t.Errorf("proxy request URL = %q", r.URL.String())
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer proxy.Close()
+
+	transport := newBinancePublicTransport(proxy.URL)
+	request, err := http.NewRequest(http.MethodGet, "http://binance.test/fapi/v1/ping", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	response, err := transport.RoundTrip(request)
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	response.Body.Close()
+	if !gotRequest {
+		t.Fatal("configured proxy did not receive the request")
+	}
+}
+
+func TestNewBinancePublicTransportRejectsProxyCredentials(t *testing.T) {
+	transport := newBinancePublicTransport("http://user:password@proxy.test:8118")
+	request, err := http.NewRequest(http.MethodGet, "http://binance.test/fapi/v1/ping", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	_, err = transport.RoundTrip(request)
+	if err == nil {
+		t.Fatal("RoundTrip unexpectedly succeeded")
+	}
+}
 
 func TestGetDepthUsesNormalizedBinanceSymbolAndPreservesTickStrings(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -113,12 +153,12 @@ func TestSameBinanceRequestIsMergedAcrossClients(t *testing.T) {
 			t.Fatalf("GetCurrentPrice returned error: %v", err)
 		}
 	}
-	if calls := upstreamCalls.Load(); calls != 1 {
-		t.Fatalf("upstream calls = %d, want 1", calls)
+	if calls := upstreamCalls.Load(); calls <= 0 || calls >= callerCount {
+		t.Fatalf("upstream calls = %d, want concurrent requests coalesced below %d", calls, callerCount)
 	}
 }
 
-func TestFreshPriceCacheIsSharedAcrossClients(t *testing.T) {
+func TestFreshPriceRequestsDoNotReuseCompletedResponse(t *testing.T) {
 	var upstreamCalls atomic.Int32
 	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		upstreamCalls.Add(1)
@@ -138,8 +178,70 @@ func TestFreshPriceCacheIsSharedAcrossClients(t *testing.T) {
 	if _, err := secondClient.GetCurrentPrice("BTCUSDT"); err != nil {
 		t.Fatalf("second GetCurrentPrice: %v", err)
 	}
-	if calls := upstreamCalls.Load(); calls != 1 {
-		t.Fatalf("upstream calls = %d, want 1", calls)
+	if calls := upstreamCalls.Load(); calls != 2 {
+		t.Fatalf("upstream calls = %d, want 2 fresh requests", calls)
+	}
+}
+
+func TestOpenInterestCoalescesBrieflyButNeverFallsBackAfterExpiry(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	failUpstream := atomic.Bool{}
+	coordinator := newBinancePublicCoordinator()
+	client := &APIClient{
+		baseURL: "https://binance.test",
+		client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			upstreamCalls.Add(1)
+			if failUpstream.Load() {
+				return nil, errors.New("upstream unavailable")
+			}
+			return binanceJSONResponse(`{"openInterest":"123.45","symbol":"BTCUSDT","time":1786894200000}`), nil
+		})},
+		coordinator: coordinator,
+	}
+	if _, err := client.GetOpenInterest("BTCUSDT"); err != nil {
+		t.Fatalf("first GetOpenInterest: %v", err)
+	}
+	if _, err := client.GetOpenInterest("BTCUSDT"); err != nil {
+		t.Fatalf("coalesced GetOpenInterest: %v", err)
+	}
+	if upstreamCalls.Load() != 1 {
+		t.Fatalf("upstream calls = %d, want 1 inside coalescing window", upstreamCalls.Load())
+	}
+
+	path := binancePath("/fapi/v1/openInterest", url.Values{"symbol": {"BTCUSDT"}})
+	cacheKey := client.binanceBaseURL() + "|" + path
+	coordinator.cacheMutex.Lock()
+	entry := coordinator.cache[cacheKey]
+	entry.expiresAt = time.Now().Add(-time.Second)
+	coordinator.cache[cacheKey] = entry
+	coordinator.cacheMutex.Unlock()
+	failUpstream.Store(true)
+	if _, err := client.GetOpenInterest("BTCUSDT"); err == nil {
+		t.Fatal("expired OI response was returned after upstream failure")
+	}
+}
+
+func TestGetKlinesFreshContextCancelsQueuedAdmission(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	coordinator := newBinancePublicCoordinatorWithAdmission(func(ctx context.Context, _ binanceguard.Priority) (func(), error) {
+		<-ctx.Done()
+		return nil, &binanceguard.AdmissionError{Cause: ctx.Err()}
+	})
+	client := &APIClient{
+		baseURL: "https://binance.test",
+		client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			upstreamCalls.Add(1)
+			return freshBinanceKlineResponse(time.Minute), nil
+		})},
+		coordinator: coordinator,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := client.GetKlinesFreshContext(ctx, "BTCUSDT", "1m", 1); err == nil {
+		t.Fatal("canceled K-line admission returned no error")
+	}
+	if upstreamCalls.Load() != 0 {
+		t.Fatalf("canceled admission reached upstream %d times", upstreamCalls.Load())
 	}
 }
 
@@ -210,7 +312,45 @@ func TestBinance451MarksProxyUnavailableAndStopsOtherEndpoints(t *testing.T) {
 	}
 }
 
-func TestRepeatedNetworkFailureOpensShortCircuit(t *testing.T) {
+func TestOnlyExplicitBinanceThrottleStatusesOpenGlobalCircuit(t *testing.T) {
+	tests := []struct {
+		name        string
+		statusCode  int
+		wantCircuit bool
+	}{
+		{name: "rate limit", statusCode: http.StatusTooManyRequests, wantCircuit: true},
+		{name: "IP ban", statusCode: http.StatusTeapot, wantCircuit: true},
+		{name: "legal restriction", statusCode: http.StatusUnavailableForLegalReasons, wantCircuit: true},
+		{name: "bad request", statusCode: http.StatusBadRequest, wantCircuit: false},
+		{name: "server error", statusCode: http.StatusInternalServerError, wantCircuit: false},
+		{name: "service unavailable", statusCode: http.StatusServiceUnavailable, wantCircuit: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			coordinator := newBinancePublicCoordinator()
+			client := &APIClient{
+				baseURL: "https://binance.test",
+				client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					return &http.Response{
+						StatusCode: test.statusCode,
+						Body:       io.NopCloser(strings.NewReader(`{"code":-1,"msg":"simulated"}`)),
+						Header:     make(http.Header),
+					}, nil
+				})},
+				coordinator: coordinator,
+			}
+			_, _ = client.GetCurrentPrice("BTCUSDT")
+			coordinator.circuitMutex.Lock()
+			circuitActive := coordinator.circuit.active
+			coordinator.circuitMutex.Unlock()
+			if circuitActive != test.wantCircuit {
+				t.Fatalf("circuit active = %t, want %t for status %d", circuitActive, test.wantCircuit, test.statusCode)
+			}
+		})
+	}
+}
+
+func TestRepeatedNetworkFailureDoesNotOpenGlobalCircuit(t *testing.T) {
 	var upstreamCalls atomic.Int32
 	client := &APIClient{
 		baseURL: "https://binance.test",
@@ -226,11 +366,118 @@ func TestRepeatedNetworkFailureOpensShortCircuit(t *testing.T) {
 	if !errors.As(err, &requestError) || requestError.StatusCode != 0 {
 		t.Fatalf("error = %v, want network BinancePublicError", err)
 	}
-	if _, err := client.GetDepth("ETHUSDT", 20); err == nil {
-		t.Fatal("second endpoint unexpectedly bypassed network-error circuit")
+	if strings.Contains(err.Error(), "public requests paused") {
+		t.Fatalf("network failure unexpectedly reported a global pause: %v", err)
 	}
-	if calls := upstreamCalls.Load(); calls != binanceMaxAttempts {
-		t.Fatalf("upstream calls = %d, want %d", calls, binanceMaxAttempts)
+	if _, err := client.GetDepth("ETHUSDT", 20); err == nil {
+		t.Fatal("second endpoint unexpectedly succeeded during simulated network failure")
+	}
+	client.coordinator.circuitMutex.Lock()
+	circuitActive := client.coordinator.circuit.active
+	client.coordinator.circuitMutex.Unlock()
+	if circuitActive {
+		t.Fatal("transport failures unexpectedly opened the global Binance circuit")
+	}
+	if calls := upstreamCalls.Load(); calls != 2*binanceMaxAttempts {
+		t.Fatalf("upstream calls = %d, want both endpoints to make %d bounded attempts", calls, binanceMaxAttempts)
+	}
+}
+
+func TestBinanceAdmissionTimeoutDoesNotOpenUpstreamCircuit(t *testing.T) {
+	coordinator := newBinancePublicCoordinator()
+	coordinator.admissionTimeout = 20 * time.Millisecond
+	releaseSlot, err := coordinator.acquireRequestSlot(context.Background(), binanceguard.PriorityNormal)
+	if err != nil {
+		t.Fatalf("occupy request slot: %v", err)
+	}
+	defer releaseSlot()
+
+	var upstreamCalls atomic.Int32
+	client := &APIClient{
+		baseURL: "https://binance.test",
+		client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			upstreamCalls.Add(1)
+			return binanceJSONResponse(`{"symbol":"BTCUSDT","price":"65000"}`), nil
+		})},
+		coordinator: coordinator,
+	}
+
+	_, err = client.GetCurrentPrice("BTCUSDT")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("admission error = %v, want context deadline", err)
+	}
+	var requestError *BinancePublicError
+	if errors.As(err, &requestError) {
+		t.Fatalf("admission error was misclassified as upstream failure: %v", err)
+	}
+	if strings.Contains(err.Error(), "proxy") || strings.Contains(err.Error(), "public requests paused") {
+		t.Fatalf("admission error contains an upstream/circuit diagnosis: %v", err)
+	}
+	coordinator.circuitMutex.Lock()
+	circuitActive := coordinator.circuit.active
+	coordinator.circuitMutex.Unlock()
+	if circuitActive {
+		t.Fatal("admission timeout unexpectedly opened the Binance upstream circuit")
+	}
+	if calls := upstreamCalls.Load(); calls != 0 {
+		t.Fatalf("upstream calls = %d, want 0 while admission is blocked", calls)
+	}
+}
+
+func TestBinanceAdmissionWaitDoesNotConsumeHTTPDeadline(t *testing.T) {
+	coordinator := newBinancePublicCoordinator()
+	coordinator.admissionTimeout = 200 * time.Millisecond
+	releaseSlot, err := coordinator.acquireRequestSlot(context.Background(), binanceguard.PriorityNormal)
+	if err != nil {
+		t.Fatalf("occupy request slot: %v", err)
+	}
+
+	client := &APIClient{
+		baseURL:        "https://binance.test",
+		requestTimeout: 20 * time.Millisecond,
+		client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if err := req.Context().Err(); err != nil {
+				return nil, err
+			}
+			return binanceJSONResponse(`{"symbol":"BTCUSDT","price":"65000"}`), nil
+		})},
+		coordinator: coordinator,
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		price, requestErr := client.GetCurrentPrice("BTCUSDT")
+		if requestErr == nil && price != 65000 {
+			requestErr = fmt.Errorf("price = %v, want 65000", price)
+		}
+		result <- requestErr
+	}()
+	time.Sleep(40 * time.Millisecond)
+	releaseSlot()
+	if err := <-result; err != nil {
+		t.Fatalf("GetCurrentPrice after admission wait: %v", err)
+	}
+}
+
+func TestBinancePublicRequestPriorityProtectsRiskDataAndProbe(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		probe    bool
+		priority binanceguard.Priority
+	}{
+		{name: "price mark", path: "/fapi/v1/ticker/price?symbol=BTCUSDT", priority: binanceguard.PriorityCritical},
+		{name: "maker depth", path: "/fapi/v1/depth?symbol=BTCUSDT", priority: binanceguard.PriorityCritical},
+		{name: "funding snapshot", path: "/fapi/v1/premiumIndex?symbol=BTCUSDT", priority: binanceguard.PriorityCritical},
+		{name: "analysis kline", path: "/fapi/v1/klines?symbol=BTCUSDT", priority: binanceguard.PriorityNormal},
+		{name: "circuit probe", path: "/fapi/v1/klines?symbol=BTCUSDT", probe: true, priority: binanceguard.PriorityCritical},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := binancePublicRequestPriority(test.path, test.probe); got != test.priority {
+				t.Fatalf("priority = %d, want %d", got, test.priority)
+			}
+		})
 	}
 }
 
@@ -324,6 +571,16 @@ func binanceJSONResponse(body string) *http.Response {
 		Body:       io.NopCloser(strings.NewReader(body)),
 		Header:     make(http.Header),
 	}
+}
+
+func freshBinanceKlineResponse(interval time.Duration) *http.Response {
+	openTime := time.Now().Add(-interval).UnixMilli()
+	closeTime := openTime + interval.Milliseconds() - 1
+	return binanceJSONResponse(fmt.Sprintf(
+		`[[%d,"120.1","121.2","119.8","120.9","10.5",%d,"1269.45",42,"5.2","628.68","0"]]`,
+		openTime,
+		closeTime,
+	))
 }
 
 func TestGetBinanceDynamicSymbolsFiltersAndRanksUSDTPerpetuals(t *testing.T) {
@@ -430,7 +687,7 @@ func TestGetKlinesKeepsBinanceTradFiSymbol(t *testing.T) {
 		if got := req.URL.Query().Get("interval"); got != "1m" {
 			t.Fatalf("interval query = %q, want 1m", got)
 		}
-		return binanceJSONResponse(`[[1784650000000,"120.1","121.2","119.8","120.9","10.5",1784650059999,"1269.45",42,"5.2","628.68","0"]]`), nil
+		return freshBinanceKlineResponse(time.Minute), nil
 	})}}
 
 	klines, err := client.GetKlines("MUUSDT", "1m", 3)
@@ -442,14 +699,14 @@ func TestGetKlinesKeepsBinanceTradFiSymbol(t *testing.T) {
 	}
 }
 
-func TestGetKlinesUsesLastValidSnapshotAfterTransientFailure(t *testing.T) {
+func TestGetKlinesRejectsTransientFailureInsteadOfUsingSnapshot(t *testing.T) {
 	var calls atomic.Int32
 	coordinator := newBinancePublicCoordinator()
 	client := &APIClient{
 		baseURL: "https://binance.test",
 		client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			if calls.Add(1) == 1 {
-				return binanceJSONResponse(`[[1784650000000,"120.1","121.2","119.8","120.9","10.5",1784650059999,"1269.45",42,"5.2","628.68","0"]]`), nil
+				return freshBinanceKlineResponse(time.Minute), nil
 			}
 			return &http.Response{
 				StatusCode: http.StatusTooManyRequests,
@@ -460,28 +717,16 @@ func TestGetKlinesUsesLastValidSnapshotAfterTransientFailure(t *testing.T) {
 		coordinator: coordinator,
 	}
 
-	first, err := client.GetKlines("MUUSDT", "1m", 3)
+	_, err := client.GetKlines("MUUSDT", "1m", 3)
 	if err != nil {
 		t.Fatalf("initial GetKlines: %v", err)
 	}
-	path := binancePath("/fapi/v1/klines", url.Values{
-		"symbol": {"MUUSDT"}, "interval": {"1m"}, "limit": {"3"},
-	})
-	coordinator.cacheMutex.Lock()
-	entry := coordinator.cache[client.binanceBaseURL()+"|"+path]
-	entry.expiresAt = time.Now().Add(-time.Second)
-	coordinator.cache[client.binanceBaseURL()+"|"+path] = entry
-	coordinator.cacheMutex.Unlock()
-
-	second, err := client.GetKlines("MUUSDT", "1m", 3)
-	if err != nil {
-		t.Fatalf("fallback GetKlines: %v", err)
+	_, err = client.GetKlines("MUUSDT", "1m", 3)
+	if err == nil {
+		t.Fatal("GetKlines unexpectedly returned a prior snapshot after upstream failure")
 	}
 	if calls.Load() != 2 {
 		t.Fatalf("upstream calls = %d, want 2", calls.Load())
-	}
-	if len(second) != len(first) || second[0].Close != first[0].Close {
-		t.Fatalf("fallback klines = %#v, want %#v", second, first)
 	}
 }
 
@@ -492,7 +737,7 @@ func TestGetKlinesFreshRejectsUpstreamFailureInsteadOfUsingSnapshot(t *testing.T
 		baseURL: "https://binance.test",
 		client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			if calls.Add(1) == 1 {
-				return binanceJSONResponse(`[[1784650000000,"120.1","121.2","119.8","120.9","10.5",1784650059999,"1269.45",42,"5.2","628.68","0"]]`), nil
+				return freshBinanceKlineResponse(time.Minute), nil
 			}
 			return &http.Response{
 				StatusCode: http.StatusTooManyRequests,
@@ -506,15 +751,6 @@ func TestGetKlinesFreshRejectsUpstreamFailureInsteadOfUsingSnapshot(t *testing.T
 	if _, err := client.GetKlines("MUUSDT", "1m", 3); err != nil {
 		t.Fatalf("initial GetKlines: %v", err)
 	}
-	path := binancePath("/fapi/v1/klines", url.Values{
-		"symbol": {"MUUSDT"}, "interval": {"1m"}, "limit": {"3"},
-	})
-	coordinator.cacheMutex.Lock()
-	entry := coordinator.cache[client.binanceBaseURL()+"|"+path]
-	entry.expiresAt = time.Now().Add(-time.Second)
-	coordinator.cache[client.binanceBaseURL()+"|"+path] = entry
-	coordinator.cacheMutex.Unlock()
-
 	if _, err := client.GetKlinesFresh("MUUSDT", "1m", 3); err == nil {
 		t.Fatal("GetKlinesFresh unexpectedly returned the cached K-line snapshot")
 	}
@@ -537,39 +773,29 @@ func TestGetKlinesFreshRejectsStaleUpstreamCandles(t *testing.T) {
 	}
 }
 
-func TestGetKlinesUsesLastValidSnapshotAfterEmptyResponse(t *testing.T) {
+func TestGetKlinesRejectsEmptyResponseInsteadOfUsingSnapshot(t *testing.T) {
 	var calls atomic.Int32
 	coordinator := newBinancePublicCoordinator()
 	client := &APIClient{
 		baseURL: "https://binance.test",
 		client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			if calls.Add(1) == 1 {
-				return binanceJSONResponse(`[[1784650000000,"120.1","121.2","119.8","120.9","10.5",1784650059999,"1269.45",42,"5.2","628.68","0"]]`), nil
+				return freshBinanceKlineResponse(15 * time.Minute), nil
 			}
 			return binanceJSONResponse(`[]`), nil
 		})},
 		coordinator: coordinator,
 	}
 
-	first, err := client.GetKlines("MUUSDT", "15m", 200)
+	_, err := client.GetKlines("MUUSDT", "15m", 200)
 	if err != nil {
 		t.Fatalf("initial GetKlines: %v", err)
 	}
-	path := binancePath("/fapi/v1/klines", url.Values{
-		"symbol": {"MUUSDT"}, "interval": {"15m"}, "limit": {"200"},
-	})
-	coordinator.cacheMutex.Lock()
-	entry := coordinator.cache[client.binanceBaseURL()+"|"+path]
-	entry.expiresAt = time.Now().Add(-time.Second)
-	coordinator.cache[client.binanceBaseURL()+"|"+path] = entry
-	coordinator.cacheMutex.Unlock()
-
-	second, err := client.GetKlines("MUUSDT", "15m", 200)
-	if err != nil {
-		t.Fatalf("empty-response fallback GetKlines: %v", err)
+	if _, err := client.GetKlines("MUUSDT", "15m", 200); err == nil {
+		t.Fatal("GetKlines unexpectedly returned a prior snapshot after an empty upstream response")
 	}
-	if calls.Load() != 2 || len(second) != len(first) {
-		t.Fatalf("calls/klines = %d/%#v, want 2 and the last valid snapshot", calls.Load(), second)
+	if calls.Load() != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls.Load())
 	}
 }
 
@@ -612,15 +838,31 @@ func TestBinanceCoordinatorSerializesDistinctPublicRequests(t *testing.T) {
 
 func TestBinanceCircuitStopsQueuedDistinctRequests(t *testing.T) {
 	var upstreamCalls atomic.Int32
-	coordinator := newBinancePublicCoordinator()
+	localLimiter := binanceguard.NewLimiter(0)
+	var admissionCalls atomic.Int32
+	secondAdmissionStarted := make(chan struct{})
+	coordinator := newBinancePublicCoordinatorWithAdmission(func(
+		ctx context.Context,
+		priority binanceguard.Priority,
+	) (func(), error) {
+		if admissionCalls.Add(1) == 2 {
+			close(secondAdmissionStarted)
+		}
+		return localLimiter.Acquire(ctx, priority)
+	})
+	firstUpstreamStarted := make(chan struct{})
+	releaseFirstUpstream := make(chan struct{})
 	client := &APIClient{
 		baseURL: "https://binance.test",
 		client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			upstreamCalls.Add(1)
+			if upstreamCalls.Add(1) == 1 {
+				close(firstUpstreamStarted)
+				<-releaseFirstUpstream
+			}
 			return &http.Response{
 				StatusCode: http.StatusTooManyRequests,
 				Body:       io.NopCloser(strings.NewReader(`{"code":-1003,"msg":"Too many requests"}`)),
-				Header:     make(http.Header),
+				Header:     http.Header{"Retry-After": []string{"2"}},
 			}, nil
 		})},
 		coordinator: coordinator,
@@ -640,9 +882,18 @@ func TestBinanceCircuitStopsQueuedDistinctRequests(t *testing.T) {
 		}(request)
 	}
 	close(start)
+	<-firstUpstreamStarted
+	<-secondAdmissionStarted
+	close(releaseFirstUpstream)
 	callers.Wait()
 	if upstreamCalls.Load() != 1 {
 		t.Fatalf("upstream calls = %d, want only the first request before circuit open", upstreamCalls.Load())
+	}
+	coordinator.circuitMutex.Lock()
+	blockedUntil := coordinator.circuit.blockedUntil
+	coordinator.circuitMutex.Unlock()
+	if remaining := time.Until(blockedUntil); remaining < time.Second || remaining > 3*time.Second {
+		t.Fatalf("circuit remaining cooldown = %s, want original Retry-After without rolling extension", remaining)
 	}
 }
 
@@ -668,6 +919,37 @@ func TestBinanceCircuitRecoversStaleProbe(t *testing.T) {
 	probeRequest, err = coordinator.beforeRequest("/fapi/v1/depth", probeStartedAt.Add(31*time.Second))
 	if err != nil || !probeRequest {
 		t.Fatalf("replacement probe = %v, error = %v; want stale probe recovery", probeRequest, err)
+	}
+}
+
+func TestExpiredCircuitProbeTransportFailureDoesNotReopenCircuit(t *testing.T) {
+	coordinator := newBinancePublicCoordinator()
+	coordinator.circuit = binanceCircuitState{
+		active:       true,
+		statusCode:   http.StatusTooManyRequests,
+		message:      "simulated rate limit",
+		blockedUntil: time.Now().Add(-time.Second),
+	}
+	client := &APIClient{
+		baseURL: "https://binance.test",
+		client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return nil, errors.New("simulated transport failure")
+		})},
+		coordinator: coordinator,
+	}
+
+	_, err := client.GetCurrentPrice("BTCUSDT")
+	if err == nil {
+		t.Fatal("probe unexpectedly succeeded")
+	}
+	if strings.Contains(err.Error(), "public requests paused") {
+		t.Fatalf("expired circuit probe failure reopened the global pause: %v", err)
+	}
+	coordinator.circuitMutex.Lock()
+	circuitActive := coordinator.circuit.active
+	coordinator.circuitMutex.Unlock()
+	if circuitActive {
+		t.Fatal("expired circuit remained active after a non-throttle probe failure")
 	}
 }
 

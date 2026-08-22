@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"nofx/hook"
 	"nofx/market/binanceguard"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,7 +30,9 @@ const (
 	binanceDynamicStaleTTL = 15 * time.Minute
 )
 
-var binancePublicTransport = func() http.RoundTripper {
+var binancePublicTransport = newBinancePublicTransport(os.Getenv("BINANCE_HTTP_PROXY"))
+
+func newBinancePublicTransport(proxyURL string) http.RoundTripper {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.MaxIdleConns = 100
 	transport.MaxIdleConnsPerHost = 20
@@ -37,8 +40,19 @@ var binancePublicTransport = func() http.RoundTripper {
 	transport.IdleConnTimeout = 90 * time.Second
 	transport.TLSHandshakeTimeout = 5 * time.Second
 	transport.ResponseHeaderTimeout = 5 * time.Second
-	return binanceguard.NewTransport(transport)
-}()
+	if strings.TrimSpace(proxyURL) != "" {
+		parsed, err := url.Parse(strings.TrimSpace(proxyURL))
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil {
+			if err == nil {
+				err = fmt.Errorf("proxy URL must have a scheme, host, and no embedded credentials")
+			}
+			log.Printf("Invalid BINANCE_HTTP_PROXY; using direct transport: %v", err)
+		} else {
+			transport.Proxy = http.ProxyURL(parsed)
+		}
+	}
+	return transport
+}
 
 var binanceExchangeInfoCache struct {
 	sync.Mutex
@@ -52,7 +66,7 @@ var binanceDynamicTickerCache struct {
 	fetchedAt time.Time
 }
 
-var sharedBinancePublicCoordinator = newBinancePublicCoordinator()
+var sharedBinancePublicCoordinator = newSharedBinancePublicCoordinator()
 
 type APIClient struct {
 	client              *http.Client
@@ -60,6 +74,7 @@ type APIClient struct {
 	coordinator         *binancePublicCoordinator
 	coordinatorOnce     sync.Once
 	initializationError error
+	requestTimeout      time.Duration
 }
 
 func NewAPIClient() *APIClient {
@@ -84,8 +99,6 @@ func NewAPIClient() *APIClient {
 			client = hookRes.Client
 		}
 	}
-	client = binanceguard.WrapClient(client)
-
 	return &APIClient{
 		client:              client,
 		baseURL:             baseURL,
@@ -97,7 +110,7 @@ func NewAPIClient() *APIClient {
 func NewAPIClientWithBaseURL(binanceBaseURL string) *APIClient {
 	client := NewAPIClient()
 	client.baseURL = strings.TrimRight(binanceBaseURL, "/")
-	client.coordinator = newBinancePublicCoordinator()
+	client.coordinator = newSharedBinancePublicCoordinator()
 	return client
 }
 
@@ -126,6 +139,10 @@ func (c *APIClient) requestCoordinator() *binancePublicCoordinator {
 }
 
 func (c *APIClient) GetDepth(symbol string, limit int) (*BinanceDepthSnapshot, error) {
+	return c.GetDepthFresh(symbol, limit)
+}
+
+func (c *APIClient) GetDepthFresh(symbol string, limit int) (*BinanceDepthSnapshot, error) {
 	if limit != 5 && limit != 10 && limit != 20 {
 		return nil, fmt.Errorf("binance depth limit must be 5, 10, or 20")
 	}
@@ -136,9 +153,13 @@ func (c *APIClient) GetDepth(symbol string, limit int) (*BinanceDepthSnapshot, e
 	}
 	var depth BinanceDepthSnapshot
 	path := binancePath("/fapi/v1/depth", url.Values{"symbol": {symbol}, "limit": {strconv.Itoa(limit)}})
-	if err := c.getBinanceJSON(path, &depth); err != nil {
+	if err := c.getFreshBinanceJSON(path, &depth); err != nil {
 		return nil, err
 	}
+	depth.ReceivedAt = time.Now().UTC()
+	depth.Exchange = "binance"
+	depth.Transport = "rest"
+	depth.Fresh = true
 	return &depth, nil
 }
 
@@ -348,7 +369,7 @@ func (c *APIClient) Get24hrTickers() ([]Ticker24hr, error) {
 // public endpoint. Binance symbols are normalized without consulting any
 // Hyperliquid/XYZ asset registry.
 func (c *APIClient) GetKlines(symbol, interval string, limit int) ([]Kline, error) {
-	return c.getKlines(symbol, interval, limit, true)
+	return c.GetKlinesFresh(symbol, interval, limit)
 }
 
 // GetKlinesFresh is the strict variant used by live decision making. It never
@@ -357,10 +378,14 @@ func (c *APIClient) GetKlines(symbol, interval string, limit int) ([]Kline, erro
 // Callers that need bounded degradation (paper trading, UI, diagnostics) should
 // continue to use GetKlines.
 func (c *APIClient) GetKlinesFresh(symbol, interval string, limit int) ([]Kline, error) {
-	return c.getKlines(symbol, interval, limit, false)
+	return c.GetKlinesFreshContext(context.Background(), symbol, interval, limit)
 }
 
-func (c *APIClient) getKlines(symbol, interval string, limit int, allowStale bool) ([]Kline, error) {
+func (c *APIClient) GetKlinesFreshContext(ctx context.Context, symbol, interval string, limit int) ([]Kline, error) {
+	return c.getKlines(ctx, symbol, interval, limit)
+}
+
+func (c *APIClient) getKlines(ctx context.Context, symbol, interval string, limit int) ([]Kline, error) {
 	var err error
 	symbol, err = NormalizeBinanceSymbol(symbol)
 	if err != nil {
@@ -381,42 +406,26 @@ func (c *APIClient) getKlines(symbol, interval string, limit int, allowStale boo
 		"symbol": {symbol}, "interval": {interval}, "limit": {strconv.Itoa(limit)},
 	})
 	var raw [][]json.RawMessage
-	if err := c.getBinanceJSON(path, &raw); err != nil {
-		if allowStale {
-			return c.klineFallback(path, err)
-		}
-		return nil, err
+	if requestErr := c.getFreshBinanceJSONContext(ctx, path, &raw); requestErr != nil {
+		return nil, requestErr
 	}
 	klines, err := parseBinanceKlines(raw)
 	if err != nil {
-		if allowStale {
-			return c.klineFallback(path, err)
-		}
 		return nil, err
 	}
 	if err := validateBinanceKlines(klines); err != nil {
-		if allowStale {
-			return c.klineFallback(path, err)
-		}
 		return nil, err
 	}
-	if !allowStale {
-		intervalDuration, durationErr := TFDuration(interval)
-		if durationErr != nil {
-			return nil, durationErr
-		}
-		if err := validateFreshPublicKlines("Binance", symbol, interval, klines, intervalDuration); err != nil {
-			return nil, err
-		}
+	intervalDuration, durationErr := TFDuration(interval)
+	if durationErr != nil {
+		return nil, durationErr
+	}
+	if err := validateFreshPublicKlines("Binance", symbol, interval, klines, intervalDuration); err != nil {
+		return nil, err
 	}
 	if len(klines) == 0 {
-		emptyErr := fmt.Errorf("binance klines response is empty")
-		if allowStale {
-			return c.klineFallback(path, emptyErr)
-		}
-		return nil, emptyErr
+		return nil, fmt.Errorf("binance klines response is empty")
 	}
-	c.requestCoordinator().storeKlines(c.klineCacheKey(path), klines, time.Now())
 	return klines, nil
 }
 
@@ -488,35 +497,6 @@ func validateBinanceKlines(klines []Kline) error {
 	return nil
 }
 
-func (c *APIClient) klineCacheKey(path string) string {
-	return c.binanceBaseURL() + "|" + path
-}
-
-func (c *APIClient) klineFallback(path string, cause error) ([]Kline, error) {
-	if !shouldUseKlineFallback(cause) {
-		return nil, cause
-	}
-	klines, age, ok := c.requestCoordinator().getStaleKlines(c.klineCacheKey(path), time.Now())
-	if !ok {
-		return nil, cause
-	}
-	log.Printf("Binance K-line request failed; using last valid snapshot (age=%s, path=%s): %v", age.Round(time.Second), path, cause)
-	return klines, nil
-}
-
-func shouldUseKlineFallback(err error) bool {
-	if err == nil {
-		return false
-	}
-	var requestError *BinancePublicError
-	if errors.As(err, &requestError) {
-		return requestError.StatusCode == 0 || requestError.StatusCode == http.StatusTooManyRequests ||
-			requestError.StatusCode == http.StatusTeapot || requestError.StatusCode == http.StatusUnavailableForLegalReasons ||
-			requestError.StatusCode >= http.StatusInternalServerError
-	}
-	return true
-}
-
 func parseBinanceFloat(raw json.RawMessage) (float64, error) {
 	return strconv.ParseFloat(strings.Trim(string(raw), `"`), 64)
 }
@@ -537,15 +517,19 @@ func GetBinanceKlinesFresh(symbol, interval string, limit int) ([]Kline, error) 
 }
 
 func (c *APIClient) getBinanceJSON(path string, target any) error {
-	return c.getBinanceJSONWithCache(path, target, true)
+	return c.getBinanceJSONWithCacheContext(context.Background(), path, target, true)
 }
 
 func (c *APIClient) getFreshBinanceJSON(path string, target any) error {
-	return c.getBinanceJSONWithCache(path, target, false)
+	return c.getFreshBinanceJSONContext(context.Background(), path, target)
 }
 
-func (c *APIClient) getBinanceJSONWithCache(path string, target any, allowCache bool) error {
-	responseBody, err := c.getBinanceResponseBody(path, allowCache)
+func (c *APIClient) getFreshBinanceJSONContext(ctx context.Context, path string, target any) error {
+	return c.getBinanceJSONWithCacheContext(ctx, path, target, false)
+}
+
+func (c *APIClient) getBinanceJSONWithCacheContext(ctx context.Context, path string, target any, allowCache bool) error {
+	responseBody, err := c.getBinanceResponseBodyContext(ctx, path, allowCache)
 	if err != nil {
 		return err
 	}
@@ -556,6 +540,13 @@ func (c *APIClient) getBinanceJSONWithCache(path string, target any, allowCache 
 }
 
 func (c *APIClient) getBinanceResponseBody(path string, allowCache bool) ([]byte, error) {
+	return c.getBinanceResponseBodyContext(context.Background(), path, allowCache)
+}
+
+func (c *APIClient) getBinanceResponseBodyContext(ctx context.Context, path string, allowCache bool) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if c.initializationError != nil {
 		return nil, c.initializationError
 	}
@@ -585,19 +576,34 @@ func (c *APIClient) getBinanceResponseBody(path string, allowCache bool) ([]byte
 			return nil, circuitErr
 		}
 
-		responseBody, requestErr := c.executeBinanceRequest(clientBaseURL, path)
+		responseBody, requestErr := c.executeBinanceRequest(ctx, clientBaseURL, path, probeRequest)
 		if requestErr != nil {
+			var admissionError *binanceguard.AdmissionError
+			if errors.As(requestErr, &admissionError) {
+				if probeRequest {
+					coordinator.releaseExpiredCircuitProbe()
+				}
+				return nil, admissionError
+			}
 			// executeBinanceRequest already opened the circuit for 429/418/451
 			// before releasing the admission slot so queued callers observe it
 			// immediately. Do not re-open it here.
-			if structuredError, ok := asBinancePublicError(requestErr); ok && isBinanceCircuitStatus(structuredError.StatusCode) {
+			if structuredError, ok := asBinancePublicError(requestErr); ok {
+				if isBinanceCircuitStatus(structuredError.StatusCode) || !structuredError.CircuitUntil.IsZero() {
+					return nil, structuredError
+				}
+				if probeRequest {
+					coordinator.releaseExpiredCircuitProbe()
+				}
 				return nil, structuredError
 			}
 			if probeRequest {
-				coordinator.releaseProbeAfterTransientFailure(time.Now())
-				return nil, requestErr
+				coordinator.releaseExpiredCircuitProbe()
 			}
-			return nil, coordinator.openTransientCircuit(path, requestErr, time.Now())
+			return nil, &BinancePublicError{
+				Endpoint: path,
+				Message:  fmt.Sprintf("network request failed after %d bounded attempts: %v", binanceMaxAttempts, requestErr),
+			}
 		}
 
 		coordinator.recordSuccess()
@@ -625,25 +631,40 @@ func (c *APIClient) binanceBaseURL() string {
 	return c.baseURL
 }
 
-func (c *APIClient) executeBinanceRequest(clientBaseURL, path string) ([]byte, error) {
+func (c *APIClient) executeBinanceRequest(ctx context.Context, clientBaseURL, path string, probeRequest bool) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	requestURL := fmt.Sprintf("%s%s", clientBaseURL, path)
+	priority := binancePublicRequestPriority(path, probeRequest)
 	var lastErr error
 	for attempt := 1; attempt <= binanceMaxAttempts; attempt++ {
-		ctx, cancel := context.WithTimeout(context.Background(), binanceRequestTimeout)
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
-		if err != nil {
-			cancel()
-			return nil, err
+		admissionTimeout := c.requestCoordinator().admissionTimeout
+		if admissionTimeout <= 0 {
+			admissionTimeout = binancePublicAdmissionTimeout
 		}
-		releaseRequestSlot, slotErr := c.requestCoordinator().acquireRequestSlot(ctx)
+		admissionCtx, cancelAdmission := context.WithTimeout(ctx, admissionTimeout)
+		releaseRequestSlot, slotErr := c.requestCoordinator().acquireRequestSlot(admissionCtx, priority)
+		cancelAdmission()
 		if slotErr != nil {
-			cancel()
 			return nil, slotErr
 		}
 		if circuitErr := c.requestCoordinator().requestBlockedAfterAdmission(path, time.Now()); circuitErr != nil {
 			releaseRequestSlot()
-			cancel()
 			return nil, circuitErr
+		}
+
+		requestTimeout := c.requestTimeout
+		if requestTimeout <= 0 {
+			requestTimeout = binanceRequestTimeout
+		}
+		requestCtx, cancelRequest := context.WithTimeout(ctx, requestTimeout)
+		requestCtx = binanceguard.WithPriority(requestCtx, priority)
+		req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, requestURL, nil)
+		if err != nil {
+			releaseRequestSlot()
+			cancelRequest()
+			return nil, err
 		}
 		resp, err := c.client.Do(req)
 		if err == nil {
@@ -667,23 +688,49 @@ func (c *APIClient) executeBinanceRequest(clientBaseURL, path string) ([]byte, e
 						c.requestCoordinator().openCircuit(requestError, time.Now())
 					}
 					releaseRequestSlot()
-					cancel()
+					cancelRequest()
 					return nil, err
 				}
 			} else {
 				releaseRequestSlot()
-				cancel()
+				cancelRequest()
 				return body, nil
 			}
 		}
 		releaseRequestSlot()
-		cancel()
+		cancelRequest()
 		lastErr = err
 		if attempt < binanceMaxAttempts {
-			time.Sleep(binanceRetryDelay * time.Duration(1<<(attempt-1)))
+			retryTimer := time.NewTimer(binanceRetryDelay * time.Duration(1<<(attempt-1)))
+			select {
+			case <-retryTimer.C:
+			case <-ctx.Done():
+				if !retryTimer.Stop() {
+					<-retryTimer.C
+				}
+				return nil, ctx.Err()
+			}
 		}
 	}
 	return nil, lastErr
+}
+
+func binancePublicRequestPriority(path string, probeRequest bool) binanceguard.Priority {
+	if probeRequest {
+		return binanceguard.PriorityCritical
+	}
+	requestPath := path
+	if queryIndex := strings.IndexByte(requestPath, '?'); queryIndex >= 0 {
+		requestPath = requestPath[:queryIndex]
+	}
+	switch requestPath {
+	case "/fapi/v1/ticker/price", "/fapi/v1/depth", "/fapi/v1/premiumIndex":
+		// Price, book, and funding snapshots drive paper mark-to-market,
+		// liquidation/SL/TP checks, and maker-order maintenance.
+		return binanceguard.PriorityCritical
+	default:
+		return binanceguard.PriorityNormal
+	}
 }
 
 func binanceErrorMessage(responseBody []byte) string {
@@ -762,6 +809,9 @@ func (c *APIClient) GetBinanceDynamicTickers(limit int) ([]Ticker24hr, error) {
 		}
 		return left > right
 	})
+	if len(ranked) == 0 {
+		return nil, fmt.Errorf("Binance dynamic candidate universe is empty: no active USDT perpetual tickers were returned")
+	}
 	binanceDynamicTickerCache.value = append([]Ticker24hr(nil), ranked...)
 	binanceDynamicTickerCache.fetchedAt = time.Now()
 	return limitBinanceTickers(ranked, limit), nil
@@ -843,13 +893,17 @@ func (c *APIClient) GetBinanceDynamicSymbols(limit int) ([]string, error) {
 }
 
 func (c *APIClient) GetCurrentPrice(symbol string) (float64, error) {
+	return c.GetCurrentPriceFresh(symbol)
+}
+
+func (c *APIClient) GetCurrentPriceFresh(symbol string) (float64, error) {
 	symbol, err := NormalizeBinanceSymbol(symbol)
 	if err != nil {
 		return 0, err
 	}
 	var ticker PriceTicker
 	path := binancePath("/fapi/v1/ticker/price", url.Values{"symbol": {symbol}})
-	if err := c.getBinanceJSON(path, &ticker); err != nil {
+	if err := c.getFreshBinanceJSON(path, &ticker); err != nil {
 		return 0, err
 	}
 

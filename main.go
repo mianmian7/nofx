@@ -94,13 +94,10 @@ func main() {
 	auth.SetJWTSecret(cfg.JWTSecret)
 	logger.Info("🔑 JWT secret configured")
 
-	// WebSocket market monitor is NO LONGER USED
-	// All K-line data now comes from CoinAnk API instead of Binance WebSocket cache
-	// Commented out to reduce unnecessary connections:
-	// go market.NewWSMonitor(150).Start(nil)
-	// logger.Info("📊 WebSocket market monitor started")
-	// time.Sleep(500 * time.Millisecond)
-	logger.Info("📊 Using CoinAnk API for all market data (WebSocket cache disabled)")
+	// The unified market-data providers start redundant depth streams lazily for
+	// active symbols. K-lines use hedged fresh requests; no stale snapshot cache
+	// is available to trading callers.
+	logger.Info("📊 Unified fresh-only market data enabled (redundant streams and hedged K-lines)")
 
 	// Create TraderManager
 	traderManager := manager.NewTraderManager()

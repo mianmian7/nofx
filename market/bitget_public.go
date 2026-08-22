@@ -1,6 +1,7 @@
 package market
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -31,7 +32,12 @@ const (
 // credentials. Contract amounts are normalized to base-asset units whenever
 // Bitget exposes a USD notional or contract multiplier.
 type BitgetMarketDataProvider struct {
-	httpClient nativePublicHTTPClient
+	httpClient                nativePublicHTTPClient
+	streamDepth               bool
+	redundantKlines           bool
+	fundingStream             fundingStreamSnapshot
+	fundingRESTBudget         time.Duration
+	fundingRESTAttemptTimeout time.Duration
 }
 
 func NewBitgetMarketDataProvider() *BitgetMarketDataProvider {
@@ -42,10 +48,21 @@ func NewBitgetMarketDataProviderWithHTTPClient(baseURL string, client *http.Clie
 	if strings.TrimSpace(baseURL) == "" {
 		baseURL = bitgetPublicBaseURL
 	}
-	return &BitgetMarketDataProvider{httpClient: newNativePublicHTTPClient(baseURL, client)}
+	provider := &BitgetMarketDataProvider{
+		httpClient:                newNativePublicHTTPClient(baseURL, client),
+		streamDepth:               strings.Contains(strings.ToLower(baseURL), "bitget.com"),
+		redundantKlines:           strings.Contains(strings.ToLower(baseURL), "bitget.com"),
+		fundingRESTBudget:         bitgetFundingRESTBudget,
+		fundingRESTAttemptTimeout: bitgetFundingAttemptTimeout,
+	}
+	if strings.Contains(strings.ToLower(baseURL), "bitget.com") {
+		provider.fundingStream = streamedBitgetFunding
+	}
+	return provider
 }
 
-func (provider *BitgetMarketDataProvider) Exchange() string { return "bitget" }
+func (provider *BitgetMarketDataProvider) Exchange() string               { return "bitget" }
+func (provider *BitgetMarketDataProvider) Capabilities() MarketCapability { return TradingCapabilities }
 
 func (provider *BitgetMarketDataProvider) NormalizeSymbol(symbol string) string {
 	return NormalizeForExchange("bitget", symbol)
@@ -56,7 +73,11 @@ func (provider *BitgetMarketDataProvider) exchangeSymbol(symbol string) string {
 }
 
 func (provider *BitgetMarketDataProvider) GetCurrentPrice(symbol string) (float64, error) {
-	body, err := provider.httpClient.get(bitgetPublicTickerPath, url.Values{
+	return provider.GetCurrentPriceFresh(symbol)
+}
+
+func (provider *BitgetMarketDataProvider) GetCurrentPriceFresh(symbol string) (float64, error) {
+	body, err := provider.httpClient.getFresh(bitgetPublicTickerPath, url.Values{
 		"symbol":      {provider.exchangeSymbol(symbol)},
 		"productType": {bitgetPublicProductType},
 	})
@@ -84,10 +105,10 @@ func (provider *BitgetMarketDataProvider) GetCurrentPrice(symbol string) (float6
 }
 
 func (provider *BitgetMarketDataProvider) GetKlines(symbol, interval string, limit int) ([]Kline, error) {
-	return provider.getKlines(symbol, interval, limit, false)
+	return provider.GetKlinesFresh(symbol, interval, limit)
 }
 
-func (provider *BitgetMarketDataProvider) getKlines(symbol, interval string, limit int, requireFresh bool) ([]Kline, error) {
+func (provider *BitgetMarketDataProvider) getKlines(symbol, interval string, limit int) ([]Kline, error) {
 	granularity, err := bitgetGranularity(interval)
 	if err != nil {
 		return nil, err
@@ -104,12 +125,7 @@ func (provider *BitgetMarketDataProvider) getKlines(symbol, interval string, lim
 		"granularity": {granularity},
 		"limit":       {strconv.Itoa(limit)},
 	}
-	var body []byte
-	if requireFresh {
-		body, err = provider.httpClient.getFresh(bitgetPublicCandlesPath, query)
-	} else {
-		body, err = provider.httpClient.get(bitgetPublicCandlesPath, query)
-	}
+	body, err := provider.httpClient.getFresh(bitgetPublicCandlesPath, query)
 	if err != nil {
 		return nil, err
 	}
@@ -162,26 +178,46 @@ func (provider *BitgetMarketDataProvider) getKlines(symbol, interval string, lim
 		})
 	}
 	sort.SliceStable(klines, func(left, right int) bool { return klines[left].OpenTime < klines[right].OpenTime })
-	if requireFresh {
-		if err := validateFreshPublicKlines("Bitget", provider.NormalizeSymbol(symbol), granularity, klines, bitgetIntervalDuration(granularity)); err != nil {
-			return nil, err
-		}
+	if err := validateFreshPublicKlines("Bitget", provider.NormalizeSymbol(symbol), granularity, klines, bitgetIntervalDuration(granularity)); err != nil {
+		return nil, err
 	}
 	return klines, nil
 }
 
 func (provider *BitgetMarketDataProvider) GetKlinesFresh(symbol, interval string, limit int) ([]Kline, error) {
-	return provider.getKlines(symbol, interval, limit, true)
+	if provider.redundantKlines {
+		normalizedSymbol := provider.NormalizeSymbol(symbol)
+		klines, proof, err := hedgedFreshKlines(context.Background(), provider.Exchange(), normalizedSymbol, interval,
+			func(context.Context) ([]Kline, error) { return provider.getKlines(normalizedSymbol, interval, limit) },
+			func(ctx context.Context) ([]Kline, error) {
+				return getKlinesFromCoinAnkFreshContext(ctx, normalizedSymbol, interval, provider.Exchange(), limit)
+			},
+		)
+		recordKlineHealth(provider.Exchange(), normalizedSymbol, interval, proof, err)
+		return klines, err
+	}
+	klines, err := provider.getKlines(symbol, interval, limit)
+	recordKlineHealth(provider.Exchange(), provider.NormalizeSymbol(symbol), interval, proofFromKlines(provider.Exchange(), "primary-rest", klines), err)
+	return klines, err
 }
 
 func (provider *BitgetMarketDataProvider) GetDepth(symbol string, limit int) (*DepthSnapshot, error) {
+	return provider.GetDepthFresh(symbol, limit)
+}
+
+func (provider *BitgetMarketDataProvider) GetDepthFresh(symbol string, limit int) (*DepthSnapshot, error) {
+	if provider.streamDepth {
+		if depth, err := streamedDepth(provider.Exchange(), provider.NormalizeSymbol(symbol), limit); err == nil {
+			return depth, nil
+		}
+	}
 	if limit <= 0 {
 		limit = 20
 	}
 	if limit > 150 {
 		limit = 150
 	}
-	body, err := provider.httpClient.get(bitgetPublicOrderBookPath, url.Values{
+	body, err := provider.httpClient.getFresh(bitgetPublicOrderBookPath, url.Values{
 		"symbol":      {provider.exchangeSymbol(symbol)},
 		"productType": {bitgetPublicProductType},
 		"limit":       {strconv.Itoa(limit)},
@@ -197,19 +233,53 @@ func (provider *BitgetMarketDataProvider) GetDepth(symbol string, limit int) (*D
 	if err := decodePublicEnvelope(body, "Bitget", &book); err != nil {
 		return nil, err
 	}
-	return &DepthSnapshot{
+	depth := &DepthSnapshot{
 		EventTime:       parseOptionalInt64(book.Ts),
 		TransactionTime: parseOptionalInt64(book.Ts),
 		Bids:            normalizeDepthLevels(book.Bids),
 		Asks:            normalizeDepthLevels(book.Asks),
-	}, nil
+		Exchange:        "bitget",
+		Transport:       "rest",
+		ReceivedAt:      time.Now().UTC(),
+		Fresh:           true,
+	}
+	recordDepthRESTFallback(provider.Exchange(), symbol, depth)
+	return depth, nil
 }
 
 func (provider *BitgetMarketDataProvider) GetFundingSnapshot(symbol string) (*FundingSnapshot, error) {
-	body, err := provider.httpClient.get(bitgetPublicFundingPath, url.Values{
+	normalizedSymbol := provider.NormalizeSymbol(symbol)
+	var streamErr error
+	if provider.fundingStream != nil {
+		snapshot, _, err := provider.fundingStream(normalizedSymbol)
+		if err == nil {
+			return snapshot, nil
+		}
+		streamErr = err
+	}
+	budget := provider.fundingRESTBudget
+	if budget <= 0 {
+		budget = bitgetFundingRESTBudget
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	snapshot, err := provider.getFundingSnapshotREST(ctx, normalizedSymbol)
+	sharedFundingStreams.recordREST(normalizedSymbol, snapshot, err)
+	if err != nil && streamErr != nil {
+		return nil, fmt.Errorf("Bitget funding sources unavailable for %s (stream: %v; REST: %w)", normalizedSymbol, streamErr, err)
+	}
+	return snapshot, err
+}
+
+func (provider *BitgetMarketDataProvider) getFundingSnapshotREST(ctx context.Context, symbol string) (*FundingSnapshot, error) {
+	attemptTimeout := provider.fundingRESTAttemptTimeout
+	if attemptTimeout <= 0 {
+		attemptTimeout = bitgetFundingAttemptTimeout
+	}
+	body, err := provider.httpClient.getFreshContext(ctx, bitgetPublicFundingPath, url.Values{
 		"symbol":      {provider.exchangeSymbol(symbol)},
 		"productType": {bitgetPublicProductType},
-	})
+	}, attemptTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -226,6 +296,9 @@ func (provider *BitgetMarketDataProvider) GetFundingSnapshot(symbol string) (*Fu
 	if len(rows) == 0 {
 		return nil, fmt.Errorf("Bitget returned no funding rate for %s", symbol)
 	}
+	if !strings.EqualFold(rows[0].Symbol, provider.exchangeSymbol(symbol)) {
+		return nil, fmt.Errorf("Bitget funding %s returned symbol %s", symbol, rows[0].Symbol)
+	}
 	rate, err := parseRawFloat(rows[0].FundingRate, "Bitget funding rate")
 	if err != nil {
 		return nil, err
@@ -236,10 +309,10 @@ func (provider *BitgetMarketDataProvider) GetFundingSnapshot(symbol string) (*Fu
 	}
 	fundingTime := parseOptionalRawInt64(rows[0].Ts)
 
-	priceBody, err := provider.httpClient.get(bitgetPublicSymbolPricePath, url.Values{
+	priceBody, err := provider.httpClient.getFreshContext(ctx, bitgetPublicSymbolPricePath, url.Values{
 		"symbol":      {provider.exchangeSymbol(symbol)},
 		"productType": {bitgetPublicProductType},
-	})
+	}, attemptTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("Bitget funding %s symbol price: %w", symbol, err)
 	}
@@ -254,6 +327,9 @@ func (provider *BitgetMarketDataProvider) GetFundingSnapshot(symbol string) (*Fu
 	}
 	if len(prices) == 0 {
 		return nil, fmt.Errorf("Bitget returned no symbol price for %s", symbol)
+	}
+	if !strings.EqualFold(prices[0].Symbol, provider.exchangeSymbol(symbol)) {
+		return nil, fmt.Errorf("Bitget funding price %s returned symbol %s", symbol, prices[0].Symbol)
 	}
 	markPrice, err := parseRawFloat(prices[0].MarkPrice, "Bitget mark price")
 	if err != nil {
@@ -274,6 +350,9 @@ func (provider *BitgetMarketDataProvider) GetFundingSnapshot(symbol string) (*Fu
 			fundingTime = priceTime
 		}
 	}
+	if _, err := validateFreshSourceTimestamp("Bitget", symbol, "funding", fundingTime, bitgetFundingFreshness); err != nil {
+		return nil, err
+	}
 	return &FundingSnapshot{
 		Symbol:          provider.NormalizeSymbol(symbol),
 		MarkPrice:       markPrice,
@@ -293,7 +372,7 @@ func (provider *BitgetMarketDataProvider) GetFundingHistory(symbol string, start
 	const pageSize = 100
 	rows := make([]fundingHistoryRow, 0, pageSize)
 	for pageNo := 1; ; pageNo++ {
-		body, err := provider.httpClient.get(bitgetPublicFundingHistoryPath, url.Values{
+		body, err := provider.httpClient.getFresh(bitgetPublicFundingHistoryPath, url.Values{
 			"symbol":      {provider.exchangeSymbol(symbol)},
 			"productType": {bitgetPublicProductType},
 			"pageSize":    {strconv.Itoa(pageSize)},
@@ -351,7 +430,7 @@ func (provider *BitgetMarketDataProvider) getHistoricalMarkPrice(symbol string, 
 	if startTime < 0 {
 		startTime = 0
 	}
-	body, err := provider.httpClient.get(bitgetPublicHistoryMarkPath, url.Values{
+	body, err := provider.httpClient.getFresh(bitgetPublicHistoryMarkPath, url.Values{
 		"symbol":      {provider.exchangeSymbol(symbol)},
 		"productType": {bitgetPublicProductType},
 		"granularity": {"1m"},
@@ -406,7 +485,7 @@ func validBitgetPrice(value float64) bool {
 }
 
 func (provider *BitgetMarketDataProvider) GetOpenInterest(symbol string) (*OIData, error) {
-	body, err := provider.httpClient.get(bitgetPublicOpenInterestPath, url.Values{
+	body, err := provider.httpClient.getFresh(bitgetPublicOpenInterestPath, url.Values{
 		"symbol":      {provider.exchangeSymbol(symbol)},
 		"productType": {bitgetPublicProductType},
 	})
@@ -421,24 +500,27 @@ func (provider *BitgetMarketDataProvider) GetOpenInterest(symbol string) (*OIDat
 		OpenInterestList []struct {
 			OpenInterest    string `json:"openInterest"`
 			OpenInterestUSD string `json:"openInterestUsd"`
+			Size            string `json:"size"`
 		} `json:"openInterestList"`
 	}
 	if json.Unmarshal(raw, &object) == nil && len(object.OpenInterestList) > 0 {
-		return bitgetOpenInterestResult(object.OpenInterestList[0].OpenInterest, object.OpenInterestList[0].OpenInterestUSD, symbol)
+		item := object.OpenInterestList[0]
+		return bitgetOpenInterestResult(firstNonEmpty(item.OpenInterest, item.Size), item.OpenInterestUSD, symbol)
 	}
 	var rows []struct {
 		OpenInterest    string `json:"openInterest"`
 		OpenInterestUSD string `json:"openInterestUsd"`
+		Size            string `json:"size"`
 	}
 	if json.Unmarshal(raw, &rows) == nil && len(rows) > 0 {
-		return bitgetOpenInterestResult(rows[0].OpenInterest, rows[0].OpenInterestUSD, symbol)
+		return bitgetOpenInterestResult(firstNonEmpty(rows[0].OpenInterest, rows[0].Size), rows[0].OpenInterestUSD, symbol)
 	}
 	return nil, fmt.Errorf("Bitget returned an unsupported open-interest response for %s", symbol)
 }
 
 func (provider *BitgetMarketDataProvider) GetContractSpec(symbol string) (*ContractSpec, error) {
 	canonicalSymbol := provider.NormalizeSymbol(symbol)
-	body, err := provider.httpClient.get(bitgetPublicContractsPath, url.Values{
+	body, err := provider.httpClient.getFresh(bitgetPublicContractsPath, url.Values{
 		"productType": {bitgetPublicProductType},
 		"symbol":      {provider.exchangeSymbol(canonicalSymbol)},
 	})
@@ -506,8 +588,17 @@ func bitgetOpenInterestResult(rawInterest, rawUSD, symbol string) (*OIData, erro
 	return &OIData{Latest: interest, Average: interest, Unit: "base", NotionalUSD: notionalUSD}, nil
 }
 
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func (provider *BitgetMarketDataProvider) ListPerpetualSymbols(limit int) ([]string, error) {
-	body, err := provider.httpClient.get(bitgetPublicTickersPath, url.Values{"productType": {bitgetPublicProductType}})
+	body, err := provider.httpClient.getFresh(bitgetPublicTickersPath, url.Values{"productType": {bitgetPublicProductType}})
 	if err != nil {
 		return nil, err
 	}
@@ -553,7 +644,7 @@ func (provider *BitgetMarketDataProvider) ListPerpetualSymbols(limit int) ([]str
 
 func (provider *BitgetMarketDataProvider) ValidateMarketAvailability(symbol string) (*MarketAvailability, error) {
 	canonicalSymbol := provider.NormalizeSymbol(symbol)
-	body, err := provider.httpClient.get(bitgetPublicContractsPath, url.Values{
+	body, err := provider.httpClient.getFresh(bitgetPublicContractsPath, url.Values{
 		"productType": {bitgetPublicProductType},
 		"symbol":      {provider.exchangeSymbol(canonicalSymbol)},
 	})

@@ -77,6 +77,43 @@ func TestLimiterHonorsContextCancellationWhileQueued(t *testing.T) {
 	defer cancel()
 	if _, err := limiter.acquire(ctx); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("queued acquire error = %v, want context deadline", err)
+	} else {
+		var admissionError *AdmissionError
+		if !errors.As(err, &admissionError) {
+			t.Fatalf("queued acquire error = %T, want AdmissionError", err)
+		}
+	}
+}
+
+func TestLimiterRejectsOverflowWithoutConsumingAdmission(t *testing.T) {
+	limiter := newLimiter(0)
+	limiter.maxNormal = 1
+	holderRelease, err := limiter.acquire(context.Background())
+	if err != nil {
+		t.Fatalf("holder acquire: %v", err)
+	}
+	defer holderRelease()
+
+	queuedCtx, cancelQueued := context.WithCancel(context.Background())
+	defer cancelQueued()
+	queuedResult := make(chan error, 1)
+	go func() {
+		_, acquireErr := limiter.acquire(queuedCtx)
+		queuedResult <- acquireErr
+	}()
+	waitForLimiterQueue(t, limiter, false)
+
+	if _, err := limiter.acquire(context.Background()); !errors.Is(err, ErrAdmissionQueueFull) {
+		t.Fatalf("overflow acquire error = %v, want ErrAdmissionQueueFull", err)
+	} else {
+		var admissionError *AdmissionError
+		if !errors.As(err, &admissionError) {
+			t.Fatalf("overflow acquire error = %T, want AdmissionError", err)
+		}
+	}
+	cancelQueued()
+	if err := <-queuedResult; !errors.Is(err, context.Canceled) {
+		t.Fatalf("queued cancellation error = %v, want context canceled", err)
 	}
 }
 

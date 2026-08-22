@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"nofx/market/binanceguard"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,12 +18,11 @@ const (
 	binancePriceCacheTTL = 2 * time.Second
 	binanceDepthCacheTTL = 500 * time.Millisecond
 	binanceKlineCacheTTL = 5 * time.Second
-	// Keep the last valid K-line snapshot long enough to bridge a short-lived
-	// Binance/proxy outage (including the 30s public circuit cooldown). The
-	// snapshot is analysis-only; order entry still requires a fresh price.
-	binanceKlineStaleTTL        = 20 * time.Minute
-	binanceOpenInterestCacheTTL = 15 * time.Second
-	binanceFundingCacheTTL      = 10 * time.Second
+	// OI and funding are shared only inside a very short successful-response
+	// coalescing window. Expiry forces a new upstream request; errors never fall
+	// back to an older value.
+	binanceOpenInterestCacheTTL = 2 * time.Second
+	binanceFundingCacheTTL      = 2 * time.Second
 	binanceTickerCacheTTL       = 30 * time.Second
 	binanceMetadataCacheTTL     = 15 * time.Minute
 
@@ -32,10 +32,10 @@ const (
 	// A probe normally completes within three 6s attempts plus retry delays.
 	// Recover defensively if an abnormal callback exit leaves it marked in flight.
 	binancePublicProbeTimeout = 30 * time.Second
-	// A single process can run several traders at once. Serialize public
-	// requests and leave headroom below Binance's per-IP weight window instead
-	// of allowing every distinct symbol to burst through MaxConnsPerHost.
-	binancePublicRequestInterval = 100 * time.Millisecond
+	// Admission is deliberately separate from the per-attempt HTTP deadline.
+	// Queue pressure is local state and must never be reported as an upstream
+	// network outage or open the public-data circuit.
+	binancePublicAdmissionTimeout = 30 * time.Second
 )
 
 // BinancePublicError preserves the upstream classification needed for
@@ -80,11 +80,6 @@ type binanceCacheEntry struct {
 	expiresAt time.Time
 }
 
-type binanceKlineCacheEntry struct {
-	klines    []Kline
-	fetchedAt time.Time
-}
-
 type binanceCircuitState struct {
 	active         bool
 	statusCode     int
@@ -99,100 +94,52 @@ type binancePublicCoordinator struct {
 
 	cacheMutex sync.RWMutex
 	cache      map[string]binanceCacheEntry
-	klineCache map[string]binanceKlineCacheEntry
 
-	requestGate     chan struct{}
-	requestGateOnce sync.Once
-	pacingMutex     sync.Mutex
-	nextRequestAt   time.Time
+	admit            func(context.Context, binanceguard.Priority) (func(), error)
+	admissionTimeout time.Duration
 
 	circuitMutex sync.Mutex
 	circuit      binanceCircuitState
 }
 
 func newBinancePublicCoordinator() *binancePublicCoordinator {
+	localLimiter := binanceguard.NewLimiter(0)
+	return newBinancePublicCoordinatorWithAdmission(localLimiter.Acquire)
+}
+
+func newSharedBinancePublicCoordinator() *binancePublicCoordinator {
+	return newBinancePublicCoordinatorWithAdmission(binanceguard.Acquire)
+}
+
+func newBinancePublicCoordinatorWithAdmission(
+	admit func(context.Context, binanceguard.Priority) (func(), error),
+) *binancePublicCoordinator {
 	return &binancePublicCoordinator{
-		cache:      make(map[string]binanceCacheEntry),
-		klineCache: make(map[string]binanceKlineCacheEntry),
+		cache:            make(map[string]binanceCacheEntry),
+		admit:            admit,
+		admissionTimeout: binancePublicAdmissionTimeout,
 	}
 }
 
-func (coordinator *binancePublicCoordinator) getStaleKlines(cacheKey string, now time.Time) ([]Kline, time.Duration, bool) {
-	coordinator.cacheMutex.RLock()
-	entry, exists := coordinator.klineCache[cacheKey]
-	coordinator.cacheMutex.RUnlock()
-	if !exists || len(entry.klines) == 0 || entry.fetchedAt.IsZero() {
-		return nil, 0, false
-	}
-	age := now.Sub(entry.fetchedAt)
-	if age < 0 || age > binanceKlineStaleTTL {
-		return nil, 0, false
-	}
-	return append([]Kline(nil), entry.klines...), age, true
-}
-
-func (coordinator *binancePublicCoordinator) storeKlines(cacheKey string, klines []Kline, fetchedAt time.Time) {
-	if len(klines) == 0 {
-		return
-	}
-	coordinator.cacheMutex.Lock()
-	if coordinator.klineCache == nil {
-		coordinator.klineCache = make(map[string]binanceKlineCacheEntry)
-	}
-	coordinator.klineCache[cacheKey] = binanceKlineCacheEntry{
-		klines:    append([]Kline(nil), klines...),
-		fetchedAt: fetchedAt,
-	}
-	coordinator.cacheMutex.Unlock()
-}
-
-// acquireRequestSlot applies a process-wide admission gate for one Binance
-// public coordinator. It intentionally serializes actual HTTP calls, while
-// singleflight still removes duplicate requests for the same URL. This keeps
-// different symbols/timeframes from creating a burst that trips the shared
-// egress IP's weight limit.
-func (coordinator *binancePublicCoordinator) acquireRequestSlot(ctx context.Context) (func(), error) {
+// acquireRequestSlot delegates to the process-wide bounded priority limiter.
+// The limiter also coordinates signed order traffic, so public market-data
+// bursts cannot consume the egress budget ahead of order/cancel operations.
+func (coordinator *binancePublicCoordinator) acquireRequestSlot(
+	ctx context.Context,
+	priority binanceguard.Priority,
+) (func(), error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	coordinator.requestGateOnce.Do(func() {
-		coordinator.requestGate = make(chan struct{}, 1)
-	})
-	select {
-	case coordinator.requestGate <- struct{}{}:
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	if coordinator.admit == nil {
+		return nil, &binanceguard.AdmissionError{Cause: errors.New("binance public admission is not configured")}
 	}
-
-	coordinator.pacingMutex.Lock()
-	now := time.Now()
-	if wait := time.Until(coordinator.nextRequestAt); wait > 0 {
-		coordinator.pacingMutex.Unlock()
-		timer := time.NewTimer(wait)
-		select {
-		case <-timer.C:
-		case <-ctx.Done():
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			<-coordinator.requestGate
-			return nil, ctx.Err()
-		}
-		coordinator.pacingMutex.Lock()
-		now = time.Now()
-	}
-	coordinator.nextRequestAt = now.Add(binancePublicRequestInterval)
-	coordinator.pacingMutex.Unlock()
-
-	return func() { <-coordinator.requestGate }, nil
+	return coordinator.admit(ctx, priority)
 }
 
 // requestBlockedAfterAdmission closes the race where a caller passed the
 // circuit check before another queued request received a rate-limit response.
-// It is intentionally checked only after the pacing gate is acquired, so a
+// It is intentionally checked only after the process-wide slot is acquired, so a
 // burst already waiting in the process does not continue hitting Binance
 // after the first 429/418/451 has opened the circuit.
 func (coordinator *binancePublicCoordinator) requestBlockedAfterAdmission(endpoint string, now time.Time) error {
@@ -252,15 +199,16 @@ func (coordinator *binancePublicCoordinator) recordSuccess() {
 	coordinator.circuitMutex.Unlock()
 }
 
-func (coordinator *binancePublicCoordinator) releaseProbeAfterTransientFailure(now time.Time) {
+// releaseExpiredCircuitProbe clears only an already-expired explicit Binance
+// cooldown. Local admission or transport failures must not create or extend a
+// process-wide outage after Binance's requested backoff has elapsed.
+func (coordinator *binancePublicCoordinator) releaseExpiredCircuitProbe() {
 	coordinator.circuitMutex.Lock()
 	defer coordinator.circuitMutex.Unlock()
 	if !coordinator.circuit.probeInFlight {
 		return
 	}
-	coordinator.circuit.probeInFlight = false
-	coordinator.circuit.probeStartedAt = time.Time{}
-	coordinator.circuit.blockedUntil = now.Add(binanceDefaultRateLimitCooldown)
+	coordinator.circuit = binanceCircuitState{}
 }
 
 func (coordinator *binancePublicCoordinator) openCircuit(requestError *BinancePublicError, now time.Time) {
@@ -288,23 +236,6 @@ func (coordinator *binancePublicCoordinator) openCircuit(requestError *BinancePu
 	}
 	requestError.CircuitUntil = coordinator.circuit.blockedUntil
 	coordinator.circuitMutex.Unlock()
-}
-
-func (coordinator *binancePublicCoordinator) openTransientCircuit(endpoint string, cause error, now time.Time) error {
-	requestError := &BinancePublicError{
-		Endpoint:     endpoint,
-		Message:      fmt.Sprintf("proxy or upstream network unavailable: %v", cause),
-		RetryAfter:   binanceDefaultRateLimitCooldown,
-		CircuitUntil: now.Add(binanceDefaultRateLimitCooldown),
-	}
-	coordinator.circuitMutex.Lock()
-	coordinator.circuit = binanceCircuitState{
-		active:       true,
-		message:      requestError.Message,
-		blockedUntil: requestError.CircuitUntil,
-	}
-	coordinator.circuitMutex.Unlock()
-	return requestError
 }
 
 func (coordinator *binancePublicCoordinator) circuitErrorLocked(endpoint string) error {
