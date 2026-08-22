@@ -5,11 +5,11 @@ import "nofx/market"
 type binancePaperPriceSource struct{ client *market.APIClient }
 
 func (s *binancePaperPriceSource) GetMarketPrice(symbol string) (float64, error) {
-	return s.client.GetCurrentPrice(market.NormalizeForExchange("binance", symbol))
+	return s.client.GetCurrentPriceFresh(market.NormalizeForExchange("binance", symbol))
 }
 
 func (s *binancePaperPriceSource) GetDepth(symbol string, limit int) (*market.DepthSnapshot, error) {
-	return s.client.GetDepth(market.NormalizeForExchange("binance", symbol), limit)
+	return s.client.GetDepthFresh(market.NormalizeForExchange("binance", symbol), limit)
 }
 
 func (s *binancePaperPriceSource) GetFundingHistory(symbol string, startTime, endTime int64) ([]market.FundingEvent, error) {
@@ -29,11 +29,11 @@ func newMarketPaperPriceSource(provider market.MarketDataProvider) *marketPaperP
 }
 
 func (source *marketPaperPriceSource) GetMarketPrice(symbol string) (float64, error) {
-	return source.provider.GetCurrentPrice(symbol)
+	return source.provider.GetCurrentPriceFresh(symbol)
 }
 
 func (source *marketPaperPriceSource) GetDepth(symbol string, limit int) (*market.DepthSnapshot, error) {
-	return source.provider.GetDepth(symbol, limit)
+	return source.provider.GetDepthFresh(symbol, limit)
 }
 
 func (source *marketPaperPriceSource) GetFundingHistory(symbol string, startTime, endTime int64) ([]market.FundingEvent, error) {

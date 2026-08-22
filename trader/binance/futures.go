@@ -6,9 +6,11 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"net/url"
 	"nofx/hook"
 	"nofx/logger"
 	"nofx/market/binanceguard"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -72,6 +74,31 @@ type FuturesTrader struct {
 	cacheDuration time.Duration
 }
 
+func configureBinanceProxy(client *http.Client, proxyURL string) error {
+	if client == nil {
+		return fmt.Errorf("nil Binance HTTP client")
+	}
+	proxyURL = strings.TrimSpace(proxyURL)
+	if proxyURL == "" {
+		return fmt.Errorf("BINANCE_HTTP_PROXY is empty")
+	}
+	parsed, err := url.Parse(proxyURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil {
+		if err == nil {
+			err = fmt.Errorf("proxy URL must have scheme and host and no embedded credentials")
+		}
+		return err
+	}
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok || transport == nil {
+		base := http.DefaultTransport.(*http.Transport).Clone()
+		transport = base
+	}
+	transport.Proxy = http.ProxyURL(parsed)
+	client.Transport = transport
+	return nil
+}
+
 // NewFuturesTrader creates futures trader
 func NewFuturesTrader(apiKey, secretKey string, userId string) *FuturesTrader {
 	client := futures.NewClient(apiKey, secretKey)
@@ -82,6 +109,16 @@ func NewFuturesTrader(apiKey, secretKey string, userId string) *FuturesTrader {
 	hookRes := hook.HookExec[hook.NewBinanceTraderResult](hook.NEW_BINANCE_TRADER, userId, client)
 	if hookRes != nil && hookRes.GetResult() != nil {
 		client = hookRes.GetResult()
+	}
+	// When BINANCE_HTTP_PROXY is set, use it explicitly. On macOS Docker with
+	// FlClash TUN mode, an empty value deliberately leaves REST traffic to the
+	// normal network path so FlClash can apply its Binance-HK domain rule.
+	if proxyURL := strings.TrimSpace(os.Getenv("BINANCE_HTTP_PROXY")); proxyURL != "" {
+		if err := configureBinanceProxy(client.HTTPClient, proxyURL); err != nil {
+			logger.Infof("⚠️ Failed to configure Binance proxy: %v", err)
+		}
+		// The SDK's WebSocket dialer has its own global proxy setting.
+		futures.SetWsProxyUrl(proxyURL)
 	}
 	// All Binance clients in this process share one egress-IP request gate,
 	// including signed account/order traffic and public market-data traffic.

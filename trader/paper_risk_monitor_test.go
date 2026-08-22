@@ -3,6 +3,7 @@ package trader
 import (
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -434,13 +435,12 @@ func TestPaperRefreshAttemptsEveryOpenSymbolAfterOnePriceError(t *testing.T) {
 	}
 }
 
-func TestPaperRefreshUsesFreshCachedMarkButFailsClosedAfterTTL(t *testing.T) {
+func TestPaperRefreshFailsClosedImmediatelyWhenFreshMarkUnavailable(t *testing.T) {
 	now := time.Date(2026, 7, 22, 15, 0, 0, 0, time.UTC)
 	prices := &switchablePaperPriceSource{price: 100}
 	broker, err := NewPaperBroker(PaperBrokerConfig{
 		InitialBalance: 1_000,
 		Clock:          func() time.Time { return now },
-		MarkStaleTTL:   30 * time.Second,
 	}, prices)
 	if err != nil {
 		t.Fatalf("NewPaperBroker: %v", err)
@@ -454,54 +454,17 @@ func TestPaperRefreshUsesFreshCachedMarkButFailsClosedAfterTTL(t *testing.T) {
 
 	now = now.Add(10 * time.Second)
 	err = broker.RefreshOpenPositions()
-	if err == nil || !CanContinueWithCachedPaperMarks(err) {
-		t.Fatalf("fresh-cache refresh error = %v, want non-fatal cached-mark warning", err)
-	}
-
-	now = now.Add(21 * time.Second)
-	err = broker.RefreshOpenPositions()
-	if err == nil || CanContinueWithCachedPaperMarks(err) {
-		t.Fatalf("expired-cache refresh error = %v, want fail-closed error", err)
+	if err == nil || !strings.Contains(err.Error(), "fresh mark unavailable") {
+		t.Fatalf("refresh error = %v, want immediate fresh-mark failure", err)
 	}
 }
 
-func TestPaperRefreshUsesDefaultCachedMarkTTL(t *testing.T) {
+func TestPaperTradingContextFailsWhenFreshMarkUnavailable(t *testing.T) {
 	now := time.Date(2026, 7, 22, 15, 0, 0, 0, time.UTC)
 	prices := &switchablePaperPriceSource{price: 100}
 	broker, err := NewPaperBroker(PaperBrokerConfig{
 		InitialBalance: 1_000,
 		Clock:          func() time.Time { return now },
-	}, prices)
-	if err != nil {
-		t.Fatalf("NewPaperBroker: %v", err)
-	}
-	if _, err := broker.ExecuteDecision(&kernel.Decision{
-		Symbol: "MUUSDT", Action: "open_long", PositionSizeUSD: 300, Leverage: 3,
-	}); err != nil {
-		t.Fatalf("open_long: %v", err)
-	}
-	prices.err = io.ErrUnexpectedEOF
-
-	now = now.Add(89 * time.Second)
-	err = broker.RefreshOpenPositions()
-	if err == nil || !CanContinueWithCachedPaperMarks(err) {
-		t.Fatalf("default-TTL fresh-cache refresh error = %v, want cached-mark warning", err)
-	}
-
-	now = now.Add(2 * time.Second)
-	err = broker.RefreshOpenPositions()
-	if err == nil || CanContinueWithCachedPaperMarks(err) {
-		t.Fatalf("default-TTL expired-cache refresh error = %v, want fail-closed error", err)
-	}
-}
-
-func TestPaperTradingContextContinuesOnTransientPriceFailureWithinTTL(t *testing.T) {
-	now := time.Date(2026, 7, 22, 15, 0, 0, 0, time.UTC)
-	prices := &switchablePaperPriceSource{price: 100}
-	broker, err := NewPaperBroker(PaperBrokerConfig{
-		InitialBalance: 1_000,
-		Clock:          func() time.Time { return now },
-		MarkStaleTTL:   30 * time.Second,
 	}, prices)
 	if err != nil {
 		t.Fatalf("NewPaperBroker: %v", err)
@@ -515,12 +478,8 @@ func TestPaperTradingContextContinuesOnTransientPriceFailureWithinTTL(t *testing
 	now = now.Add(10 * time.Second)
 	at := newMonitorTestAutoTrader(ExecutionModePaper, broker, time.Hour)
 
-	ctx, err := at.buildTradingContext()
-	if err != nil {
-		t.Fatalf("buildTradingContext should continue with fresh cached mark: %v", err)
-	}
-	if len(ctx.Positions) != 1 || ctx.Positions[0].MarkPrice != 100 {
-		t.Fatalf("positions = %#v, want cached MUUSDT mark 100", ctx.Positions)
+	if _, err := at.buildTradingContext(); err == nil || !strings.Contains(err.Error(), "fresh mark unavailable") {
+		t.Fatalf("buildTradingContext error = %v, want fresh-mark failure", err)
 	}
 }
 

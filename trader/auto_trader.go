@@ -366,6 +366,9 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 	if providerErr != nil {
 		return nil, fmt.Errorf("failed to initialize %s market data provider: %w", config.Exchange, providerErr)
 	}
+	if capabilityErr := market.RequireMarketCapabilities(marketDataProvider, market.TradingCapabilities); capabilityErr != nil {
+		return nil, fmt.Errorf("refusing to start %s trader without complete fresh market data: %w", config.Exchange, capabilityErr)
+	}
 	if config.ExecutionMode == ExecutionModePaper || strings.EqualFold(config.Exchange, "binance") {
 		binanceMarketClient = market.NewAPIClient()
 	}
@@ -567,18 +570,48 @@ func (at *AutoTrader) GetStartupDelay() time.Duration {
 	return at.config.StartupDelay
 }
 
+// GetScanInterval returns the configured trading-cycle cadence.
+func (at *AutoTrader) GetScanInterval() time.Duration {
+	return at.config.ScanInterval
+}
+
+// GetAIModelScheduleIdentity returns a non-secret stable identity for the
+// trader's effective primary upstream model.
+func (at *AutoTrader) GetAIModelScheduleIdentity() string {
+	provider := at.config.AIModel
+	baseURL := at.config.CustomAPIURL
+	modelName := at.config.CustomModelName
+	apiKey := at.config.CustomAPIKey
+	if len(at.config.AIModelCandidates) > 0 {
+		candidate := at.config.AIModelCandidates[0]
+		provider = candidate.Provider
+		baseURL = candidate.CustomAPIURL
+		modelName = candidate.ModelName
+		apiKey = candidate.APIKey
+	} else {
+		switch provider {
+		case "qwen":
+			apiKey = at.config.QwenKey
+		case "deepseek", "":
+			apiKey = at.config.DeepSeekKey
+		}
+	}
+	return mcp.ModelRequestScheduleIdentity(provider, baseURL, modelName, apiKey)
+}
+
 // RunWithStartupDelay starts the runtime with a manager-supplied delay. The
 // manager uses this for deterministic 0/5/10 minute startup staggering when a
 // trader has no explicit delay configured.
 func (at *AutoTrader) RunWithStartupDelay(startupDelay time.Duration) error {
-	if startupDelay > 0 {
-		at.config.StartupDelay = startupDelay
-	}
-	return at.Run()
+	return at.run(startupDelay)
 }
 
 // Run runs the automatic trading main loop
 func (at *AutoTrader) Run() error {
+	return at.run(at.config.StartupDelay)
+}
+
+func (at *AutoTrader) run(startupDelay time.Duration) error {
 	if at.runAttemptHook != nil {
 		at.runAttemptHook()
 	}
@@ -612,9 +645,9 @@ func (at *AutoTrader) Run() error {
 	at.logInfof("⚙️  Scan interval: %v", at.config.ScanInterval)
 	logger.Info("🤖 AI will make full decisions on leverage, position size, stop loss/take profit, etc.")
 
-	if at.config.StartupDelay > 0 {
-		at.logInfof("⏳ Startup stagger enabled; first trading cycle will begin after %v", at.config.StartupDelay)
-		startupTimer := time.NewTimer(at.config.StartupDelay)
+	if startupDelay > 0 {
+		at.logInfof("⏳ Startup stagger enabled; first trading cycle will begin after %v", startupDelay)
+		startupTimer := time.NewTimer(startupDelay)
 		select {
 		case <-startupTimer.C:
 		case <-runStopCh:

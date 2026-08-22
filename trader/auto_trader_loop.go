@@ -79,11 +79,14 @@ func (at *AutoTrader) runCycle() error {
 	// NOTE: Must be called BEFORE candidate coins check to ensure equity is always recorded
 	at.saveEquitySnapshot(ctx)
 
-	// If no candidate coins available, log but do not error
+	// An empty candidate universe is a market-data/configuration failure, not a
+	// successful no-op. Record it explicitly so proxy/upstream outages cannot be
+	// mistaken for a model decision or a healthy trading cycle.
 	if len(ctx.CandidateCoins) == 0 {
 		at.logInfof("ℹ️ No candidate coins available, skipping this cycle")
-		record.Success = true // Not an error, just no candidate coins
-		record.ExecutionLog = append(record.ExecutionLog, "No candidate coins available, cycle skipped")
+		record.Success = false
+		record.ErrorMessage = "No candidate coins available; market-data candidate universe is empty"
+	record.ExecutionLog = append(record.ExecutionLog, record.ErrorMessage)
 		record.AccountState = store.AccountSnapshot{
 			TotalBalance:          ctx.Account.TotalEquity,
 			AvailableBalance:      ctx.Account.AvailableBalance,
@@ -506,11 +509,7 @@ func canonicalUniverseSymbolForBase(ctx *kernel.Context, base string) string {
 func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 	if at.executionMode == ExecutionModePaper && at.paperBroker != nil {
 		if err := at.paperBroker.RefreshOpenPositions(); err != nil {
-			if CanContinueWithCachedPaperMarks(err) {
-				at.logWarnf("⚠️ Paper position refresh using bounded cached marks: %v", err)
-			} else {
-				return nil, fmt.Errorf("failed to refresh paper positions: %w", err)
-			}
+			return nil, fmt.Errorf("failed to refresh paper positions: %w", err)
 		}
 	}
 	// 1. Get account information
@@ -658,8 +657,11 @@ func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 	} else {
 		coins, err := at.strategyEngine.GetCandidateCoins()
 		if err != nil {
-			// Log warning but don't fail - equity snapshot should still be saved
-			at.logWarnf("⚠️ Failed to get candidate coins: %v (will use empty list)", err)
+			// Candidate discovery is part of the market-data safety boundary. Do
+			// not turn an upstream/proxy failure into an apparently successful
+			// empty-candidate cycle that can be reported as a no-op.
+			at.logWarnf("⚠️ Failed to get candidate coins: %v", err)
+			return nil, fmt.Errorf("failed to get candidate coins: %w", err)
 		} else {
 			candidateCoins = coins
 			logger.Infof("📋 [%s] Strategy engine fetched candidate coins: %d", at.name, len(candidateCoins))

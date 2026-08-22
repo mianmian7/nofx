@@ -1322,6 +1322,25 @@ func (at *AutoTrader) validateOpenMarket(symbol string) (*market.MarketAvailabil
 	return availability, nil
 }
 
+func (at *AutoTrader) requireFreshExecutionPrice(symbol string) (float64, error) {
+	provider := at.marketDataProvider
+	if provider == nil {
+		var err error
+		provider, err = market.NewMarketDataProvider(at.exchange)
+		if err != nil {
+			return 0, err
+		}
+	}
+	price, err := provider.GetCurrentPriceFresh(symbol)
+	if err != nil {
+		return 0, &market.MarketDataUnavailableError{Exchange: provider.Exchange(), Symbol: symbol, Capability: market.CapabilityPrice, Cause: err}
+	}
+	if price <= 0 || math.IsNaN(price) || math.IsInf(price, 0) {
+		return 0, &market.MarketDataUnavailableError{Exchange: provider.Exchange(), Symbol: symbol, Capability: market.CapabilityPrice, Cause: fmt.Errorf("invalid execution price %.8f", price)}
+	}
+	return price, nil
+}
+
 // executeOpenLongWithRecord executes open long position and records detailed information
 func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actionRecord *store.DecisionAction) error {
 	logger.Infof("  📈 Open long: %s", decision.Symbol)
@@ -1344,22 +1363,23 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 		}
 	}
 
-	// Get current price
-	marketData, err := market.GetWithExchange(decision.Symbol, at.exchange)
-	if err != nil {
-		return fmt.Errorf("failed to get market data for %s: %w", decision.Symbol, err)
-	}
 	availability, err := at.validateOpenMarket(decision.Symbol)
 	if err != nil {
 		return err
 	}
+	currentPrice := 0.0
 	if availability != nil {
-		marketData.CurrentPrice = availability.Price
+		currentPrice = availability.Price
+	} else {
+		currentPrice, err = at.requireFreshExecutionPrice(decision.Symbol)
+		if err != nil {
+			return fmt.Errorf("failed to get fresh execution price for %s: %w", decision.Symbol, err)
+		}
 	}
-	if err := at.normalizeStopLossAtEntry(decision, marketData.CurrentPrice); err != nil {
+	if err := at.normalizeStopLossAtEntry(decision, currentPrice); err != nil {
 		return err
 	}
-	if err := validateOpenProtection(decision.Action, marketData.CurrentPrice, decision.StopLoss, decision.TakeProfit); err != nil {
+	if err := validateOpenProtection(decision.Action, currentPrice, decision.StopLoss, decision.TakeProfit); err != nil {
 		return err
 	}
 
@@ -1388,7 +1408,7 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 			return err
 		}
 	}
-	if err := at.enforceOpenRiskBudget(decision, marketData.CurrentPrice); err != nil {
+	if err := at.enforceOpenRiskBudget(decision, currentPrice); err != nil {
 		return err
 	}
 
@@ -1417,9 +1437,9 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 	}
 
 	// Calculate quantity with adjusted position size
-	quantity := actualPositionSize / marketData.CurrentPrice
+	quantity := actualPositionSize / currentPrice
 	actionRecord.Quantity = quantity
-	actionRecord.Price = marketData.CurrentPrice
+	actionRecord.Price = currentPrice
 
 	// Set margin mode
 	if err := at.trader.SetMarginMode(decision.Symbol, at.config.IsCrossMargin); err != nil {
@@ -1441,7 +1461,7 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 	logger.Infof("  ✓ Position opened successfully, order ID: %v, quantity: %.4f", order["orderId"], quantity)
 
 	// Record order to database and poll for confirmation
-	at.recordAndConfirmOrder(order, decision.Symbol, "open_long", quantity, marketData.CurrentPrice, decision.Leverage, 0)
+	at.recordAndConfirmOrder(order, decision.Symbol, "open_long", quantity, currentPrice, decision.Leverage, 0)
 
 	// Record position opening time
 	posKey := decision.Symbol + "_long"
@@ -1474,22 +1494,23 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 		}
 	}
 
-	// Get current price
-	marketData, err := market.GetWithExchange(decision.Symbol, at.exchange)
-	if err != nil {
-		return fmt.Errorf("failed to get market data for %s: %w", decision.Symbol, err)
-	}
 	availability, err := at.validateOpenMarket(decision.Symbol)
 	if err != nil {
 		return err
 	}
+	currentPrice := 0.0
 	if availability != nil {
-		marketData.CurrentPrice = availability.Price
+		currentPrice = availability.Price
+	} else {
+		currentPrice, err = at.requireFreshExecutionPrice(decision.Symbol)
+		if err != nil {
+			return fmt.Errorf("failed to get fresh execution price for %s: %w", decision.Symbol, err)
+		}
 	}
-	if err := at.normalizeStopLossAtEntry(decision, marketData.CurrentPrice); err != nil {
+	if err := at.normalizeStopLossAtEntry(decision, currentPrice); err != nil {
 		return err
 	}
-	if err := validateOpenProtection(decision.Action, marketData.CurrentPrice, decision.StopLoss, decision.TakeProfit); err != nil {
+	if err := validateOpenProtection(decision.Action, currentPrice, decision.StopLoss, decision.TakeProfit); err != nil {
 		return err
 	}
 
@@ -1518,7 +1539,7 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 			return err
 		}
 	}
-	if err := at.enforceOpenRiskBudget(decision, marketData.CurrentPrice); err != nil {
+	if err := at.enforceOpenRiskBudget(decision, currentPrice); err != nil {
 		return err
 	}
 
@@ -1547,9 +1568,9 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 	}
 
 	// Calculate quantity with adjusted position size
-	quantity := actualPositionSize / marketData.CurrentPrice
+	quantity := actualPositionSize / currentPrice
 	actionRecord.Quantity = quantity
-	actionRecord.Price = marketData.CurrentPrice
+	actionRecord.Price = currentPrice
 
 	// Set margin mode
 	if err := at.trader.SetMarginMode(decision.Symbol, at.config.IsCrossMargin); err != nil {
@@ -1571,7 +1592,7 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 	logger.Infof("  ✓ Position opened successfully, order ID: %v, quantity: %.4f", order["orderId"], quantity)
 
 	// Record order to database and poll for confirmation
-	at.recordAndConfirmOrder(order, decision.Symbol, "open_short", quantity, marketData.CurrentPrice, decision.Leverage, 0)
+	at.recordAndConfirmOrder(order, decision.Symbol, "open_short", quantity, currentPrice, decision.Leverage, 0)
 
 	// Record position opening time
 	posKey := decision.Symbol + "_short"
@@ -1604,12 +1625,11 @@ func (at *AutoTrader) setOpeningProtection(decision *kernel.Decision, positionSi
 func (at *AutoTrader) executeCloseLongWithRecord(decision *kernel.Decision, actionRecord *store.DecisionAction) error {
 	logger.Infof("  🔄 Close long: %s", decision.Symbol)
 
-	// Get current price
-	marketData, err := market.GetWithExchange(decision.Symbol, at.exchange)
+	currentPrice, err := at.requireFreshExecutionPrice(decision.Symbol)
 	if err != nil {
-		return fmt.Errorf("failed to get market data for %s: %w", decision.Symbol, err)
+		return fmt.Errorf("failed to get fresh execution price for %s: %w", decision.Symbol, err)
 	}
-	actionRecord.Price = marketData.CurrentPrice
+	actionRecord.Price = currentPrice
 
 	// Normalize symbol for database lookup
 	normalizedSymbol := market.NormalizeForExchange(at.exchange, decision.Symbol)
@@ -1658,7 +1678,7 @@ func (at *AutoTrader) executeCloseLongWithRecord(decision *kernel.Decision, acti
 	}
 
 	// Record order to database and poll for confirmation
-	at.recordAndConfirmOrder(order, decision.Symbol, "close_long", quantity, marketData.CurrentPrice, 0, entryPrice)
+	at.recordAndConfirmOrder(order, decision.Symbol, "close_long", quantity, currentPrice, 0, entryPrice)
 
 	logger.Infof("  ✓ Position closed successfully")
 	return nil
@@ -1668,12 +1688,11 @@ func (at *AutoTrader) executeCloseLongWithRecord(decision *kernel.Decision, acti
 func (at *AutoTrader) executeCloseShortWithRecord(decision *kernel.Decision, actionRecord *store.DecisionAction) error {
 	logger.Infof("  🔄 Close short: %s", decision.Symbol)
 
-	// Get current price
-	marketData, err := market.GetWithExchange(decision.Symbol, at.exchange)
+	currentPrice, err := at.requireFreshExecutionPrice(decision.Symbol)
 	if err != nil {
-		return fmt.Errorf("failed to get market data for %s: %w", decision.Symbol, err)
+		return fmt.Errorf("failed to get fresh execution price for %s: %w", decision.Symbol, err)
 	}
-	actionRecord.Price = marketData.CurrentPrice
+	actionRecord.Price = currentPrice
 
 	// Normalize symbol for database lookup
 	normalizedSymbol := market.NormalizeForExchange(at.exchange, decision.Symbol)
@@ -1722,7 +1741,7 @@ func (at *AutoTrader) executeCloseShortWithRecord(decision *kernel.Decision, act
 	}
 
 	// Record order to database and poll for confirmation
-	at.recordAndConfirmOrder(order, decision.Symbol, "close_short", quantity, marketData.CurrentPrice, 0, entryPrice)
+	at.recordAndConfirmOrder(order, decision.Symbol, "close_short", quantity, currentPrice, 0, entryPrice)
 
 	logger.Infof("  ✓ Position closed successfully")
 	return nil

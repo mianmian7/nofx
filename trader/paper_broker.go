@@ -43,46 +43,9 @@ type PaperBrokerConfig struct {
 	MakerTimeout                   time.Duration
 	MakerMaxReprices               int
 	MaintenanceMarginRatio         float64
-	MarkStaleTTL                   time.Duration
 	FundingHistoryFallbackInterval time.Duration
 	FundingSource                  PaperFundingSource
 	Clock                          func() time.Time
-}
-
-// PaperCachedMarkWarning means an upstream mark refresh failed but the broker
-// retained a previously successful mark that is still inside the configured
-// stale TTL. Callers may continue read-only context construction, while still
-// logging the degraded market-data condition.
-type PaperCachedMarkWarning struct {
-	Symbol string
-	Age    time.Duration
-	Cause  error
-}
-
-func (w *PaperCachedMarkWarning) Error() string {
-	return fmt.Sprintf("refresh paper price %s: using cached mark age %s after upstream failure: %v", w.Symbol, w.Age.Round(time.Millisecond), w.Cause)
-}
-
-func (w *PaperCachedMarkWarning) Unwrap() error { return w.Cause }
-
-func CanContinueWithCachedPaperMarks(err error) bool {
-	if err == nil {
-		return false
-	}
-	if joined, ok := err.(interface{ Unwrap() []error }); ok {
-		children := joined.Unwrap()
-		if len(children) == 0 {
-			return false
-		}
-		for _, child := range children {
-			if !CanContinueWithCachedPaperMarks(child) {
-				return false
-			}
-		}
-		return true
-	}
-	var warning *PaperCachedMarkWarning
-	return errors.As(err, &warning)
 }
 
 func isValidPaperMarkPrice(price float64) bool {
@@ -365,13 +328,6 @@ func NewPaperBroker(config PaperBrokerConfig, prices PaperPriceSource) (*PaperBr
 	}
 	if config.MaintenanceMarginRatio <= 0 {
 		config.MaintenanceMarginRatio = 0.005
-	}
-	if config.MarkStaleTTL <= 0 {
-		// The background paper monitor runs every 30s by default. Keeping a
-		// mark for three monitor intervals lets one delayed/failed refresh
-		// degrade to a cached mark without immediately blocking risk context
-		// construction, while still failing closed after a bounded window.
-		config.MarkStaleTTL = 90 * time.Second
 	}
 	if config.FundingHistoryFallbackInterval <= 0 {
 		config.FundingHistoryFallbackInterval = 5 * time.Minute
@@ -1074,11 +1030,7 @@ func (b *PaperBroker) RefreshOpenPositions() error {
 	for symbol := range symbolSet {
 		price, err := b.prices.GetMarketPrice(symbol)
 		if err != nil {
-			if age, ok := b.freshCachedMarkAge(symbol, now); ok {
-				refreshErrors = append(refreshErrors, &PaperCachedMarkWarning{Symbol: symbol, Age: age, Cause: err})
-				continue
-			}
-			refreshErrors = append(refreshErrors, fmt.Errorf("refresh paper price %s: cached mark unavailable or expired: %w", symbol, err))
+			refreshErrors = append(refreshErrors, fmt.Errorf("refresh paper price %s: fresh mark unavailable: %w", symbol, err))
 			continue
 		}
 		if b.riskExitTriggered(symbol, price) {
@@ -1126,18 +1078,6 @@ func paperRiskExitAction(position PaperPosition, price float64) string {
 		return "take_profit"
 	}
 	return ""
-}
-
-func (b *PaperBroker) freshCachedMarkAge(symbol string, now time.Time) (time.Duration, bool) {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	mark, markExists := b.marks[symbol]
-	markedAt, timeExists := b.markTimes[symbol]
-	if !markExists || !isValidPaperMarkPrice(mark) || !timeExists || markedAt.IsZero() || now.Before(markedAt) {
-		return 0, false
-	}
-	age := now.Sub(markedAt)
-	return age, age <= b.config.MarkStaleTTL
 }
 
 // ProcessPrice marks virtual positions and produces synthetic market fills
