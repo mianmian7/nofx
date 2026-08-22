@@ -51,7 +51,7 @@
 5. AI请求 (CallWithMessages)
    ├─ 选择AI模型
    ├─ POST: system_prompt + user_prompt
-   ├─ 超时: 120秒, 重试: 3次
+   ├─ 超时: 300秒, 最多尝试: 3次
    └─ 返回原始响应
         ↓
 6. AI解析 (parseFullDecisionResponse)
@@ -437,10 +437,44 @@ aiCallDuration := time.Since(aiCallStart)
 
 ```go
 // mcp/client.go
-Timeout: 120 seconds
-MaxRetries: 3
+Timeout: 300 seconds
+MaxAttempts: 3
 RetryDelay: 2 seconds (exponential backoff)
 ```
+
+### 5.4 按模型请求调度
+
+交易员发起的 AI 调用会先经过进程级准入调度器，再向模型提供方发送请求。
+只有规范化后的 provider、endpoint、模型名和凭据都相同，调用才会进入同一
+调度组。分组身份只在内存中以哈希形式保存；日志不会记录凭据或分组 key。
+
+默认行为：
+
+- 同一模型组最多同时运行 **2** 个逻辑调用。
+- 同一模型组的逻辑调用启动时间至少间隔 **30 秒**。
+- 不同模型或不同凭据的组互不阻塞。
+- 一次准入覆盖该逻辑调用内部的全部重试，直到最终成功或失败才释放；重试
+  不会重新排队。
+- Request 和流式调用在等待时遵守请求 context 的取消信号；仅消息调用的准入
+  等待受客户端配置的超时时间限制。
+- 不带 trader metadata 的 MCP/CLI 调用不进入此调度器。
+
+该默认行为会自动应用于当前及未来创建的交易员。可在进程启动时通过以下
+环境变量覆盖：
+
+| 环境变量 | 默认值 | 含义 |
+|---------|-------|------|
+| `AI_MODEL_REQUEST_MAX_CONCURRENCY` | `2` | 同一模型组内最多同时运行的逻辑调用数 |
+| `AI_MODEL_REQUEST_START_INTERVAL_SECONDS` | `30` | 同一模型组逻辑调用启动的最小间隔秒数 |
+
+准入成功会记录结构化日志 `ai_request_admitted`，包含 trader、provider、模型、
+等待时间和生效的限制，但不会记录凭据或哈希分组 key。
+
+交易员轮次在进入请求准入前也会按相位错峰。同一有效模型组内，15 分钟交易员
+默认使用确定性的 0/5/10 分钟启动相位，60 分钟交易员使用 20/40 分钟相位。
+批量启动、数据库恢复和手动启动共用同一套计划，并按交易员名称、ID 稳定排序。
+显式 `startup_delay_minutes` 优先，且不占用自动槽位；自动相位只影响本次运行，
+不会覆盖数据库中的交易员配置。
 
 ---
 
@@ -733,5 +767,5 @@ type StrategyConfig struct {
 
 ---
 
-**文档版本:** 1.0.0
-**最后更新:** 2025-01-15
+**文档版本:** 1.1.0
+**最后更新:** 2026-08-15

@@ -51,7 +51,7 @@ This document describes the complete data flow of the NOFX strategy module, incl
 5. AI Request (CallWithMessages)
    ├─ Select AI model
    ├─ POST: system_prompt + user_prompt
-   ├─ Timeout: 120s, Retries: 3
+   ├─ Timeout: 300s, Attempts: 3
    └─ Return raw response
         ↓
 6. AI Parsing (parseFullDecisionResponse)
@@ -437,10 +437,47 @@ aiCallDuration := time.Since(aiCallStart)
 
 ```go
 // mcp/client.go
-Timeout: 120 seconds
-MaxRetries: 3
+Timeout: 300 seconds
+MaxAttempts: 3
 RetryDelay: 2 seconds (exponential backoff)
 ```
+
+### 5.4 Per-Model Request Scheduling
+
+Trader-originated AI calls pass through a process-wide admission scheduler before
+the provider request starts. Calls share a scheduler group only when their
+normalized provider, endpoint, model name, and credential are the same. The
+group identity is hashed in memory; credentials and group keys are never logged.
+
+Default behavior:
+
+- At most **2** logical calls run concurrently in one model group.
+- Logical call starts in one group are separated by at least **30 seconds**.
+- Different model or credential groups do not block each other.
+- One admission covers all internal retries and releases only after the logical
+  call succeeds or fails, so retries do not queue again.
+- Request-based and streaming calls honor their request context while waiting;
+  message-only admission is bounded by the configured client timeout.
+- Non-trader MCP/CLI calls without trader metadata bypass the scheduler.
+
+The defaults apply automatically to current and future traders. They can be
+overridden at process start with:
+
+| Environment variable | Default | Meaning |
+|----------------------|---------|---------|
+| `AI_MODEL_REQUEST_MAX_CONCURRENCY` | `2` | Maximum active logical calls in one model group |
+| `AI_MODEL_REQUEST_START_INTERVAL_SECONDS` | `30` | Minimum delay between logical-call starts in one group |
+
+Admission emits `ai_request_admitted` with trader, provider, model, wait time,
+and the effective limits. It does not emit credentials or the hashed group key.
+
+Trader cycles are also phase-staggered before they reach request admission.
+Within the same effective model group, 15-minute traders use deterministic
+0/5/10-minute startup phases and 60-minute traders use 20/40-minute phases.
+The plan is shared by bulk start, database restore, and manual start, and is
+ordered by trader name then ID. An explicit `startup_delay_minutes` value takes
+priority and does not consume an automatic slot. Automatic phases affect only
+the current run and do not overwrite the stored trader configuration.
 
 ---
 
@@ -733,5 +770,5 @@ type StrategyConfig struct {
 
 ---
 
-**Document Version:** 1.0.0
-**Last Updated:** 2025-01-15
+**Document Version:** 1.1.0
+**Last Updated:** 2026-08-15

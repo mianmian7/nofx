@@ -70,6 +70,41 @@ NOFX 是一个支持加密货币和美股市场的全栈 AI 交易平台：
 
 **[阅读完整文档 →](STRATEGY_MODULE.md)**
 
+#### 全交易所实时行情韧性
+
+所有交易与 paper 调用方统一使用 fresh-only provider 契约，调用方不能再选择旧 K线或缓存
+mark。Binance、OKX、Bitget 提供完整的价格、K线、深度、资金费率、OI 和合约规格能力；
+能力不完整的 provider 会在 trader 启动前被拒绝，不会等到决策轮次中途才失败。
+
+K线同时请求交易所原生公共 API 和第二个同交易所新鲜数据源；两边同时成功时校验 K线时间
+与收盘价一致性。深度由两条持久的同交易所 WebSocket 会话维护，并仅使用一次新的原生 REST
+请求进行启动或恢复。断线或 sequence gap 会立即使该连接不可用，直到新 snapshot 完成重建。
+上游失败后绝不会返回以前成功过的旧响应。
+
+Bitget 的资金费率、标记价格和指数价格优先使用两条受监督的官方 ticker WebSocket 会话。两条
+连接都没有新鲜事件时，provider 才会在共享的 5 秒总 deadline 内最多执行两次新鲜 REST 请求；
+以前成功过的旧值永远不能作为回退。候选币失败只有在完整新鲜数据覆盖率不低于 80% 时才会
+隔离该币并继续；低于门槛时会在调用 AI 前整轮 fail-closed。任何持仓币数据缺失始终会整轮
+fail-closed。
+
+OKX 最新价同样优先使用两条受监督的官方 `tickers` WebSocket 会话。资金费率由官方
+`funding-rate` 和 `mark-price` 两个通道合成，只有两个带交易所时间戳的字段都齐全才发布。
+两条路径的 REST 回退同样受 5 秒总 deadline 和 2 秒单次 deadline 限制。合约元数据仍以
+官方 REST 启动数据为准，无法验证时必须 fail-closed。
+
+Binance 公共行情请求与签名交易请求还共用一个进程级、有界、带优先级的准入队列。
+Paper 标记价格、订单簿维护、资金费率快照、冷却恢复探针以及签名订单操作使用关键优先级；
+分析和 UI 请求使用普通优先级。准入等待与单次 HTTP deadline 分开计算，因此本地排队压力
+不会再被误报为网络故障。
+
+只有 Binance 明确返回限流或访问限制状态（`418`、`429`、`451`）时才能开启进程级冷却，
+并在存在 `Retry-After` 时遵循该值。准入超时、DNS/TLS/代理故障、上游超时和 `5xx` 仅执行
+有界的单请求重试以及新鲜数据源切换；它们绝不能开启或延长全局冷却。
+
+`GET /api/market-data/health` 会报告交易所能力、K线来源与新鲜度，每条深度连接的时间戳、
+sequence、重建、重连和 gap 状态，以及 Bitget funding 流的新鲜度、REST 回退次数和最后错误。
+该接口也会报告 OKX price 流以及 funding/mark 组合流的 readiness。
+
 ---
 
 ## 项目结构

@@ -15,12 +15,16 @@ services:
     environment:
       TZ: ${TZ:-Asia/Shanghai}
       AI_MAX_TOKENS: "16000"
+      BINANCE_HTTP_PROXY: ${BINANCE_HTTP_PROXY:-}
     healthcheck:
       test: ["CMD", "wget", "-Y", "off", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 60s
+    dns:
+      - 1.1.1.1
+      - 1.0.0.1
     networks:
       - nofx-network
 
