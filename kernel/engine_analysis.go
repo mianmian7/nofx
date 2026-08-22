@@ -23,6 +23,8 @@ type MarketDataUnavailableError struct {
 	Cause   error
 }
 
+const minFreshCandidateCoveragePercent = 80
+
 func (err *MarketDataUnavailableError) Error() string {
 	if err == nil {
 		return "fresh market data unavailable"
@@ -231,7 +233,7 @@ func fetchMarketDataWithStrategy(ctx *Context, engine *StrategyEngine) error {
 		if _, contractErr := engine.ValidateCandidateContract(pos.Symbol); contractErr != nil {
 			return &MarketDataUnavailableError{Symbols: []string{pos.Symbol}, Cause: contractErr}
 		}
-		data, err = market.GetWithTimeframesForProvider(marketDataProvider, pos.Symbol, timeframes, primaryTimeframe, klineCount, ctx.RequireFreshMarketData)
+		data, err = market.GetWithTimeframesForProvider(marketDataProvider, pos.Symbol, timeframes, primaryTimeframe, klineCount)
 		if err != nil {
 			logger.Infof("Failed to fetch %s market data for position %s: %v", marketExchange, pos.Symbol, err)
 			if ctx.RequireFreshMarketData {
@@ -249,9 +251,19 @@ func fetchMarketDataWithStrategy(ctx *Context, engine *StrategyEngine) error {
 	}
 
 	const minOIThresholdMillions = 15.0 // 15M USD minimum open interest value
+	candidateSeen := make(map[string]struct{}, len(ctx.CandidateCoins))
+	candidateAttempts := 0
+	freshCandidates := 0
+	failedCandidates := make([]string, 0)
 
 	for _, coin := range ctx.CandidateCoins {
+		if _, duplicate := candidateSeen[coin.Symbol]; duplicate {
+			continue
+		}
+		candidateSeen[coin.Symbol] = struct{}{}
+		candidateAttempts++
 		if _, exists := ctx.MarketDataMap[coin.Symbol]; exists {
+			freshCandidates++
 			continue
 		}
 
@@ -259,16 +271,16 @@ func fetchMarketDataWithStrategy(ctx *Context, engine *StrategyEngine) error {
 		var err error
 		if _, contractErr := engine.ValidateCandidateContract(coin.Symbol); contractErr != nil {
 			logger.Infof("Skipping %s candidate %s: %v", marketExchange, coin.Symbol, contractErr)
+			failedCandidates = append(failedCandidates, coin.Symbol)
 			continue
 		}
-		data, err = market.GetWithTimeframesForProvider(marketDataProvider, coin.Symbol, timeframes, primaryTimeframe, klineCount, ctx.RequireFreshMarketData)
+		data, err = market.GetWithTimeframesForProvider(marketDataProvider, coin.Symbol, timeframes, primaryTimeframe, klineCount)
 		if err != nil {
 			logger.Infof("Failed to fetch %s market data for %s: %v", marketExchange, coin.Symbol, err)
-			// Candidate coins fail open by skipping the individual symbol: a
-			// single newly-listed/delisted pair must not block the whole live
-			// decision. Open positions still fail closed above.
+			failedCandidates = append(failedCandidates, coin.Symbol)
 			continue
 		}
+		freshCandidates++
 
 		// Liquidity filter (skip for xyz dex assets - they don't have OI data from Binance)
 		isExistingPosition := positionSymbols[coin.Symbol]
@@ -288,10 +300,51 @@ func fetchMarketDataWithStrategy(ctx *Context, engine *StrategyEngine) error {
 
 		ctx.MarketDataMap[coin.Symbol] = data
 	}
+	if ctx.RequireFreshMarketData {
+		if err := ensureFreshCandidateCoverage(candidateAttempts, freshCandidates, failedCandidates); err != nil {
+			return err
+		}
+	}
+	// The provider contract is fresh-only even for paper analysis. An empty
+	// candidate universe or a batch where every symbol failed must never reach
+	// the AI with an empty MarketDataMap; that path was previously recorded as a
+	// successful no-op and made market-data outages look like model decisions.
+	if err := ensureDecisionMarketData(ctx, candidateAttempts, failedCandidates); err != nil {
+		return err
+	}
 
 	logger.Infof("📊 Successfully fetched multi-timeframe market data for %d coins", len(ctx.MarketDataMap))
 	ctx.MarketDataFetchedFresh = ctx.RequireFreshMarketData
 	return nil
+}
+
+func ensureDecisionMarketData(ctx *Context, attempted int, failedSymbols []string) error {
+	if ctx != nil && len(ctx.MarketDataMap) > 0 {
+		return nil
+	}
+	return &MarketDataUnavailableError{
+		Symbols: append([]string(nil), failedSymbols...),
+		Cause:   fmt.Errorf("no usable fresh market data for %d candidate coins", attempted),
+	}
+}
+
+func ensureFreshCandidateCoverage(attempted, successful int, failedSymbols []string) error {
+	if attempted <= 0 {
+		return nil
+	}
+	if successful < 0 {
+		successful = 0
+	}
+	if successful > attempted {
+		successful = attempted
+	}
+	if successful*100 >= attempted*minFreshCandidateCoveragePercent {
+		return nil
+	}
+	return &MarketDataUnavailableError{
+		Symbols: append([]string(nil), failedSymbols...),
+		Cause:   fmt.Errorf("fresh candidate coverage %d/%d is below %d%%", successful, attempted, minFreshCandidateCoveragePercent),
+	}
 }
 
 func pruneCandidateCoinsWithoutMarketData(ctx *Context) {

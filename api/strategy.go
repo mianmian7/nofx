@@ -610,7 +610,6 @@ func (s *Server) handleStrategyTestRun(c *gin.Context) {
 			timeframes,
 			primaryTimeframe,
 			klineCount,
-			false,
 		)
 		if err != nil {
 			// If getting data for a coin fails, log but continue
