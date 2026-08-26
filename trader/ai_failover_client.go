@@ -1,6 +1,7 @@
 package trader
 
 import (
+	"context"
 	"fmt"
 	"nofx/logger"
 	"nofx/mcp"
@@ -98,6 +99,20 @@ func (client *AIModelFailoverClient) CallWithMessagesWithMetadata(metadata mcp.C
 			return correlated.CallWithMessagesWithMetadata(metadata, systemPrompt, userPrompt)
 		}
 		return candidate.CallWithMessages(systemPrompt, userPrompt)
+	})
+}
+
+func (client *AIModelFailoverClient) CallWithMessagesWithMetadataContext(ctx context.Context, metadata mcp.CallMetadata, systemPrompt, userPrompt string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return client.CallWithRequest(&mcp.Request{
+		Messages: []mcp.Message{
+			mcp.NewSystemMessage(systemPrompt),
+			mcp.NewUserMessage(userPrompt),
+		},
+		Ctx:      ctx,
+		Metadata: metadata,
 	})
 }
 

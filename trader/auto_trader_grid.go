@@ -573,11 +573,14 @@ func (at *AutoTrader) saveGridDecisionRecord(decision *kernel.FullDecision) {
 		return
 	}
 
+	at.isRunningMutex.Lock()
 	at.cycleNumber++
+	cycleNumber := at.cycleNumber
+	at.isRunningMutex.Unlock()
 
 	record := &store.DecisionRecord{
 		TraderID:            at.id,
-		CycleNumber:         at.cycleNumber,
+		CycleNumber:         cycleNumber,
 		Timestamp:           time.Now().UTC(),
 		SystemPrompt:        decision.SystemPrompt,
 		InputPrompt:         decision.UserPrompt,

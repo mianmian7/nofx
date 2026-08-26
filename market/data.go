@@ -1,6 +1,7 @@
 package market
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"nofx/logger"
@@ -204,13 +205,57 @@ func GetWithTimeframesFreshForExchange(exchange, symbol string, timeframes []str
 // entry point. It always requires fresh data; callers cannot opt into a stale
 // or cached snapshot.
 func GetWithTimeframesForProvider(provider MarketDataProvider, symbol string, timeframes []string, primaryTimeframe string, count int) (*Data, error) {
+	return GetWithTimeframesForProviderContext(context.Background(), provider, symbol, timeframes, primaryTimeframe, count)
+}
+
+// GetWithTimeframesForProviderContext is the cancellable variant used by live
+// decision cycles. Providers that expose context-aware network calls receive
+// the cycle context; older providers retain the existing bounded call path.
+func GetWithTimeframesForProviderContext(requestCtx context.Context, provider MarketDataProvider, symbol string, timeframes []string, primaryTimeframe string, count int) (*Data, error) {
 	if provider == nil {
 		return nil, fmt.Errorf("market data provider is nil")
 	}
-	return getWithTimeframesFromProvider(provider, symbol, timeframes, primaryTimeframe, count)
+	if requestCtx == nil {
+		requestCtx = context.Background()
+	}
+	return getWithTimeframesFromProviderContext(requestCtx, provider, symbol, timeframes, primaryTimeframe, count)
 }
 
 func getWithTimeframesFromProvider(provider MarketDataProvider, symbol string, timeframes []string, primaryTimeframe string, count int) (*Data, error) {
+	return getWithTimeframesFromProviderContext(context.Background(), provider, symbol, timeframes, primaryTimeframe, count)
+}
+
+type contextMarketDataProvider interface {
+	GetKlinesFreshContext(context.Context, string, string, int) ([]Kline, error)
+	GetOpenInterestContext(context.Context, string) (*OIData, error)
+	GetFundingSnapshotContext(context.Context, string) (*FundingSnapshot, error)
+}
+
+func getKlinesFreshContext(ctx context.Context, provider MarketDataProvider, symbol, interval string, limit int) ([]Kline, error) {
+	if contextProvider, ok := provider.(contextMarketDataProvider); ok {
+		return contextProvider.GetKlinesFreshContext(ctx, symbol, interval, limit)
+	}
+	return provider.GetKlinesFresh(symbol, interval, limit)
+}
+
+func getOpenInterestContext(ctx context.Context, provider MarketDataProvider, symbol string) (*OIData, error) {
+	if contextProvider, ok := provider.(contextMarketDataProvider); ok {
+		return contextProvider.GetOpenInterestContext(ctx, symbol)
+	}
+	return provider.GetOpenInterest(symbol)
+}
+
+func getFundingSnapshotContext(ctx context.Context, provider MarketDataProvider, symbol string) (*FundingSnapshot, error) {
+	if contextProvider, ok := provider.(contextMarketDataProvider); ok {
+		return contextProvider.GetFundingSnapshotContext(ctx, symbol)
+	}
+	return provider.GetFundingSnapshot(symbol)
+}
+
+func getWithTimeframesFromProviderContext(requestCtx context.Context, provider MarketDataProvider, symbol string, timeframes []string, primaryTimeframe string, count int) (*Data, error) {
+	if requestCtx == nil {
+		requestCtx = context.Background()
+	}
 	symbol = provider.NormalizeSymbol(symbol)
 
 	if len(timeframes) == 0 {
@@ -242,7 +287,10 @@ func getWithTimeframesFromProvider(provider MarketDataProvider, symbol string, t
 
 	// Get K-line data for each timeframe
 	for _, tf := range timeframes {
-		klines, err := provider.GetKlinesFresh(symbol, tf, 200)
+		if err := requestCtx.Err(); err != nil {
+			return nil, err
+		}
+		klines, err := getKlinesFreshContext(requestCtx, provider, symbol, tf, 200)
 		if err != nil {
 			logger.Infof("Failed to get %s %s K-line from %s: %v", symbol, tf, provider.Exchange(), err)
 			return nil, &MarketDataUnavailableError{Exchange: provider.Exchange(), Symbol: symbol, Capability: CapabilityKlines, Cause: fmt.Errorf("fresh %s K-line unavailable: %w", tf, err)}
@@ -299,7 +347,10 @@ func getWithTimeframesFromProvider(provider MarketDataProvider, symbol string, t
 	// Every declared trading field is required. Returning a zero value after an
 	// upstream error would make an incomplete context indistinguishable from a
 	// real zero reading.
-	oiData, err := provider.GetOpenInterest(symbol)
+	if err := requestCtx.Err(); err != nil {
+		return nil, err
+	}
+	oiData, err := getOpenInterestContext(requestCtx, provider, symbol)
 	if err != nil {
 		return nil, &MarketDataUnavailableError{Exchange: provider.Exchange(), Symbol: symbol, Capability: CapabilityOpenInterest, Cause: err}
 	}
@@ -307,7 +358,7 @@ func getWithTimeframesFromProvider(provider MarketDataProvider, symbol string, t
 		return nil, &MarketDataUnavailableError{Exchange: provider.Exchange(), Symbol: symbol, Capability: CapabilityOpenInterest, Cause: fmt.Errorf("empty open-interest response")}
 	}
 
-	fundingSnapshot, fundingErr := provider.GetFundingSnapshot(symbol)
+	fundingSnapshot, fundingErr := getFundingSnapshotContext(requestCtx, provider, symbol)
 	if fundingErr != nil {
 		return nil, &MarketDataUnavailableError{Exchange: provider.Exchange(), Symbol: symbol, Capability: CapabilityFunding, Cause: fundingErr}
 	}

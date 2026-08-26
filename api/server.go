@@ -663,11 +663,6 @@ func (s *Server) getTraderFromQuery(c *gin.Context) (*manager.TraderManager, str
 	userID := c.GetString("user_id")
 	traderID := c.Query("trader_id")
 
-	// Ensure user's traders are loaded into memory.
-	if err := s.traderManager.LoadUserTradersFromStore(s.store, userID); err != nil {
-		logger.Infof("⚠️ Failed to load traders for user %s: %v", userID, err)
-	}
-
 	// Resolve strictly from the caller's own trader list.
 	userTraders, err := s.store.Trader().List(userID)
 	if err != nil {
@@ -677,18 +672,35 @@ func (s *Server) getTraderFromQuery(c *gin.Context) (*manager.TraderManager, str
 		return nil, "", fmt.Errorf("No available traders")
 	}
 
-	if traderID == "" {
+	resolvedTraderID := traderID
+	if resolvedTraderID == "" {
 		// No trader_id specified — default to the caller's first trader.
-		return s.traderManager, userTraders[0].ID, nil
+		resolvedTraderID = userTraders[0].ID
 	}
 
 	// A trader_id was supplied — it must belong to the caller.
+	owned := false
 	for _, t := range userTraders {
-		if t.ID == traderID {
-			return s.traderManager, traderID, nil
+		if t.ID == resolvedTraderID {
+			owned = true
+			break
 		}
 	}
-	return nil, "", fmt.Errorf("trader not found for this account")
+	if !owned {
+		return nil, "", fmt.Errorf("trader not found for this account")
+	}
+
+	// The dashboard polls several endpoints in parallel. Only restore the
+	// caller's in-memory runtimes when the requested trader is absent; repeated
+	// reads of an already-loaded trader must not reload every config or attempt
+	// duplicate Run calls while holding the manager lock.
+	if _, getErr := s.traderManager.GetTrader(resolvedTraderID); getErr != nil {
+		if loadErr := s.traderManager.LoadUserTradersFromStore(s.store, userID); loadErr != nil {
+			logger.Infof("⚠️ Failed to load traders for user %s: %v", userID, loadErr)
+		}
+	}
+
+	return s.traderManager, resolvedTraderID, nil
 }
 
 // authMiddleware JWT authentication middleware

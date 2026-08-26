@@ -1,6 +1,7 @@
 package trader
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,10 +17,25 @@ import (
 
 // runCycle runs one trading cycle (using AI full decision-making)
 func (at *AutoTrader) runCycle() error {
+	return at.runCycleContext(context.Background())
+}
+
+func (at *AutoTrader) runCycleContext(requestCtx context.Context) error {
+	if requestCtx == nil {
+		requestCtx = context.Background()
+	}
+	if err := requestCtx.Err(); err != nil {
+		return err
+	}
 	at.isRunningMutex.Lock()
 	at.callCount++
 	callCount := at.callCount
 	at.isRunningMutex.Unlock()
+	at.cycleStateMu.Lock()
+	at.cycleStartedAt = time.Now().UTC()
+	at.cyclePhase = "context"
+	at.lastCycleError = ""
+	at.cycleStateMu.Unlock()
 
 	logger.Info("\n" + strings.Repeat("=", 70) + "\n")
 	logger.Infof("⏰ %s - AI decision cycle #%d", time.Now().Format("2006-01-02 15:04:05"), callCount)
@@ -33,10 +49,14 @@ func (at *AutoTrader) runCycle() error {
 		at.logInfof("⏹ Trader is stopped, aborting cycle #%d", callCount)
 		return nil
 	}
+	if err := requestCtx.Err(); err != nil {
+		return err
+	}
 
 	if err := at.reloadStrategyConfigIfChanged(); err != nil {
 		at.logWarnf("⚠️ Strategy refresh failed, using current in-memory config: %v", err)
 	}
+	at.setCyclePhase("account_context")
 
 	// Create decision record
 	record := &store.DecisionRecord{
@@ -74,6 +94,9 @@ func (at *AutoTrader) runCycle() error {
 		}
 		return fmt.Errorf("failed to build trading context: %w", err)
 	}
+	if err := requestCtx.Err(); err != nil {
+		return err
+	}
 
 	// Save equity snapshot independently (decoupled from AI decision, used for drawing profit curve)
 	// NOTE: Must be called BEFORE candidate coins check to ensure equity is always recorded
@@ -86,7 +109,7 @@ func (at *AutoTrader) runCycle() error {
 		at.logInfof("ℹ️ No candidate coins available, skipping this cycle")
 		record.Success = false
 		record.ErrorMessage = "No candidate coins available; market-data candidate universe is empty"
-	record.ExecutionLog = append(record.ExecutionLog, record.ErrorMessage)
+		record.ExecutionLog = append(record.ExecutionLog, record.ErrorMessage)
 		record.AccountState = store.AccountSnapshot{
 			TotalBalance:          ctx.Account.TotalEquity,
 			AvailableBalance:      ctx.Account.AvailableBalance,
@@ -109,8 +132,9 @@ func (at *AutoTrader) runCycle() error {
 		ctx.Account.TotalEquity, ctx.Account.AvailableBalance, ctx.Account.PositionCount)
 
 	// 5. Use strategy engine to call AI for decision
+	at.setCyclePhase("market_data_ai")
 	at.logInfof("🤖 Requesting AI analysis and decision... [Strategy Engine]")
-	aiDecision, err := kernel.GetFullDecisionWithStrategy(ctx, at.mcpClient, at.strategyEngine, "balanced")
+	aiDecision, err := kernel.GetFullDecisionWithStrategyContext(requestCtx, ctx, at.mcpClient, at.strategyEngine, "balanced")
 
 	if aiDecision != nil && aiDecision.AIRequestDurationMs > 0 {
 		record.AIRequestDurationMs = aiDecision.AIRequestDurationMs
@@ -203,6 +227,7 @@ func (at *AutoTrader) runCycle() error {
 
 		return fmt.Errorf("failed to get AI decision: %w", err)
 	}
+	at.setCyclePhase("execution")
 
 	// AI succeeded — reset failure counter and deactivate safe mode
 	if at.consecutiveAIFailures > 0 {

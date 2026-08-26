@@ -164,6 +164,13 @@ func (c *APIClient) GetDepthFresh(symbol string, limit int) (*BinanceDepthSnapsh
 }
 
 func (c *APIClient) GetFundingSnapshot(symbol string) (*FundingSnapshot, error) {
+	return c.GetFundingSnapshotContext(context.Background(), symbol)
+}
+
+func (c *APIClient) GetFundingSnapshotContext(ctx context.Context, symbol string) (*FundingSnapshot, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var err error
 	symbol, err = NormalizeBinanceSymbol(symbol)
 	if err != nil {
@@ -178,7 +185,7 @@ func (c *APIClient) GetFundingSnapshot(symbol string) (*FundingSnapshot, error) 
 		Time            int64  `json:"time"`
 	}
 	path := binancePath("/fapi/v1/premiumIndex", url.Values{"symbol": {symbol}})
-	if err := c.getBinanceJSON(path, &raw); err != nil {
+	if err := c.getBinanceJSONWithCacheContext(ctx, path, &raw, true); err != nil {
 		return nil, err
 	}
 	markPrice, err := strconv.ParseFloat(raw.MarkPrice, 64)
@@ -916,6 +923,13 @@ func (c *APIClient) GetCurrentPriceFresh(symbol string) (float64, error) {
 }
 
 func (c *APIClient) GetOpenInterest(symbol string) (*OIData, error) {
+	return c.GetOpenInterestContext(context.Background(), symbol)
+}
+
+func (c *APIClient) GetOpenInterestContext(ctx context.Context, symbol string) (*OIData, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	symbol, err := NormalizeBinanceSymbol(symbol)
 	if err != nil {
 		return nil, err
@@ -926,7 +940,7 @@ func (c *APIClient) GetOpenInterest(symbol string) (*OIData, error) {
 		Time         int64  `json:"time"`
 	}
 	path := binancePath("/fapi/v1/openInterest", url.Values{"symbol": {symbol}})
-	if err := c.getBinanceJSON(path, &response); err != nil {
+	if err := c.getBinanceJSONWithCacheContext(ctx, path, &response, true); err != nil {
 		return nil, err
 	}
 	openInterest, err := strconv.ParseFloat(response.OpenInterest, 64)

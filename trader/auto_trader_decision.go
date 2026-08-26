@@ -34,14 +34,34 @@ func (at *AutoTrader) saveEquitySnapshot(ctx *kernel.Context) {
 	}
 }
 
+func (at *AutoTrader) saveCycleTimeoutRecord(timeout time.Duration) {
+	if at.store == nil {
+		return
+	}
+	at.cycleStateMu.RLock()
+	phase := at.cyclePhase
+	at.cycleStateMu.RUnlock()
+	record := &store.DecisionRecord{
+		Success:      false,
+		ExecutionLog: []string{fmt.Sprintf("Decision cycle timed out after %s (phase=%s)", timeout, phase)},
+		ErrorMessage: fmt.Sprintf("Decision cycle timed out after %s", timeout),
+	}
+	if err := at.saveDecision(record); err != nil {
+		at.logWarnf("⚠ Failed to save decision timeout record: %v", err)
+	}
+}
+
 // saveDecision saves AI decision log to database (only records AI input/output, for debugging)
 func (at *AutoTrader) saveDecision(record *store.DecisionRecord) error {
 	if at.store == nil {
 		return nil
 	}
 
+	at.isRunningMutex.Lock()
 	at.cycleNumber++
-	record.CycleNumber = at.cycleNumber
+	cycleNumber := at.cycleNumber
+	at.isRunningMutex.Unlock()
+	record.CycleNumber = cycleNumber
 	record.TraderID = at.id
 
 	if record.Timestamp.IsZero() {
@@ -53,7 +73,7 @@ func (at *AutoTrader) saveDecision(record *store.DecisionRecord) error {
 		return err
 	}
 
-	logger.Infof("📝 Decision record saved: trader=%s, cycle=%d", at.id, at.cycleNumber)
+	logger.Infof("📝 Decision record saved: trader=%s, cycle=%d", at.id, cycleNumber)
 	return nil
 }
 
@@ -84,27 +104,42 @@ func (at *AutoTrader) GetStatus() map[string]interface{} {
 	at.isRunningMutex.RLock()
 	isRunning := at.isRunning
 	callCount := at.callCount
+	lastPersistedCycle := at.cycleNumber
 	startTime := at.startTime
 	at.isRunningMutex.RUnlock()
+	at.cycleStateMu.RLock()
+	cyclePhase := at.cyclePhase
+	cycleStartedAt := at.cycleStartedAt
+	lastCycleCompletedAt := at.lastCycleCompletedAt
+	lastCycleError := at.lastCycleError
+	at.cycleStateMu.RUnlock()
 
 	result := map[string]interface{}{
-		"trader_id":       at.id,
-		"trader_name":     at.name,
-		"ai_model":        aiModelName,
-		"exchange":        at.exchange,
-		"is_running":      isRunning,
-		"start_time":      startTime.Format(time.RFC3339),
-		"runtime_minutes": int(time.Since(startTime).Minutes()),
-		"call_count":      callCount,
-		"initial_balance": at.initialBalance,
-		"scan_interval":   at.config.ScanInterval.String(),
-		"stop_until":      at.stopUntil.Format(time.RFC3339),
-		"last_reset_time": at.lastResetTime.Format(time.RFC3339),
-		"ai_provider":     aiProvider,
-		"active_model_id": activeModelID,
-		"is_fallback":     !fallbackSince.IsZero(),
-		"fallback_reason": fallbackReason,
-		"execution_mode":  string(at.executionMode),
+		"trader_id":               at.id,
+		"trader_name":             at.name,
+		"ai_model":                aiModelName,
+		"exchange":                at.exchange,
+		"is_running":              isRunning,
+		"start_time":              startTime.Format(time.RFC3339),
+		"runtime_minutes":         int(time.Since(startTime).Minutes()),
+		"call_count":              callCount,
+		"last_persisted_cycle":    lastPersistedCycle,
+		"initial_balance":         at.initialBalance,
+		"scan_interval":           at.config.ScanInterval.String(),
+		"cycle_timeout":           at.decisionCycleTimeout().String(),
+		"stop_until":              at.stopUntil.Format(time.RFC3339),
+		"last_reset_time":         at.lastResetTime.Format(time.RFC3339),
+		"ai_provider":             aiProvider,
+		"active_model_id":         activeModelID,
+		"is_fallback":             !fallbackSince.IsZero(),
+		"fallback_reason":         fallbackReason,
+		"execution_mode":          string(at.executionMode),
+		"cycle_phase":             cyclePhase,
+		"cycle_started_at":        cycleStartedAt.Format(time.RFC3339),
+		"last_cycle_completed_at": lastCycleCompletedAt.Format(time.RFC3339),
+	}
+	if lastCycleError != "" {
+		result["last_cycle_error"] = lastCycleError
 	}
 	if !fallbackSince.IsZero() {
 		result["fallback_since"] = fallbackSince.Format(time.RFC3339)

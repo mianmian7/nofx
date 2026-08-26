@@ -262,6 +262,24 @@ func (client *Client) CallWithMessagesWithMetadata(metadata CallMetadata, system
 	return "", client.wrapFinalCallError(maxAttempts, time.Since(totalStart), lastErr)
 }
 
+// CallWithMessagesWithMetadataContext is the lifecycle-aware variant used by
+// decision cycles. It routes through the Request API so the context reaches the
+// HTTP request, admission wait, and retry backoff.
+func (client *Client) CallWithMessagesWithMetadataContext(ctx context.Context, metadata CallMetadata, systemPrompt, userPrompt string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return client.CallWithRequest(&Request{
+		Model: client.Model,
+		Messages: []Message{
+			NewSystemMessage(systemPrompt),
+			NewUserMessage(userPrompt),
+		},
+		Ctx:      ctx,
+		Metadata: metadata,
+	})
+}
+
 func (client *Client) maxAttempts() int {
 	if client.Cfg != nil && client.Cfg.MaxAttempts > 0 {
 		return client.Cfg.MaxAttempts

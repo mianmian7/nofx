@@ -71,9 +71,16 @@ func (provider *BinanceMarketDataProvider) GetKlines(symbol, interval string, li
 }
 
 func (provider *BinanceMarketDataProvider) GetKlinesFresh(symbol, interval string, limit int) ([]Kline, error) {
+	return provider.GetKlinesFreshContext(context.Background(), symbol, interval, limit)
+}
+
+func (provider *BinanceMarketDataProvider) GetKlinesFreshContext(ctx context.Context, symbol, interval string, limit int) ([]Kline, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	normalizedSymbol := provider.NormalizeSymbol(symbol)
 	if provider.redundantKlines {
-		klines, proof, err := hedgedFreshKlines(context.Background(), provider.Exchange(), normalizedSymbol, interval,
+		klines, proof, err := hedgedFreshKlines(ctx, provider.Exchange(), normalizedSymbol, interval,
 			func(ctx context.Context) ([]Kline, error) {
 				return provider.client.GetKlinesFreshContext(ctx, normalizedSymbol, interval, limit)
 			},
@@ -107,7 +114,11 @@ func (provider *BinanceMarketDataProvider) GetDepthFresh(symbol string, limit in
 }
 
 func (provider *BinanceMarketDataProvider) GetFundingSnapshot(symbol string) (*FundingSnapshot, error) {
-	return provider.client.GetFundingSnapshot(provider.NormalizeSymbol(symbol))
+	return provider.GetFundingSnapshotContext(context.Background(), symbol)
+}
+
+func (provider *BinanceMarketDataProvider) GetFundingSnapshotContext(ctx context.Context, symbol string) (*FundingSnapshot, error) {
+	return provider.client.GetFundingSnapshotContext(ctx, provider.NormalizeSymbol(symbol))
 }
 
 func (provider *BinanceMarketDataProvider) GetFundingHistory(symbol string, startTime, endTime int64) ([]FundingEvent, error) {
@@ -115,7 +126,11 @@ func (provider *BinanceMarketDataProvider) GetFundingHistory(symbol string, star
 }
 
 func (provider *BinanceMarketDataProvider) GetOpenInterest(symbol string) (*OIData, error) {
-	return provider.client.GetOpenInterest(provider.NormalizeSymbol(symbol))
+	return provider.GetOpenInterestContext(context.Background(), symbol)
+}
+
+func (provider *BinanceMarketDataProvider) GetOpenInterestContext(ctx context.Context, symbol string) (*OIData, error) {
+	return provider.client.GetOpenInterestContext(ctx, provider.NormalizeSymbol(symbol))
 }
 
 func (provider *BinanceMarketDataProvider) GetContractSpec(symbol string) (*ContractSpec, error) {

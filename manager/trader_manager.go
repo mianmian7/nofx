@@ -159,10 +159,14 @@ func (tm *TraderManager) StartAll() {
 // StopAll permanently stops all trader runtimes and background monitors.
 func (tm *TraderManager) StopAll() {
 	tm.mu.RLock()
-	defer tm.mu.RUnlock()
+	traders := make([]*trader.AutoTrader, 0, len(tm.traders))
+	for _, t := range tm.traders {
+		traders = append(traders, t)
+	}
+	tm.mu.RUnlock()
 
 	logger.Info("⏹  Stopping all traders...")
-	for _, t := range tm.traders {
+	for _, t := range traders {
 		t.Shutdown()
 	}
 }
@@ -450,14 +454,21 @@ func (tm *TraderManager) GetTopTradersData() (map[string]interface{}, error) {
 // The trader and its background monitors are permanently stopped first.
 func (tm *TraderManager) RemoveTrader(traderID string) {
 	tm.mu.Lock()
-	defer tm.mu.Unlock()
-
-	if t, exists := tm.traders[traderID]; exists {
-		logger.Infof("⏹ Shutting down trader %s before removing from memory...", traderID)
-		t.Shutdown()
+	t, exists := tm.traders[traderID]
+	if exists {
+		// Remove the pointer while holding the manager lock, but never wait for a
+		// trader's network-bound shutdown while the global lock is held. A stuck
+		// cycle must not freeze unrelated queries, starts, or reloads.
 		delete(tm.traders, traderID)
-		logger.Infof("✓ Trader %s removed from memory", traderID)
 	}
+	tm.mu.Unlock()
+
+	if !exists {
+		return
+	}
+	logger.Infof("⏹ Shutting down trader %s before removing from memory...", traderID)
+	t.Shutdown()
+	logger.Infof("✓ Trader %s removed from memory", traderID)
 }
 
 func ensureHyperliquidNativeStrategy(traderName, exchangeType string, cfg *store.StrategyConfig) {
@@ -523,6 +534,7 @@ func (tm *TraderManager) loadUserTradersFromStore(st *store.Store, userID string
 	}
 
 	// Load configuration for each trader
+	newlyLoaded := make(map[string]struct{})
 	for _, traderCfg := range traders {
 		// Check if this trader is already loaded
 		if _, exists := tm.traders[traderCfg.ID]; exists {
@@ -583,15 +595,19 @@ func (tm *TraderManager) loadUserTradersFromStore(st *store.Store, userID string
 			logger.Warnf("%s failed to load trader: %v", traderLogTag(traderCfg.ID, traderCfg.Name), err)
 			// Save error for later retrieval
 			tm.loadErrors[traderCfg.ID] = err
-		} else {
-			// Clear any previous error on success
-			delete(tm.loadErrors, traderCfg.ID)
+			} else {
+				// Clear any previous error on success
+				delete(tm.loadErrors, traderCfg.ID)
+				newlyLoaded[traderCfg.ID] = struct{}{}
+			}
 		}
-	}
 	if autoStart {
 		delays := tm.startupDelaysLocked()
 		for _, traderCfg := range traders {
 			if traderCfg.IsRunning {
+				if _, loaded := newlyLoaded[traderCfg.ID]; !loaded {
+					continue
+				}
 				cfg := traderCfg
 				_ = tm.launchTraderLocked(cfg.ID, "Auto-restoring trader runtime", delays[cfg.ID], func(error) {
 					_ = st.Trader().UpdateStatus(cfg.UserID, cfg.ID, false)

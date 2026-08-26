@@ -1,6 +1,8 @@
 package trader
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"nofx/kernel"
 	"nofx/logger"
@@ -149,6 +151,7 @@ type AutoTraderConfig struct {
 
 	// Scan configuration
 	ScanInterval                time.Duration // Scan interval (recommended 15 minutes)
+	CycleTimeout                time.Duration // Maximum time allowed for one decision cycle
 	StartupDelay                time.Duration // Delay before the first cycle after startup
 	PaperRiskMonitorInterval    time.Duration // Paper-only mark/SL/TP/liquidation refresh interval
 	PaperFundingMonitorInterval time.Duration // Paper-only funding snapshot/settlement cadence
@@ -193,61 +196,68 @@ type binanceMarketAvailabilityClient interface {
 
 // AutoTrader automatic trader
 type AutoTrader struct {
-	id                    string // Trader unique identifier
-	name                  string // Trader display name
-	aiModel               string // AI model name
-	exchange              string // Trading platform type (binance/bybit/etc)
-	executionMode         ExecutionMode
-	paperBroker           *PaperBroker
-	binanceMarketClient   binanceMarketAvailabilityClient // Shared-cache public client used for Binance open preflight
-	marketDataProvider    market.MarketDataProvider
-	exchangeID            string // Exchange account UUID
-	showInCompetition     bool   // Whether to show in competition page
-	invertSignals         bool   // Whether to invert AI trading decisions
-	config                AutoTraderConfig
-	trader                Trader // Use Trader interface (supports multiple platforms)
-	mcpClient             mcp.AIClient
-	cycleRunner           func() error           // Optional injected cycle runner for deterministic lifecycle tests
-	store                 *store.Store           // Data storage (decision records, etc.)
-	strategyEngine        *kernel.StrategyEngine // Strategy engine (uses strategy configuration)
-	cycleNumber           int                    // Current cycle number
-	initialBalance        float64
-	dailyPnL              float64
-	customPrompt          string // Custom trading strategy prompt
-	overrideBasePrompt    bool   // Whether to override base prompt
-	lastResetTime         time.Time
-	stopUntil             time.Time
-	isRunning             bool
-	isRunningMutex        sync.RWMutex       // Mutex to protect isRunning flag
-	startTime             time.Time          // System start time
-	callCount             int                // AI call count
-	positionFirstSeenTime map[string]int64   // Position first seen time (symbol_side -> timestamp in milliseconds)
-	stopMonitorCh         chan struct{}      // Used to stop monitoring goroutine
-	monitorWg             sync.WaitGroup     // Used to wait for monitoring goroutine to finish
-	peakPnLCache          map[string]float64 // Peak profit cache (symbol -> peak P&L percentage)
-	peakPnLCacheMutex     sync.RWMutex       // Cache read-write lock
-	protectionSnapshotMu  sync.Mutex         // Guards the read-only snapshot shared by prompt and executor
-	protectionSnapshots   map[string]managedPosition
-	lastBalanceSyncTime   time.Time     // Last balance sync time
-	userID                string        // User ID
-	gridState             *GridState    // Grid trading state (only used when StrategyType == "grid_trading")
-	runStopCh             chan struct{} // Stops only the AI decision loop when the trader is paused
-	runLifecycleMu        sync.Mutex    // Guards the automatic decision loop lifecycle
-	runDoneCh             chan struct{} // Closed when the active automatic decision loop exits
-	runActive             bool          // Whether an automatic decision loop is active, including a draining cycle
-	runStopRequested      bool          // Whether the current loop has already received its stop signal
-	shutdownRequested     bool          // Prevents a new loop from starting during permanent shutdown
-	runGeneration         atomic.Uint64 // Changes whenever a pause invalidates pending Run calls
-	stopInProgress        atomic.Bool   // Excludes Run calls that overlap Stop's signal commit
-	runAttemptHook        func()        // Optional lifecycle-test hook invoked before admission
-	consecutiveAIFailures int           // Consecutive AI call failures
-	monitorLifecycleMu    sync.Mutex    // Guards background monitor startup and shutdown
-	monitorsStarted       bool          // Background position/risk monitors are running
-	monitorsStopped       bool          // This trader instance has been permanently shut down
-	monitorShutdownDone   chan struct{} // Closed after permanent monitor shutdown completes
-	runtimeHealthMu       sync.RWMutex  // Guards safe mode state (loop writes, API reads)
-	safeMode              bool          // Safe mode: no new positions, protect existing ones
-	safeModeReason        string        // Why safe mode was activated
+	id                     string // Trader unique identifier
+	name                   string // Trader display name
+	aiModel                string // AI model name
+	exchange               string // Trading platform type (binance/bybit/etc)
+	executionMode          ExecutionMode
+	paperBroker            *PaperBroker
+	binanceMarketClient    binanceMarketAvailabilityClient // Shared-cache public client used for Binance open preflight
+	marketDataProvider     market.MarketDataProvider
+	exchangeID             string // Exchange account UUID
+	showInCompetition      bool   // Whether to show in competition page
+	invertSignals          bool   // Whether to invert AI trading decisions
+	config                 AutoTraderConfig
+	trader                 Trader // Use Trader interface (supports multiple platforms)
+	mcpClient              mcp.AIClient
+	cycleRunner            func() error                // Optional injected cycle runner for deterministic lifecycle tests
+	cycleRunnerWithContext func(context.Context) error // Optional context-aware runner for lifecycle tests
+	store                  *store.Store                // Data storage (decision records, etc.)
+	strategyEngine         *kernel.StrategyEngine      // Strategy engine (uses strategy configuration)
+	cycleNumber            int                         // Current cycle number
+	initialBalance         float64
+	dailyPnL               float64
+	customPrompt           string // Custom trading strategy prompt
+	overrideBasePrompt     bool   // Whether to override base prompt
+	lastResetTime          time.Time
+	stopUntil              time.Time
+	isRunning              bool
+	isRunningMutex         sync.RWMutex       // Mutex to protect isRunning flag
+	startTime              time.Time          // System start time
+	callCount              int                // AI call count
+	positionFirstSeenTime  map[string]int64   // Position first seen time (symbol_side -> timestamp in milliseconds)
+	stopMonitorCh          chan struct{}      // Used to stop monitoring goroutine
+	monitorWg              sync.WaitGroup     // Used to wait for monitoring goroutine to finish
+	peakPnLCache           map[string]float64 // Peak profit cache (symbol -> peak P&L percentage)
+	peakPnLCacheMutex      sync.RWMutex       // Cache read-write lock
+	protectionSnapshotMu   sync.Mutex         // Guards the read-only snapshot shared by prompt and executor
+	protectionSnapshots    map[string]managedPosition
+	lastBalanceSyncTime    time.Time          // Last balance sync time
+	userID                 string             // User ID
+	gridState              *GridState         // Grid trading state (only used when StrategyType == "grid_trading")
+	runStopCh              chan struct{}      // Stops only the AI decision loop when the trader is paused
+	runLifecycleMu         sync.Mutex         // Guards the automatic decision loop lifecycle
+	runDoneCh              chan struct{}      // Closed when the active automatic decision loop exits
+	runActive              bool               // Whether an automatic decision loop is active, including a draining cycle
+	runStopRequested       bool               // Whether the current loop has already received its stop signal
+	shutdownRequested      bool               // Prevents a new loop from starting during permanent shutdown
+	runGeneration          atomic.Uint64      // Changes whenever a pause invalidates pending Run calls
+	stopInProgress         atomic.Bool        // Excludes Run calls that overlap Stop's signal commit
+	runAttemptHook         func()             // Optional lifecycle-test hook invoked before admission
+	cycleCancel            context.CancelFunc // Cancels the active decision cycle
+	cycleStateMu           sync.RWMutex       // Guards cycle phase/timestamps
+	cyclePhase             string
+	cycleStartedAt         time.Time
+	lastCycleCompletedAt   time.Time
+	lastCycleError         string
+	consecutiveAIFailures  int           // Consecutive AI call failures
+	monitorLifecycleMu     sync.Mutex    // Guards background monitor startup and shutdown
+	monitorsStarted        bool          // Background position/risk monitors are running
+	monitorsStopped        bool          // This trader instance has been permanently shut down
+	monitorShutdownDone    chan struct{} // Closed after permanent monitor shutdown completes
+	runtimeHealthMu        sync.RWMutex  // Guards safe mode state (loop writes, API reads)
+	safeMode               bool          // Safe mode: no new positions, protect existing ones
+	safeModeReason         string        // Why safe mode was activated
 }
 
 // NewAutoTrader creates an automatic trader
@@ -682,6 +692,9 @@ func (at *AutoTrader) run(startupDelay time.Duration) error {
 	} else {
 		if err := at.runAutomaticCycle(); err != nil {
 			at.logErrorf("❌ Execution failed: %v", err)
+			if errors.Is(err, ErrDecisionCycleTimeout) {
+				return err
+			}
 		}
 	}
 
@@ -706,6 +719,9 @@ func (at *AutoTrader) run(startupDelay time.Duration) error {
 			} else {
 				if err := at.runAutomaticCycle(); err != nil {
 					at.logErrorf("❌ Execution failed: %v", err)
+					if errors.Is(err, ErrDecisionCycleTimeout) {
+						return err
+					}
 				}
 			}
 		case <-runStopCh:
@@ -718,10 +734,106 @@ func (at *AutoTrader) run(startupDelay time.Duration) error {
 }
 
 func (at *AutoTrader) runAutomaticCycle() error {
-	if at.cycleRunner != nil {
-		return at.cycleRunner()
+	timeout := at.decisionCycleTimeout()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	at.runLifecycleMu.Lock()
+	at.cycleCancel = cancel
+	at.runLifecycleMu.Unlock()
+	defer func() {
+		cancel()
+		at.runLifecycleMu.Lock()
+		at.cycleCancel = nil
+		at.runLifecycleMu.Unlock()
+	}()
+
+	done := make(chan error, 1)
+	go func() {
+		if at.cycleRunnerWithContext != nil {
+			done <- at.cycleRunnerWithContext(ctx)
+			return
+		}
+		if at.cycleRunner != nil {
+			done <- at.cycleRunner()
+			return
+		}
+		done <- at.runCycleContext(ctx)
+	}()
+
+	select {
+	case err := <-done:
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+			completionErr := ctx.Err()
+			if completionErr == nil {
+				completionErr = err
+			}
+			at.recordCycleCompletion(completionErr)
+			at.saveCycleTimeoutRecord(timeout)
+			at.requestCycleStop()
+			return fmt.Errorf("%w after %s", ErrDecisionCycleTimeout, timeout)
+		}
+		at.recordCycleCompletion(err)
+		return err
+	case <-ctx.Done():
+		if errors.Is(ctx.Err(), context.Canceled) {
+			// Stop/Shutdown cancellation is cooperative. Preserve the existing
+			// lifecycle guarantee for legacy cycle runners that do not accept a
+			// context: do not let the loop exit while that cycle is still running.
+			return <-done
+		}
+		at.recordCycleCompletion(ctx.Err())
+		at.saveCycleTimeoutRecord(timeout)
+		at.requestCycleStop()
+		return fmt.Errorf("%w after %s", ErrDecisionCycleTimeout, timeout)
 	}
-	return at.runCycle()
+}
+
+// ErrDecisionCycleTimeout is returned when a single decision cycle exceeds its
+// hard deadline. The runtime stops after this error so a stalled upstream cannot
+// silently consume every future scan interval.
+var ErrDecisionCycleTimeout = errors.New("decision cycle timed out")
+
+const defaultDecisionCycleTimeout = 10 * time.Minute
+
+func (at *AutoTrader) decisionCycleTimeout() time.Duration {
+	if at.config.CycleTimeout > 0 {
+		return at.config.CycleTimeout
+	}
+	if at.config.ScanInterval > 0 && at.config.ScanInterval < time.Second {
+		return 2 * at.config.ScanInterval
+	}
+	return defaultDecisionCycleTimeout
+}
+
+func (at *AutoTrader) requestCycleStop() {
+	at.runLifecycleMu.Lock()
+	if at.runActive && !at.runStopRequested {
+		at.runStopRequested = true
+		at.isRunningMutex.Lock()
+		at.isRunning = false
+		at.isRunningMutex.Unlock()
+		if at.runStopCh != nil {
+			close(at.runStopCh)
+		}
+	}
+	at.runLifecycleMu.Unlock()
+}
+
+func (at *AutoTrader) recordCycleCompletion(err error) {
+	at.cycleStateMu.Lock()
+	defer at.cycleStateMu.Unlock()
+	at.lastCycleCompletedAt = time.Now().UTC()
+	at.cyclePhase = "idle"
+	if err != nil {
+		at.lastCycleError = err.Error()
+	} else {
+		at.lastCycleError = ""
+	}
+}
+
+func (at *AutoTrader) setCyclePhase(phase string) {
+	at.cycleStateMu.Lock()
+	at.cyclePhase = phase
+	at.cycleStateMu.Unlock()
 }
 
 // Stop pauses automatic AI decisions while leaving position/risk monitoring active.
@@ -738,6 +850,7 @@ func (at *AutoTrader) Stop() {
 	}
 	at.runStopRequested = true
 	runStopCh := at.runStopCh
+	cycleCancel := at.cycleCancel
 	at.isRunningMutex.Lock()
 	at.isRunning = false
 	at.isRunningMutex.Unlock()
@@ -745,6 +858,9 @@ func (at *AutoTrader) Stop() {
 		close(runStopCh)
 	}
 	at.runLifecycleMu.Unlock()
+	if cycleCancel != nil {
+		cycleCancel()
+	}
 	at.stopInProgress.Store(false)
 	logger.Info("⏸ Automatic AI trading paused; position monitoring remains active")
 }
@@ -782,8 +898,12 @@ func (at *AutoTrader) stopAndWait() {
 			close(at.runStopCh)
 		}
 	}
+	cycleCancel := at.cycleCancel
 	doneCh := at.runDoneCh
 	at.runLifecycleMu.Unlock()
+	if cycleCancel != nil {
+		cycleCancel()
+	}
 
 	if doneCh != nil {
 		<-doneCh

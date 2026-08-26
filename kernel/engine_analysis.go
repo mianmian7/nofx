@@ -1,6 +1,7 @@
 package kernel
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"nofx/logger"
@@ -88,12 +89,33 @@ func callAIWithMetadata(client mcp.AIClient, metadata mcp.CallMetadata, systemPr
 	return client.CallWithMessages(systemPrompt, userPrompt)
 }
 
+type contextAwareAIClient interface {
+	CallWithMessagesWithMetadataContext(context.Context, mcp.CallMetadata, string, string) (string, error)
+}
+
+func callAIWithMetadataContext(requestCtx context.Context, client mcp.AIClient, metadata mcp.CallMetadata, systemPrompt, userPrompt string) (string, error) {
+	if cancellable, ok := client.(contextAwareAIClient); ok {
+		return cancellable.CallWithMessagesWithMetadataContext(requestCtx, metadata, systemPrompt, userPrompt)
+	}
+	return callAIWithMetadata(client, metadata, systemPrompt, userPrompt)
+}
+
 func newLogicalCallID() string {
 	return uuid.NewString()
 }
 
 // GetFullDecisionWithStrategy uses StrategyEngine to get AI decision (unified prompt generation)
 func GetFullDecisionWithStrategy(ctx *Context, mcpClient mcp.AIClient, engine *StrategyEngine, variant string) (*FullDecision, error) {
+	return GetFullDecisionWithStrategyContext(context.Background(), ctx, mcpClient, engine, variant)
+}
+
+// GetFullDecisionWithStrategyContext is the cancellable decision entry point
+// used by the trader lifecycle. The legacy entry point above remains available
+// for backtests and callers that do not need cancellation.
+func GetFullDecisionWithStrategyContext(requestCtx context.Context, ctx *Context, mcpClient mcp.AIClient, engine *StrategyEngine, variant string) (*FullDecision, error) {
+	if requestCtx == nil {
+		requestCtx = context.Background()
+	}
 	if ctx == nil {
 		return nil, fmt.Errorf("context is nil")
 	}
@@ -131,7 +153,7 @@ func GetFullDecisionWithStrategy(ctx *Context, mcpClient mcp.AIClient, engine *S
 
 	// 1. Fetch market data using strategy config
 	if len(ctx.MarketDataMap) == 0 {
-		if err := fetchMarketDataWithStrategy(ctx, engine); err != nil {
+		if err := fetchMarketDataWithStrategyContext(requestCtx, ctx, engine); err != nil {
 			return nil, fmt.Errorf("failed to fetch market data: %w", err)
 		}
 	} else if ctx.RequireFreshMarketData && !ctx.MarketDataFetchedFresh {
@@ -155,7 +177,7 @@ func GetFullDecisionWithStrategy(ctx *Context, mcpClient mcp.AIClient, engine *S
 		StrategyID: ctx.StrategyID,
 	}
 	aiCallStart := time.Now()
-	aiResponse, err := callAIWithMetadata(mcpClient, metadata, systemPrompt, userPrompt)
+	aiResponse, err := callAIWithMetadataContext(requestCtx, mcpClient, metadata, systemPrompt, userPrompt)
 	aiCallDuration := time.Since(aiCallStart)
 	if err != nil {
 		// Keep the call ID and prompts available to the trader's failure record so
@@ -193,6 +215,13 @@ func GetFullDecisionWithStrategy(ctx *Context, mcpClient mcp.AIClient, engine *S
 
 // fetchMarketDataWithStrategy fetches market data using strategy config (multiple timeframes)
 func fetchMarketDataWithStrategy(ctx *Context, engine *StrategyEngine) error {
+	return fetchMarketDataWithStrategyContext(context.Background(), ctx, engine)
+}
+
+func fetchMarketDataWithStrategyContext(requestCtx context.Context, ctx *Context, engine *StrategyEngine) error {
+	if requestCtx == nil {
+		requestCtx = context.Background()
+	}
 	config := engine.GetConfig()
 	ctx.MarketDataMap = make(map[string]*market.Data)
 	ctx.MarketDataFetchedFresh = false
@@ -228,12 +257,15 @@ func fetchMarketDataWithStrategy(ctx *Context, engine *StrategyEngine) error {
 
 	// 1. First fetch data for position coins (must fetch)
 	for _, pos := range ctx.Positions {
+		if err := requestCtx.Err(); err != nil {
+			return err
+		}
 		var data *market.Data
 		var err error
 		if _, contractErr := engine.ValidateCandidateContract(pos.Symbol); contractErr != nil {
 			return &MarketDataUnavailableError{Symbols: []string{pos.Symbol}, Cause: contractErr}
 		}
-		data, err = market.GetWithTimeframesForProvider(marketDataProvider, pos.Symbol, timeframes, primaryTimeframe, klineCount)
+		data, err = market.GetWithTimeframesForProviderContext(requestCtx, marketDataProvider, pos.Symbol, timeframes, primaryTimeframe, klineCount)
 		if err != nil {
 			logger.Infof("Failed to fetch %s market data for position %s: %v", marketExchange, pos.Symbol, err)
 			if ctx.RequireFreshMarketData {
@@ -257,6 +289,9 @@ func fetchMarketDataWithStrategy(ctx *Context, engine *StrategyEngine) error {
 	failedCandidates := make([]string, 0)
 
 	for _, coin := range ctx.CandidateCoins {
+		if err := requestCtx.Err(); err != nil {
+			return err
+		}
 		if _, duplicate := candidateSeen[coin.Symbol]; duplicate {
 			continue
 		}
@@ -274,7 +309,7 @@ func fetchMarketDataWithStrategy(ctx *Context, engine *StrategyEngine) error {
 			failedCandidates = append(failedCandidates, coin.Symbol)
 			continue
 		}
-		data, err = market.GetWithTimeframesForProvider(marketDataProvider, coin.Symbol, timeframes, primaryTimeframe, klineCount)
+		data, err = market.GetWithTimeframesForProviderContext(requestCtx, marketDataProvider, coin.Symbol, timeframes, primaryTimeframe, klineCount)
 		if err != nil {
 			logger.Infof("Failed to fetch %s market data for %s: %v", marketExchange, coin.Symbol, err)
 			failedCandidates = append(failedCandidates, coin.Symbol)
