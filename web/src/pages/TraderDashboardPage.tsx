@@ -540,7 +540,7 @@ export function TraderDashboardPage({
                         {status && (
                             <div className="hidden md:contents">
                                 <span className="w-px h-3 bg-nofx-text/10" />
-                                <span>{t('traderDashboard.cycles', language)}: <span className="text-nofx-text-main">{status.call_count}</span></span>
+                                <span>{t('traderDashboard.cycles', language)}: <span className="text-nofx-text-main">{status.last_persisted_cycle ?? status.call_count}</span></span>
                                 <span className="w-px h-3 bg-nofx-text/10" />
                                 <span>{t('traderDashboard.runtimeMinutes', language, { minutes: status.runtime_minutes })}</span>
                             </div>

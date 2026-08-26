@@ -6,8 +6,10 @@ export interface SystemStatus {
   start_time: string
   runtime_minutes: number
   call_count: number
+  last_persisted_cycle?: number
   initial_balance: number
   scan_interval: string
+  cycle_timeout?: string
   stop_until: string
   last_reset_time: string
   ai_provider: string
@@ -16,6 +18,10 @@ export interface SystemStatus {
   fallback_reason?: string
   fallback_since?: string
   execution_mode?: 'paper' | 'live'
+  cycle_phase?: string
+  cycle_started_at?: string
+  last_cycle_completed_at?: string
+  last_cycle_error?: string
   invert_signals?: boolean
   startup_delay_minutes?: number
   fallback_model_names?: string[]

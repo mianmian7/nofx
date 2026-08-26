@@ -652,7 +652,7 @@ export function TerminalDashboard({
               {tt('cycle')}
             </span>
             <span className="tm-mono" style={{ color: 'var(--tm-ink)' }}>
-              {status?.call_count ?? '—'}
+              {status?.last_persisted_cycle ?? status?.call_count ?? '—'}
             </span>
             <span
               className="tm-px"
@@ -683,7 +683,8 @@ export function TerminalDashboard({
           {running ? `● ${tt('running')}` : `○ ${tt('stopped')}`}
         </span>
         <span className="terminal-context-cycle tm-sc">
-          {tt('cycle')} {status?.call_count ?? '—'}
+          {tt('cycle')}{' '}
+          {status?.last_persisted_cycle ?? status?.call_count ?? '—'}
         </span>
         <span className="terminal-context-clock tm-px">{clock}</span>
       </div>
