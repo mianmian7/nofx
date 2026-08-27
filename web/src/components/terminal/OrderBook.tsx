@@ -224,10 +224,18 @@ export function OrderBook({
     const asks = book.asks.slice(0, DEPTH)
     const bids = book.bids.slice(0, DEPTH)
     // cumulative depth for background bars
+    const askRows: Array<(typeof asks)[0] & { cum: number }> = []
     let ca = 0
-    const askRows = asks.map((l) => ({ ...l, cum: (ca += l.sz) }))
+    for (const l of asks) {
+      ca += l.sz
+      askRows.push({ ...l, cum: ca })
+    }
+    const bidRows: Array<(typeof bids)[0] & { cum: number }> = []
     let cb = 0
-    const bidRows = bids.map((l) => ({ ...l, cum: (cb += l.sz) }))
+    for (const l of bids) {
+      cb += l.sz
+      bidRows.push({ ...l, cum: cb })
+    }
     const maxCum = Math.max(ca, cb, 1)
     const bestAsk = asks[0]?.px ?? 0
     const bestBid = bids[0]?.px ?? 0
@@ -481,15 +489,13 @@ function Row({
       : 'linear-gradient(to left, rgba(46,139,87,0.36), rgba(46,139,87,0.05))'
   const isMark = mark != null && px === mark
 
-  // this Row instance is keyed by price, so these refs persist across updates —
-  // we flash green/red only when THIS level's size actually changes, and keep
-  // the direction class fixed until the next change so the animation isn't cut
-  // short by the 60fps re-renders.
-  const prevSz = useRef(sz)
-  const dirRef = useRef('')
-  if (sz !== prevSz.current) {
-    dirRef.current = sz > prevSz.current ? 'ob-up' : 'ob-dn'
-    prevSz.current = sz
+  // this Row instance is keyed by price — flash green/red only when THIS level's size changes
+  const [flashDir, setFlashDir] = useState('')
+  const [prevSz, setPrevSz] = useState(sz)
+
+  if (sz !== prevSz) {
+    setFlashDir(sz > prevSz ? 'ob-up' : 'ob-dn')
+    setPrevSz(sz)
   }
 
   return (
@@ -505,7 +511,7 @@ function Row({
           animation) exactly when this level's size changes */}
       <div
         key={sz}
-        className={motion ? dirRef.current : ''}
+        className={motion ? flashDir : ''}
         style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}
       />
       <div

@@ -337,22 +337,12 @@ function aggregatePaperHistory(
 
 export function resolveDashboardPerformance(
   status: SystemStatus | undefined,
-  liveStats: TraderFullStats,
-  liveHistory: PositionHistoryResponse
-): { fullStats: TraderFullStats; history: PositionHistoryResponse }
-export function resolveDashboardPerformance(
-  status: SystemStatus | undefined,
   liveStats: TraderFullStats | undefined,
   liveHistory: PositionHistoryResponse | undefined
 ): {
   fullStats: TraderFullStats | undefined
   history: PositionHistoryResponse | undefined
-}
-export function resolveDashboardPerformance(
-  status: SystemStatus | undefined,
-  liveStats: TraderFullStats | undefined,
-  liveHistory: PositionHistoryResponse | undefined
-) {
+} {
   if (status?.execution_mode !== 'paper' || !status.paper_performance) {
     return { fullStats: liveStats, history: liveHistory }
   }
@@ -721,29 +711,27 @@ export function TerminalDashboard({
         )}
         {/* Runtime health warnings should remain visible while the bot is paused. */}
         {status?.safe_mode && (
-            <div
-              className="tm-mono"
-              style={{
-                display: 'flex',
-                gap: 10,
-                alignItems: 'center',
-                margin: '8px 14px 0',
-                padding: '8px 12px',
-                fontSize: 11,
-                border: '1px solid var(--tm-down)',
-                color: 'var(--tm-down)',
-                background: 'rgba(200,60,40,0.06)',
-                flexWrap: 'wrap',
-              }}
-            >
-              <span style={{ fontWeight: 600 }}>
-                {tt('safeMode')}
-              </span>
-              <span style={{ color: 'var(--tm-ink-2)' }}>
-                {status.safe_mode_reason || ''}
-              </span>
-            </div>
-          )}
+          <div
+            className="tm-mono"
+            style={{
+              display: 'flex',
+              gap: 10,
+              alignItems: 'center',
+              margin: '8px 14px 0',
+              padding: '8px 12px',
+              fontSize: 11,
+              border: '1px solid var(--tm-down)',
+              color: 'var(--tm-down)',
+              background: 'rgba(200,60,40,0.06)',
+              flexWrap: 'wrap',
+            }}
+          >
+            <span style={{ fontWeight: 600 }}>{tt('safeMode')}</span>
+            <span style={{ color: 'var(--tm-ink-2)' }}>
+              {status.safe_mode_reason || ''}
+            </span>
+          </div>
+        )}
         {/* first-run reassurance — a fresh autopilot looks idle for its first
             minute (the AI is reading the market); tell newcomers what to expect */}
         {status?.is_running &&

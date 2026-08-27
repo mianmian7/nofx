@@ -11,6 +11,7 @@ import {
   createSeriesMarkers,
 } from 'lightweight-charts'
 import { useLanguage } from '../../contexts/LanguageContext'
+import { useTheme } from '../../contexts/ThemeContext'
 import { httpClient } from '../../lib/httpClient'
 import { t } from '../../i18n/translations'
 import {
@@ -36,11 +37,11 @@ interface OrderMarker {
 interface OpenOrder {
   order_id: string
   symbol: string
-  side: string          // BUY/SELL
+  side: string // BUY/SELL
   position_side: string // LONG/SHORT
-  type: string          // LIMIT/STOP_MARKET/TAKE_PROFIT_MARKET
-  price: number         // Limit order price
-  stop_price: number    // Trigger price (SL/TP)
+  type: string // LIMIT/STOP_MARKET/TAKE_PROFIT_MARKET
+  price: number // Limit order price
+  stop_price: number // Trigger price (SL/TP)
   quantity: number
   status: string
 }
@@ -75,7 +76,11 @@ const getQuoteUnit = (exchange: string): string => {
 }
 
 // Get base volume unit
-const getBaseUnit = (exchange: string, symbol: string, language: string): string => {
+const getBaseUnit = (
+  exchange: string,
+  symbol: string,
+  language: string
+): string => {
   if (['alpaca'].includes(exchange)) {
     return t('advancedChart.shares', language as 'en' | 'zh' | 'id')
   }
@@ -105,6 +110,7 @@ export function AdvancedChart({
 }: AdvancedChartProps) {
   void _onSymbolChange // Prevent unused warning
   const { language } = useLanguage()
+  const { isDark } = useTheme()
   const quoteUnit = getQuoteUnit(exchange)
   const baseUnit = getBaseUnit(exchange, symbol, language)
   const chartContainerRef = useRef<HTMLDivElement>(null)
@@ -114,7 +120,9 @@ export function AdvancedChart({
   const indicatorSeriesRef = useRef<Map<string, ISeriesApi<any>>>(new Map())
   const seriesMarkersRef = useRef<any>(null) // Markers primitive for v5
   const currentMarkersDataRef = useRef<any[]>([]) // Store current marker data
-  const klineDataRef = useRef<Map<number, { volume: number; quoteVolume: number }>>(new Map()) // Store kline extra data
+  const klineDataRef = useRef<
+    Map<number, { volume: number; quoteVolume: number }>
+  >(new Map()) // Store kline extra data
   const priceLinesRef = useRef<any[]>([]) // Store open order price lines
 
   const [loading, setLoading] = useState(true)
@@ -132,19 +140,55 @@ export function AdvancedChart({
     priceChangePercent: number
     high: number
     low: number
-    volume: number      // Quantity (BTC/shares)
+    volume: number // Quantity (BTC/shares)
     quoteVolume: number // Turnover (USDT/USD)
   } | null>(null)
 
   // Indicator configuration
   const [indicators, setIndicators] = useState<IndicatorConfig[]>([
     { id: 'volume', name: 'Volume', enabled: true, color: '#E0483B' },
-    { id: 'ma5', name: 'MA5', enabled: false, color: '#FF6B6B', params: { period: 5 } },
-    { id: 'ma10', name: 'MA10', enabled: false, color: '#4ECDC4', params: { period: 10 } },
-    { id: 'ma20', name: 'MA20', enabled: false, color: '#E0483B', params: { period: 20 } },
-    { id: 'ma60', name: 'MA60', enabled: false, color: '#95E1D3', params: { period: 60 } },
-    { id: 'ema12', name: 'EMA12', enabled: false, color: '#A8E6CF', params: { period: 12 } },
-    { id: 'ema26', name: 'EMA26', enabled: false, color: '#FFD3B6', params: { period: 26 } },
+    {
+      id: 'ma5',
+      name: 'MA5',
+      enabled: false,
+      color: '#FF6B6B',
+      params: { period: 5 },
+    },
+    {
+      id: 'ma10',
+      name: 'MA10',
+      enabled: false,
+      color: '#4ECDC4',
+      params: { period: 10 },
+    },
+    {
+      id: 'ma20',
+      name: 'MA20',
+      enabled: false,
+      color: '#E0483B',
+      params: { period: 20 },
+    },
+    {
+      id: 'ma60',
+      name: 'MA60',
+      enabled: false,
+      color: '#95E1D3',
+      params: { period: 60 },
+    },
+    {
+      id: 'ema12',
+      name: 'EMA12',
+      enabled: false,
+      color: '#A8E6CF',
+      params: { period: 12 },
+    },
+    {
+      id: 'ema26',
+      name: 'EMA26',
+      enabled: false,
+      color: '#FFD3B6',
+      params: { period: 26 },
+    },
     { id: 'bb', name: 'Bollinger Bands', enabled: false, color: '#9B59B6' },
   ])
 
@@ -166,18 +210,23 @@ export function AdvancedChart({
         high: candle.high,
         low: candle.low,
         close: candle.close,
-        volume: candle.volume,           // Quantity (BTC/shares)
+        volume: candle.volume, // Quantity (BTC/shares)
         quoteVolume: candle.quoteVolume, // Turnover (USDT/USD)
       }))
 
       // Sort by time and deduplicate (lightweight-charts requires ascending, unique times)
       const sortedData = rawData.sort((a: any, b: any) => a.time - b.time)
-      const dedupedData = sortedData.filter((item: any, index: number, arr: any[]) =>
-        index === 0 || item.time !== arr[index - 1].time
+      const dedupedData = sortedData.filter(
+        (item: any, index: number, arr: any[]) =>
+          index === 0 || item.time !== arr[index - 1].time
       )
 
       if (rawData.length !== dedupedData.length) {
-        console.warn('[AdvancedChart] Removed', rawData.length - dedupedData.length, 'duplicate klines')
+        console.warn(
+          '[AdvancedChart] Removed',
+          rawData.length - dedupedData.length,
+          'duplicate klines'
+        )
       }
 
       return dedupedData
@@ -199,10 +248,24 @@ export function AdvancedChart({
       // Determine ms vs seconds: if > 10^12, treat as milliseconds
       if (time > 1000000000000) {
         const seconds = Math.floor(time / 1000)
-        console.log('[AdvancedChart] ✅ Unix timestamp (ms→s):', time, '→', seconds, '(', new Date(time).toISOString(), ')')
+        console.log(
+          '[AdvancedChart] ✅ Unix timestamp (ms→s):',
+          time,
+          '→',
+          seconds,
+          '(',
+          new Date(time).toISOString(),
+          ')'
+        )
         return seconds
       }
-      console.log('[AdvancedChart] ✅ Unix timestamp (s):', time, '(', new Date(time * 1000).toISOString(), ')')
+      console.log(
+        '[AdvancedChart] ✅ Unix timestamp (s):',
+        time,
+        '(',
+        new Date(time * 1000).toISOString(),
+        ')'
+      )
       return time
     }
 
@@ -213,7 +276,15 @@ export function AdvancedChart({
     const isoTime = new Date(timeStr).getTime()
     if (!isNaN(isoTime) && isoTime > 0) {
       const timestamp = Math.floor(isoTime / 1000)
-      console.log('[AdvancedChart] ✅ Parsed as ISO:', timeStr, '→', timestamp, '(', new Date(timestamp * 1000).toISOString(), ')')
+      console.log(
+        '[AdvancedChart] ✅ Parsed as ISO:',
+        timeStr,
+        '→',
+        timestamp,
+        '(',
+        new Date(timestamp * 1000).toISOString(),
+        ')'
+      )
       return timestamp
     }
 
@@ -222,15 +293,25 @@ export function AdvancedChart({
     if (match) {
       const currentYear = new Date().getFullYear()
       const [_, month, day, hour, minute] = match
-      const date = new Date(Date.UTC(
-        currentYear,
-        parseInt(month) - 1,
-        parseInt(day),
-        parseInt(hour),
-        parseInt(minute)
-      ))
+      const date = new Date(
+        Date.UTC(
+          currentYear,
+          parseInt(month) - 1,
+          parseInt(day),
+          parseInt(hour),
+          parseInt(minute)
+        )
+      )
       const timestamp = Math.floor(date.getTime() / 1000)
-      console.log('[AdvancedChart] ✅ Parsed as custom format:', timeStr, '→', timestamp, '(', new Date(timestamp * 1000).toISOString(), ')')
+      console.log(
+        '[AdvancedChart] ✅ Parsed as custom format:',
+        timeStr,
+        '→',
+        timestamp,
+        '(',
+        new Date(timestamp * 1000).toISOString(),
+        ')'
+      )
       return timestamp
     }
 
@@ -239,9 +320,17 @@ export function AdvancedChart({
   }
 
   // Fetch order data
-  const fetchOrders = async (traderID: string, symbol: string): Promise<OrderMarker[]> => {
+  const fetchOrders = async (
+    traderID: string,
+    symbol: string
+  ): Promise<OrderMarker[]> => {
     try {
-      console.log('[AdvancedChart] Fetching orders for trader:', traderID, 'symbol:', symbol)
+      console.log(
+        '[AdvancedChart] Fetching orders for trader:',
+        traderID,
+        'symbol:',
+        symbol
+      )
       // Fetch filled orders, up to 200 for more history
       const result = await httpClient.request(
         `/api/orders?trader_id=${traderID}&symbol=${symbol}&status=FILLED&limit=200`,
@@ -263,21 +352,35 @@ export function AdvancedChart({
         console.log('[AdvancedChart] Processing order:', order)
 
         // Handle field names: support PascalCase and snake_case
-        const filledAt = order.filled_at || order.FilledAt || order.created_at || order.CreatedAt
-        const avgPrice = order.avg_fill_price || order.AvgFillPrice || order.price || order.Price
+        const filledAt =
+          order.filled_at ||
+          order.FilledAt ||
+          order.created_at ||
+          order.CreatedAt
+        const avgPrice =
+          order.avg_fill_price ||
+          order.AvgFillPrice ||
+          order.price ||
+          order.Price
         const orderAction = order.order_action || order.OrderAction
         const side = (order.side || order.Side)?.toLowerCase() // BUY/SELL
         const symbol = order.symbol || order.Symbol
 
         // Skip orders without fill time or price
         if (!filledAt || !avgPrice || avgPrice === 0) {
-          console.warn('[AdvancedChart] Skipping order - missing data:', { filledAt, avgPrice })
+          console.warn('[AdvancedChart] Skipping order - missing data:', {
+            filledAt,
+            avgPrice,
+          })
           return
         }
 
         const timeSeconds = parseCustomTime(filledAt)
         if (timeSeconds === 0) {
-          console.warn('[AdvancedChart] Skipping order - invalid time:', filledAt)
+          console.warn(
+            '[AdvancedChart] Skipping order - invalid time:',
+            filledAt
+          )
           return
         }
 
@@ -304,7 +407,7 @@ export function AdvancedChart({
           side: positionSide,
           rawSide: side,
           action,
-          orderAction
+          orderAction,
         })
 
         markers.push({
@@ -326,9 +429,17 @@ export function AdvancedChart({
   }
 
   // Fetch exchange open orders (TP/SL)
-  const fetchOpenOrders = async (traderID: string, symbol: string): Promise<OpenOrder[]> => {
+  const fetchOpenOrders = async (
+    traderID: string,
+    symbol: string
+  ): Promise<OpenOrder[]> => {
     try {
-      console.log('[AdvancedChart] Fetching open orders for trader:', traderID, 'symbol:', symbol)
+      console.log(
+        '[AdvancedChart] Fetching open orders for trader:',
+        traderID,
+        'symbol:',
+        symbol
+      )
       const result = await httpClient.request(
         `/api/open-orders?trader_id=${traderID}&symbol=${symbol}`,
         { silent: true }
@@ -356,18 +467,22 @@ export function AdvancedChart({
       width: chartContainerRef.current.clientWidth || 800,
       height: chartContainerRef.current.clientHeight || height,
       layout: {
-        background: { color: '#F1ECE2' },
-        textColor: '#1A1813',
+        background: { color: isDark ? '#13171F' : '#F1ECE2' },
+        textColor: isDark ? '#E6EBF2' : '#1A1813',
         fontSize: 12,
       },
       grid: {
         vertLines: {
-          color: 'rgba(26, 24, 19, 0.08)',
+          color: isDark
+            ? 'rgba(255, 255, 255, 0.06)'
+            : 'rgba(26, 24, 19, 0.08)',
           style: 1,
           visible: true,
         },
         horzLines: {
-          color: 'rgba(26, 24, 19, 0.08)',
+          color: isDark
+            ? 'rgba(255, 255, 255, 0.06)'
+            : 'rgba(26, 24, 19, 0.08)',
           style: 1,
           visible: true,
         },
@@ -388,7 +503,9 @@ export function AdvancedChart({
         },
       },
       rightPriceScale: {
-        borderColor: 'rgba(26, 24, 19, 0.14)',
+        borderColor: isDark
+          ? 'rgba(255, 255, 255, 0.12)'
+          : 'rgba(26, 24, 19, 0.14)',
         scaleMargins: {
           top: 0.1,
           bottom: 0.25,
@@ -397,7 +514,9 @@ export function AdvancedChart({
         entireTextOnly: false,
       },
       timeScale: {
-        borderColor: 'rgba(26, 24, 19, 0.14)',
+        borderColor: isDark
+          ? 'rgba(255, 255, 255, 0.12)'
+          : 'rgba(26, 24, 19, 0.14)',
         timeVisible: true,
         secondsVisible: false,
         borderVisible: true,
@@ -481,7 +600,10 @@ export function AdvancedChart({
       const candleData = data as any
 
       // Get volume and quoteVolume from stored data
-      const klineExtra = klineDataRef.current.get(param.time as number) || { volume: 0, quoteVolume: 0 }
+      const klineExtra = klineDataRef.current.get(param.time as number) || {
+        volume: 0,
+        quoteVolume: 0,
+      }
 
       setTooltipData({
         time: param.time,
@@ -502,7 +624,6 @@ export function AdvancedChart({
     }
   }, []) // Chart is created once, ResizeObserver handles dimension changes
 
-
   // Load data and indicators
   useEffect(() => {
     // Reset initial load flag when symbol/interval changes (for auto-fit)
@@ -522,7 +643,12 @@ export function AdvancedChart({
     const loadData = async (isRefresh = false) => {
       if (!candlestickSeriesRef.current) return
 
-      console.log('[AdvancedChart] Loading data for', symbol, interval, isRefresh ? '(refresh)' : '')
+      console.log(
+        '[AdvancedChart] Loading data for',
+        symbol,
+        interval,
+        isRefresh ? '(refresh)' : ''
+      )
       // Only show loading on first load, avoid flicker on refresh
       if (!isRefresh) {
         setLoading(true)
@@ -538,7 +664,10 @@ export function AdvancedChart({
         // Store volume/quoteVolume data for tooltip
         klineDataRef.current.clear()
         klineData.forEach((k: any) => {
-          klineDataRef.current.set(k.time, { volume: k.volume || 0, quoteVolume: k.quoteVolume || 0 })
+          klineDataRef.current.set(k.time, {
+            volume: k.volume || 0,
+            quoteVolume: k.quoteVolume || 0,
+          })
         })
 
         // 1.5 Calculate market stats
@@ -574,12 +703,17 @@ export function AdvancedChart({
 
         // 2. Display volume
         if (volumeSeriesRef.current) {
-          const volumeEnabled = indicators.find(i => i.id === 'volume')?.enabled
+          const volumeEnabled = indicators.find(
+            (i) => i.id === 'volume'
+          )?.enabled
           if (volumeEnabled) {
             const volumeData = klineData.map((k: Kline) => ({
               time: k.time,
               value: k.volume || 0,
-              color: k.close >= k.open ? 'rgba(46, 139, 87, 0.5)' : 'rgba(214, 67, 58, 0.5)',
+              color:
+                k.close >= k.open
+                  ? 'rgba(46, 139, 87, 0.5)'
+                  : 'rgba(214, 67, 58, 0.5)',
             }))
             volumeSeriesRef.current.setData(volumeData)
           } else {
@@ -598,13 +732,25 @@ export function AdvancedChart({
           console.log('[AdvancedChart] Received orders:', orders)
 
           if (orders.length > 0) {
-            console.log('[AdvancedChart] Creating markers from', orders.length, 'orders')
+            console.log(
+              '[AdvancedChart] Creating markers from',
+              orders.length,
+              'orders'
+            )
 
             // Extract sorted kline time array
             const klineTimes = klineData.map((k: any) => k.time as number)
             const klineMinTime = klineTimes[0] || 0
             const klineMaxTime = klineTimes[klineTimes.length - 1] || 0
-            console.log('[AdvancedChart] Kline time range:', klineMinTime, '-', klineMaxTime, '(', klineTimes.length, 'candles)')
+            console.log(
+              '[AdvancedChart] Kline time range:',
+              klineMinTime,
+              '-',
+              klineMaxTime,
+              '(',
+              klineTimes.length,
+              'candles)'
+            )
 
             // Binary search: find the kline candle for the order time
             // Return the largest kline time <= orderTime
@@ -629,19 +775,30 @@ export function AdvancedChart({
             }
 
             // Group orders by kline time
-            const ordersByCandle = new Map<number, { buys: number; sells: number }>()
+            const ordersByCandle = new Map<
+              number,
+              { buys: number; sells: number }
+            >()
 
-            orders.forEach(order => {
+            orders.forEach((order) => {
               // Use binary search to find matching kline candle time
               const candleTime = findCandleTime(order.time)
 
               if (candleTime === null) {
-                console.warn('[AdvancedChart] ⚠️ Skipping order outside kline range:',
-                  order.time, '(', new Date(order.time * 1000).toISOString(), ')')
+                console.warn(
+                  '[AdvancedChart] ⚠️ Skipping order outside kline range:',
+                  order.time,
+                  '(',
+                  new Date(order.time * 1000).toISOString(),
+                  ')'
+                )
                 return
               }
 
-              const existing = ordersByCandle.get(candleTime) || { buys: 0, sells: 0 }
+              const existing = ordersByCandle.get(candleTime) || {
+                buys: 0,
+                sells: 0,
+              }
               if (order.rawSide === 'buy') {
                 existing.buys++
               } else {
@@ -688,10 +845,22 @@ export function AdvancedChart({
             // Sort by time (lightweight-charts requires chronological order)
             markers.sort((a, b) => (a.time as number) - (b.time as number))
 
-            console.log('[AdvancedChart] Valid markers:', markers.length, 'out of', orders.length)
+            console.log(
+              '[AdvancedChart] Valid markers:',
+              markers.length,
+              'out of',
+              orders.length
+            )
 
-            console.log('[AdvancedChart] Setting', markers.length, 'markers on candlestick series')
-            console.log('[AdvancedChart] Markers data:', JSON.stringify(markers, null, 2))
+            console.log(
+              '[AdvancedChart] Setting',
+              markers.length,
+              'markers on candlestick series'
+            )
+            console.log(
+              '[AdvancedChart] Markers data:',
+              JSON.stringify(markers, null, 2)
+            )
 
             try {
               // Store marker data for later toggle use
@@ -705,9 +874,17 @@ export function AdvancedChart({
                 seriesMarkersRef.current.setMarkers(markersToShow)
               } else {
                 // First time creating markers
-                seriesMarkersRef.current = createSeriesMarkers(candlestickSeriesRef.current, markersToShow)
+                seriesMarkersRef.current = createSeriesMarkers(
+                  candlestickSeriesRef.current,
+                  markersToShow
+                )
               }
-              console.log('[AdvancedChart] ✅ Markers updated! Count:', markersToShow.length, 'Visible:', showOrderMarkers)
+              console.log(
+                '[AdvancedChart] ✅ Markers updated! Count:',
+                markersToShow.length,
+                'Visible:',
+                showOrderMarkers
+              )
             } catch (err) {
               console.error('[AdvancedChart] ❌ Failed to set markers:', err)
             }
@@ -724,7 +901,7 @@ export function AdvancedChart({
         } else {
           console.log('[AdvancedChart] Skipping markers:', {
             hasTraderID: !!traderID,
-            hasSeries: !!candlestickSeriesRef.current
+            hasSeries: !!candlestickSeriesRef.current,
           })
         }
 
@@ -756,7 +933,7 @@ export function AdvancedChart({
     const loadOpenOrders = async () => {
       try {
         // Clear old price lines first
-        priceLinesRef.current.forEach(line => {
+        priceLinesRef.current.forEach((line) => {
           try {
             candlestickSeriesRef.current?.removePriceLine(line)
           } catch (e) {
@@ -769,14 +946,17 @@ export function AdvancedChart({
         console.log('[AdvancedChart] Open orders for price lines:', openOrders)
 
         if (openOrders.length > 0 && candlestickSeriesRef.current) {
-          openOrders.forEach(order => {
+          openOrders.forEach((order) => {
             // Get trigger price (SL/TP use stop_price, limit orders use price)
-            const linePrice = order.stop_price > 0 ? order.stop_price : order.price
+            const linePrice =
+              order.stop_price > 0 ? order.stop_price : order.price
             if (linePrice <= 0) return
 
             // Determine order type
-            const isStopLoss = order.type.includes('STOP') || order.type.includes('SL')
-            const isTakeProfit = order.type.includes('TAKE_PROFIT') || order.type.includes('TP')
+            const isStopLoss =
+              order.type.includes('STOP') || order.type.includes('SL')
+            const isTakeProfit =
+              order.type.includes('TAKE_PROFIT') || order.type.includes('TP')
             const isLimit = order.type === 'LIMIT'
 
             // Set price line style
@@ -810,7 +990,11 @@ export function AdvancedChart({
               priceLinesRef.current.push(priceLine)
             }
           })
-          console.log('[AdvancedChart] ✅ Created', priceLinesRef.current.length, 'price lines for pending orders')
+          console.log(
+            '[AdvancedChart] ✅ Created',
+            priceLinesRef.current.length,
+            'price lines for pending orders'
+          )
         }
       } catch (err) {
         console.error('[AdvancedChart] Error loading open orders:', err)
@@ -834,9 +1018,16 @@ export function AdvancedChart({
     if (!seriesMarkersRef.current) return
 
     try {
-      const markersToShow = showOrderMarkers ? currentMarkersDataRef.current : []
+      const markersToShow = showOrderMarkers
+        ? currentMarkersDataRef.current
+        : []
       seriesMarkersRef.current.setMarkers(markersToShow)
-      console.log('[AdvancedChart] 🔄 Toggled markers visibility:', showOrderMarkers, 'Count:', markersToShow.length)
+      console.log(
+        '[AdvancedChart] 🔄 Toggled markers visibility:',
+        showOrderMarkers,
+        'Count:',
+        markersToShow.length
+      )
     } catch (err) {
       console.error('[AdvancedChart] ❌ Failed to toggle markers:', err)
     }
@@ -847,13 +1038,13 @@ export function AdvancedChart({
     if (!chartRef.current) return
 
     // Clear old indicators
-    indicatorSeriesRef.current.forEach(series => {
+    indicatorSeriesRef.current.forEach((series) => {
       chartRef.current?.removeSeries(series as any)
     })
     indicatorSeriesRef.current.clear()
 
     // Add enabled indicators
-    indicators.forEach(indicator => {
+    indicators.forEach((indicator) => {
       if (!indicator.enabled || !chartRef.current) return
 
       if (indicator.id.startsWith('ma')) {
@@ -883,7 +1074,9 @@ export function AdvancedChart({
           lineWidth: 1,
           title: 'BB Upper',
         })
-        upperSeries.setData(bbData.map(d => ({ time: d.time as any, value: d.upper })))
+        upperSeries.setData(
+          bbData.map((d) => ({ time: d.time as any, value: d.upper }))
+        )
 
         const middleSeries = chartRef.current.addSeries(LineSeries, {
           color: indicator.color,
@@ -891,14 +1084,18 @@ export function AdvancedChart({
           lineStyle: 2,
           title: 'BB Middle',
         })
-        middleSeries.setData(bbData.map(d => ({ time: d.time as any, value: d.middle })))
+        middleSeries.setData(
+          bbData.map((d) => ({ time: d.time as any, value: d.middle }))
+        )
 
         const lowerSeries = chartRef.current.addSeries(LineSeries, {
           color: indicator.color,
           lineWidth: 1,
           title: 'BB Lower',
         })
-        lowerSeries.setData(bbData.map(d => ({ time: d.time as any, value: d.lower })))
+        lowerSeries.setData(
+          bbData.map((d) => ({ time: d.time as any, value: d.lower }))
+        )
 
         indicatorSeriesRef.current.set(indicator.id + '_upper', upperSeries)
         indicatorSeriesRef.current.set(indicator.id + '_middle', middleSeries)
@@ -909,74 +1106,111 @@ export function AdvancedChart({
 
   // Toggle indicator
   const toggleIndicator = (id: string) => {
-    setIndicators(prev =>
-      prev.map(ind => (ind.id === id ? { ...ind, enabled: !ind.enabled } : ind))
+    setIndicators((prev) =>
+      prev.map((ind) =>
+        ind.id === id ? { ...ind, enabled: !ind.enabled } : ind
+      )
     )
   }
 
+  // Dynamically update chart theme options when isDark changes
+  useEffect(() => {
+    if (!chartRef.current) return
+    chartRef.current.applyOptions({
+      layout: {
+        background: { color: isDark ? '#13171F' : '#F1ECE2' },
+        textColor: isDark ? '#E6EBF2' : '#1A1813',
+      },
+      grid: {
+        vertLines: {
+          color: isDark
+            ? 'rgba(255, 255, 255, 0.06)'
+            : 'rgba(26, 24, 19, 0.08)',
+        },
+        horzLines: {
+          color: isDark
+            ? 'rgba(255, 255, 255, 0.06)'
+            : 'rgba(26, 24, 19, 0.08)',
+        },
+      },
+      rightPriceScale: {
+        borderColor: isDark
+          ? 'rgba(255, 255, 255, 0.12)'
+          : 'rgba(26, 24, 19, 0.14)',
+      },
+      timeScale: {
+        borderColor: isDark
+          ? 'rgba(255, 255, 255, 0.12)'
+          : 'rgba(26, 24, 19, 0.14)',
+      },
+    })
+  }, [isDark])
+
   return (
-    <div
-      className="relative shadow-xl"
-      style={{
-        background: '#F1ECE2',
-        borderRadius: '12px',
-        overflow: 'hidden',
-        border: '1px solid rgba(26, 24, 19, 0.14)',
-        height: '100%',
-        display: 'flex',
-        flexDirection: 'column',
-      }}
-    >
+    <div className="relative shadow-xl rounded-xl overflow-hidden border border-nofx-border bg-nofx-bg flex flex-col h-full">
       {/* Compact Professional Header */}
-      <div
-        className="flex items-center justify-between px-4 py-2"
-        style={{ borderBottom: '1px solid rgba(26, 24, 19, 0.14)', background: '#F7F4EC', flexShrink: 0 }}
-      >
+      <div className="flex items-center justify-between px-4 py-2 border-b border-nofx-border bg-nofx-bg-lighter shrink-0">
         {/* Left: Symbol Info + Price */}
         <div className="flex items-center gap-4">
           {/* Symbol & Interval */}
           <div className="flex items-center gap-2">
             <span className="text-sm font-bold text-nofx-text">{symbol}</span>
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-nofx-bg-deeper text-nofx-text-muted">{interval}</span>
-            <span
-              className="text-[10px] px-1.5 py-0.5 rounded font-medium uppercase"
-              style={{
-                background: 'rgba(224, 72, 59, 0.1)',
-                color: '#E0483B',
-              }}
-            >
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-nofx-bg-deeper text-nofx-text-muted">
+              {interval}
+            </span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded font-medium uppercase bg-nofx-gold/15 text-nofx-gold">
               {exchange?.toUpperCase()}
             </span>
           </div>
 
           {/* Price Display */}
           {marketStats && (
-            <div className="flex items-center gap-3 pl-3 border-l border-[rgba(26,24,19,0.14)]">
+            <div className="flex items-center gap-3 pl-3 border-l border-nofx-border">
               <span
-                className="text-base font-bold tabular-nums"
-                style={{ color: marketStats.priceChange >= 0 ? '#2E8B57' : '#D6433A' }}
+                className={`text-base font-bold tabular-nums ${
+                  marketStats.priceChange >= 0
+                    ? 'text-nofx-success'
+                    : 'text-nofx-danger'
+                }`}
               >
                 {marketStats.price.toLocaleString(undefined, {
                   minimumFractionDigits: 2,
-                  maximumFractionDigits: exchange === 'forex' || exchange === 'metals' ? 4 : 2
+                  maximumFractionDigits:
+                    exchange === 'forex' || exchange === 'metals' ? 4 : 2,
                 })}
               </span>
               <span
-                className="text-xs font-medium px-1.5 py-0.5 rounded tabular-nums"
-                style={{
-                  background: marketStats.priceChange >= 0 ? 'rgba(46, 139, 87, 0.1)' : 'rgba(214, 67, 58, 0.1)',
-                  color: marketStats.priceChange >= 0 ? '#2E8B57' : '#D6433A',
-                }}
+                className={`text-xs font-medium px-1.5 py-0.5 rounded tabular-nums border ${
+                  marketStats.priceChange >= 0
+                    ? 'text-nofx-success bg-nofx-success/10 border-nofx-success/30'
+                    : 'text-nofx-danger bg-nofx-danger/10 border-nofx-danger/30'
+                }`}
               >
-                {marketStats.priceChange >= 0 ? '+' : ''}{marketStats.priceChangePercent.toFixed(2)}%
+                {marketStats.priceChange >= 0 ? '+' : ''}
+                {marketStats.priceChangePercent.toFixed(2)}%
               </span>
 
               {/* Compact H/L */}
               <div className="flex items-center gap-2 text-[11px] text-nofx-text-muted">
-                <span>H <span className="text-nofx-text">{marketStats.high.toFixed(2)}</span></span>
-                <span>L <span className="text-nofx-text">{marketStats.low.toFixed(2)}</span></span>
+                <span>
+                  H{' '}
+                  <span className="text-nofx-text">
+                    {marketStats.high.toFixed(2)}
+                  </span>
+                </span>
+                <span>
+                  L{' '}
+                  <span className="text-nofx-text">
+                    {marketStats.low.toFixed(2)}
+                  </span>
+                </span>
                 {marketStats.volume > 0 && baseUnit && (
-                  <span>Vol <span className="text-nofx-text">{formatVolume(marketStats.volume)}</span></span>
+                  <span>
+                    Vol{' '}
+                    <span className="text-nofx-text">
+                      {formatVolume(marketStats.volume)}
+                    </span>
+                  </span>
                 )}
               </div>
             </div>
@@ -992,11 +1226,11 @@ export function AdvancedChart({
           )}
           <button
             onClick={() => setShowIndicatorPanel(!showIndicatorPanel)}
-            className="flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium transition-all"
-            style={{
-              background: showIndicatorPanel ? 'rgba(224, 72, 59, 0.12)' : 'transparent',
-              color: showIndicatorPanel ? '#E0483B' : '#8A8478',
-            }}
+            className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium transition-all ${
+              showIndicatorPanel
+                ? 'bg-nofx-gold/20 text-nofx-gold border border-nofx-gold/40'
+                : 'text-nofx-text-muted hover:text-nofx-text'
+            }`}
           >
             <Settings className="w-3 h-3" />
             <span>{t('advancedChart.indicators', language)}</span>
@@ -1004,11 +1238,11 @@ export function AdvancedChart({
 
           <button
             onClick={() => setShowOrderMarkers(!showOrderMarkers)}
-            className="flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium transition-all"
-            style={{
-              background: showOrderMarkers ? 'rgba(46, 139, 87, 0.15)' : 'transparent',
-              color: showOrderMarkers ? '#2E8B57' : '#8A8478',
-            }}
+            className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium transition-all ${
+              showOrderMarkers
+                ? 'bg-nofx-success/20 text-nofx-success border border-nofx-success/40'
+                : 'text-nofx-text-muted hover:text-nofx-text'
+            }`}
             title={t('advancedChart.orderMarkers', language)}
           >
             <span>B/S</span>
@@ -1018,21 +1252,9 @@ export function AdvancedChart({
 
       {/* Indicator panel - professional design */}
       {showIndicatorPanel && (
-        <div
-          className="absolute top-16 right-4 z-10 rounded-lg shadow-2xl backdrop-blur-sm"
-          style={{
-            background: '#F7F4EC',
-            border: '1px solid rgba(224, 72, 59, 0.2)',
-            maxHeight: '500px',
-            minWidth: '280px',
-            overflowY: 'auto',
-          }}
-        >
+        <div className="absolute top-16 right-4 z-10 rounded-lg shadow-2xl backdrop-blur-md bg-nofx-bg-lighter border border-nofx-border max-h-[500px] min-w-[280px] overflow-y-auto">
           {/* Title bar */}
-          <div
-            className="flex items-center justify-between px-4 py-3 border-b"
-            style={{ borderColor: 'rgba(26, 24, 19, 0.14)' }}
-          >
+          <div className="flex items-center justify-between px-4 py-3 border-b border-nofx-border">
             <div className="flex items-center gap-2">
               <BarChart2 className="w-4 h-4 text-nofx-gold" />
               <h4 className="text-sm font-bold text-nofx-text">
@@ -1049,21 +1271,21 @@ export function AdvancedChart({
 
           {/* Indicator list */}
           <div className="p-3 space-y-1">
-            {indicators.map(indicator => (
+            {indicators.map((indicator) => (
               <label
                 key={indicator.id}
-                className="flex items-center gap-3 p-2.5 rounded-md hover:bg-black/5 cursor-pointer transition-all group"
+                className="flex items-center gap-3 p-2.5 rounded-md hover:bg-nofx-gold/10 cursor-pointer transition-all group"
               >
                 <div className="relative">
                   <input
                     type="checkbox"
                     checked={indicator.enabled}
                     onChange={() => toggleIndicator(indicator.id)}
-                    className="w-4 h-4 rounded border-[rgba(26,24,19,0.3)] text-nofx-gold focus:ring-2 focus:ring-nofx-gold/50"
+                    className="w-4 h-4 rounded border-nofx-border text-nofx-gold focus:ring-2 focus:ring-nofx-gold/50"
                   />
                 </div>
                 <div
-                  className="w-8 h-3 rounded-sm border border-[rgba(26,24,19,0.14)]"
+                  className="w-8 h-3 rounded-sm border border-nofx-border"
                   style={{ backgroundColor: indicator.color }}
                 ></div>
                 <span className="text-sm text-nofx-text-muted group-hover:text-nofx-text transition-colors flex-1">
@@ -1077,10 +1299,7 @@ export function AdvancedChart({
           </div>
 
           {/* Bottom hint */}
-          <div
-            className="px-4 py-2 text-xs text-nofx-text-muted border-t"
-            style={{ borderColor: 'rgba(26, 24, 19, 0.14)' }}
-          >
+          <div className="px-4 py-2 text-xs text-nofx-text-muted border-t border-nofx-border">
             {t('advancedChart.clickToToggle', language)}
           </div>
         </div>
@@ -1088,59 +1307,59 @@ export function AdvancedChart({
 
       {/* Chart container */}
       <div style={{ position: 'relative', flex: 1, minHeight: 0 }}>
-        <div ref={chartContainerRef} style={{ height: '100%', width: '100%' }} />
+        <div
+          ref={chartContainerRef}
+          style={{ height: '100%', width: '100%' }}
+        />
 
         {/* OHLC Tooltip */}
         {tooltipData && (
           <div
             ref={tooltipRef}
-            style={{
-              position: 'absolute',
-              left: '10px',
-              top: '10px',
-              padding: '8px 12px',
-              background: 'rgba(247, 244, 236, 0.95)',
-              border: '1px solid rgba(224, 72, 59, 0.3)',
-              borderRadius: '6px',
-              color: '#1A1813',
-              fontSize: '12px',
-              fontFamily: 'monospace',
-              pointerEvents: 'none',
-              zIndex: 10,
-              backdropFilter: 'blur(10px)',
-              boxShadow: '0 4px 12px rgba(26, 24, 19, 0.15)',
-            }}
+            className="absolute left-2.5 top-2.5 p-3 rounded-md shadow-xl backdrop-blur-md bg-nofx-bg-lighter/95 border border-nofx-border text-nofx-text font-mono text-xs z-10 pointer-events-none"
           >
-            <div style={{ marginBottom: '6px', color: '#E0483B', fontWeight: 'bold', fontSize: '11px' }}>
-              {new Date((tooltipData.time as number) * 1000).toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', {
-                month: 'short',
-                day: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit',
-              })}
+            <div className="mb-1.5 font-bold text-[11px] text-nofx-gold">
+              {new Date((tooltipData.time as number) * 1000).toLocaleString(
+                language === 'zh' ? 'zh-CN' : 'en-US',
+                {
+                  month: 'short',
+                  day: 'numeric',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                }
+              )}
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 12px', fontSize: '11px' }}>
-              <span style={{ color: '#8A8478' }}>O:</span>
-              <span style={{ color: '#1A1813', fontWeight: '500' }}>{tooltipData.open?.toFixed(2)}</span>
+            <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
+              <span className="text-nofx-text-muted">O:</span>
+              <span className="text-nofx-text font-medium">
+                {tooltipData.open?.toFixed(2)}
+              </span>
 
-              <span style={{ color: '#8A8478' }}>H:</span>
-              <span style={{ color: '#2E8B57', fontWeight: '500' }}>{tooltipData.high?.toFixed(2)}</span>
+              <span className="text-nofx-text-muted">H:</span>
+              <span className="text-nofx-success font-medium">
+                {tooltipData.high?.toFixed(2)}
+              </span>
 
-              <span style={{ color: '#8A8478' }}>L:</span>
-              <span style={{ color: '#D6433A', fontWeight: '500' }}>{tooltipData.low?.toFixed(2)}</span>
+              <span className="text-nofx-text-muted">L:</span>
+              <span className="text-nofx-danger font-medium">
+                {tooltipData.low?.toFixed(2)}
+              </span>
 
-              <span style={{ color: '#8A8478' }}>C:</span>
-              <span style={{
-                color: tooltipData.close >= tooltipData.open ? '#2E8B57' : '#D6433A',
-                fontWeight: 'bold'
-              }}>
+              <span className="text-nofx-text-muted">C:</span>
+              <span
+                className={`font-bold ${
+                  tooltipData.close >= tooltipData.open
+                    ? 'text-nofx-success'
+                    : 'text-nofx-danger'
+                }`}
+              >
                 {tooltipData.close?.toFixed(2)}
               </span>
 
               {tooltipData.volume > 0 && baseUnit && (
                 <>
-                  <span style={{ color: '#8A8478' }}>V({baseUnit}):</span>
-                  <span style={{ color: '#E0483B', fontWeight: '500' }}>
+                  <span className="text-nofx-text-muted">V({baseUnit}):</span>
+                  <span className="text-nofx-gold font-medium">
                     {formatVolume(tooltipData.volume)}
                   </span>
                 </>
@@ -1148,8 +1367,8 @@ export function AdvancedChart({
 
               {tooltipData.quoteVolume > 0 && quoteUnit && (
                 <>
-                  <span style={{ color: '#8A8478' }}>V({quoteUnit}):</span>
-                  <span style={{ color: '#E0483B', fontWeight: '500' }}>
+                  <span className="text-nofx-text-muted">V({quoteUnit}):</span>
+                  <span className="text-nofx-gold font-medium">
                     {formatVolume(tooltipData.quoteVolume)}
                   </span>
                 </>
@@ -1173,9 +1392,10 @@ export function AdvancedChart({
             style={{
               fontSize: '56px',
               fontWeight: '700',
-              color: 'rgba(224, 72, 59, 0.12)',
+              color: 'var(--nofx-gold-dim)',
               letterSpacing: '4px',
-              fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, sans-serif',
+              fontFamily:
+                'system-ui, -apple-system, BlinkMacSystemFont, sans-serif',
             }}
           >
             NOFX
@@ -1185,17 +1405,13 @@ export function AdvancedChart({
 
       {/* Error message */}
       {error && (
-        <div
-          className="absolute inset-0 flex items-center justify-center"
-          style={{ background: 'rgba(241, 236, 226, 0.9)' }}
-        >
+        <div className="absolute inset-0 flex items-center justify-center bg-nofx-bg/90">
           <div className="text-center">
             <div className="text-2xl mb-2">⚠️</div>
-            <div style={{ color: '#D6433A' }}>{error}</div>
+            <div className="text-nofx-danger font-mono text-sm">{error}</div>
           </div>
         </div>
       )}
-
     </div>
   )
 }

@@ -151,7 +151,6 @@ export interface IndicatorConfig {
   atr_periods?: number[]
   boll_periods?: number[]
   external_data_sources?: ExternalDataSource[]
-
 }
 
 export interface KlineConfig {
