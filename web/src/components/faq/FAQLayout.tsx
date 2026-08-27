@@ -28,7 +28,8 @@ export function FAQLayout() {
   }, [searchTerm])
 
   const totalItems = useMemo(
-    () => faqCategories.reduce((sum, category) => sum + category.items.length, 0),
+    () =>
+      faqCategories.reduce((sum, category) => sum + category.items.length, 0),
     []
   )
 
@@ -56,7 +57,8 @@ export function FAQLayout() {
                   FAQ
                 </h1>
                 <p className="mt-1 font-mono text-xs uppercase tracking-[0.14em] text-nofx-text-muted">
-                  {totalItems} answers · wallets · launch · trading · self-hosting
+                  {totalItems} answers · wallets · launch · trading ·
+                  self-hosting
                 </p>
               </div>
             </div>
@@ -115,7 +117,7 @@ export function FAQLayout() {
               href="https://github.com/NoFxAiOS/nofx"
               target="_blank"
               rel="noopener noreferrer"
-              className="rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-deeper px-5 py-2.5 font-mono text-xs font-bold uppercase tracking-[0.12em] text-nofx-text hover:border-nofx-gold/40"
+              className="rounded-lg border border-nofx-border bg-nofx-bg-deeper px-5 py-2.5 font-mono text-xs font-bold uppercase tracking-[0.12em] text-nofx-text hover:border-nofx-gold/40"
             >
               GitHub
             </a>

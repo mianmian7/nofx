@@ -72,7 +72,13 @@ export function EdgeProfile({ positions }: EdgeProfileProps) {
 
       const holdMin = (exit - entry) / 60000
       const holdBucket =
-        holdMin < 15 ? holds[0] : holdMin < 60 ? holds[1] : holdMin < 180 ? holds[2] : holds[3]
+        holdMin < 15
+          ? holds[0]
+          : holdMin < 60
+            ? holds[1]
+            : holdMin < 180
+              ? holds[2]
+              : holds[3]
       add(holdBucket, pos)
 
       const sideBucket =
@@ -93,37 +99,75 @@ export function EdgeProfile({ positions }: EdgeProfileProps) {
   const maxAbsNet = Math.max(
     0.01,
     ...holdBuckets.map((b) => Math.abs(b.net)),
-    ...sideBuckets.map((b) => Math.abs(b.net)),
+    ...sideBuckets.map((b) => Math.abs(b.net))
   )
 
   // width is relative to the 50%-wide half-container; clamp defensively so a
   // future bucket can never overflow the axis again.
-  const barWidth = (net: number) => Math.min(100, (Math.abs(net) / maxAbsNet) * 100)
+  const barWidth = (net: number) =>
+    Math.min(100, (Math.abs(net) / maxAbsNet) * 100)
 
   const row = (bucket: BucketAgg) => {
     const winPct = bucket.n > 0 ? (100 * bucket.wins) / bucket.n : 0
     const up = bucket.net >= 0
     return (
       <div key={bucket.label} style={{ marginBottom: 7 }}>
-        <div className="tm-mono" style={{ display: 'flex', alignItems: 'baseline', fontSize: 11, marginBottom: 2 }}>
+        <div
+          className="tm-mono"
+          style={{
+            display: 'flex',
+            alignItems: 'baseline',
+            fontSize: 11,
+            marginBottom: 2,
+          }}
+        >
           <span style={{ fontWeight: 500, minWidth: 52 }}>{bucket.label}</span>
           <span className="tm-sc">
-            {bucket.n > 0 ? tt('edgeRow', { trades: bucket.n, win: winPct.toFixed(0), fees: bucket.fees.toFixed(2) }) : '—'}
+            {bucket.n > 0
+              ? tt('edgeRow', {
+                  trades: bucket.n,
+                  win: winPct.toFixed(0),
+                  fees: bucket.fees.toFixed(2),
+                })
+              : '—'}
           </span>
-          <span className={up ? 'tm-up' : 'tm-dn'} style={{ marginLeft: 'auto', fontWeight: 600 }}>
+          <span
+            className={up ? 'tm-up' : 'tm-dn'}
+            style={{ marginLeft: 'auto', fontWeight: 600 }}
+          >
             {bucket.n > 0 ? fmtUsd(bucket.net) : '—'}
           </span>
         </div>
         {/* diverging net bar around a center axis */}
-        <div style={{ display: 'flex', height: 4, background: 'var(--tm-hair)' }}>
-          <div style={{ width: '50%', display: 'flex', justifyContent: 'flex-end' }}>
+        <div
+          style={{ display: 'flex', height: 4, background: 'var(--tm-hair)' }}
+        >
+          <div
+            style={{
+              width: '50%',
+              display: 'flex',
+              justifyContent: 'flex-end',
+            }}
+          >
             {!up && (
-              <div style={{ height: 4, width: `${barWidth(bucket.net)}%`, background: 'var(--tm-dn)' }} />
+              <div
+                style={{
+                  height: 4,
+                  width: `${barWidth(bucket.net)}%`,
+                  background: 'var(--tm-dn)',
+                }}
+              />
             )}
           </div>
           <div style={{ width: '50%' }}>
             {up && bucket.net > 0 && (
-              <div style={{ height: 4, width: `${barWidth(bucket.net)}%`, background: 'var(--tm-up)' }} />
+              <div
+                style={{
+                  height: 4,
+                  width: `${barWidth(bucket.net)}%`,
+                  background: 'var(--tm-up)',
+                }}
+              />
             )}
           </div>
         </div>
@@ -136,13 +180,21 @@ export function EdgeProfile({ positions }: EdgeProfileProps) {
   const longHolds = holdBuckets[2].net + holdBuckets[3].net
   const takeaway =
     longHolds > shortHolds
-      ? tt('longHoldEdge', { long: fmtUsd(longHolds), short: fmtUsd(shortHolds) })
-      : tt('shortHoldEdge', { short: fmtUsd(shortHolds), long: fmtUsd(longHolds) })
+      ? tt('longHoldEdge', {
+          long: fmtUsd(longHolds),
+          short: fmtUsd(shortHolds),
+        })
+      : tt('shortHoldEdge', {
+          short: fmtUsd(shortHolds),
+          long: fmtUsd(longHolds),
+        })
 
   return (
     <div>
       {holdBuckets.map(row)}
-      <div style={{ borderTop: '1px solid var(--tm-hair)', margin: '8px 0 7px' }} />
+      <div
+        style={{ borderTop: '1px solid var(--tm-hair)', margin: '8px 0 7px' }}
+      />
       {sideBuckets.map(row)}
       <div className="tm-sc" style={{ marginTop: 6, fontSize: 9 }}>
         {tt('lastClosedSummary', { sample, takeaway })}

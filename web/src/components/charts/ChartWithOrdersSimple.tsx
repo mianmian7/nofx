@@ -21,42 +21,33 @@ export function ChartWithOrdersSimple({
 
   useEffect(() => {
     const loadData = async () => {
-      console.log('[ChartSimple] Loading data for', symbol, interval, 'trader:', traderID)
       setLoading(true)
       setError(null)
 
       try {
-        // Fetch kline data from our own service
         const limit = 100
         const klineUrl = `/api/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`
-
-        console.log('[ChartSimple] Fetching klines from our service:', klineUrl)
         const klineResult = await httpClient.request(klineUrl, { silent: true })
 
         if (!klineResult.success || !klineResult.data) {
           throw new Error('Failed to fetch klines from our service')
         }
 
-        console.log('[ChartSimple] Received klines:', klineResult.data.length)
         setKlineCount(klineResult.data.length)
 
-        // Test fetching order data
         if (traderID) {
           const tradesUrl = `/api/trades?trader_id=${traderID}&symbol=${symbol}&limit=100`
-          console.log('[ChartSimple] Fetching trades from:', tradesUrl)
-          const tradesResult = await httpClient.request(tradesUrl, { silent: true })
+          const tradesResult = await httpClient.request(tradesUrl, {
+            silent: true,
+          })
 
           if (tradesResult.success && tradesResult.data) {
-            console.log('[ChartSimple] Received trades:', tradesResult.data.length)
             setOrderCount(tradesResult.data.length)
-          } else {
-            console.warn('[ChartSimple] Failed to fetch trades:', tradesResult.message || 'Unknown error', tradesResult)
           }
         }
 
         setLoading(false)
       } catch (err: any) {
-        console.error('[ChartSimple] Error:', err)
         setError(err.message || 'Failed to load data')
         setLoading(false)
       }
@@ -66,19 +57,20 @@ export function ChartWithOrdersSimple({
   }, [symbol, interval, traderID])
 
   return (
-    <div className="relative" style={{ background: '#F1ECE2', borderRadius: '8px', overflow: 'hidden', minHeight: height }}>
+    <div
+      className="relative rounded-lg overflow-hidden bg-nofx-bg border border-nofx-border"
+      style={{ minHeight: height }}
+    >
       {/* Title bar */}
-      <div className="flex items-center justify-between p-4" style={{ borderBottom: '1px solid rgba(26, 24, 19, 0.14)' }}>
+      <div className="flex items-center justify-between p-4 border-b border-nofx-border">
         <div className="flex items-center gap-3">
           <span className="text-xl">📈</span>
-          <h3 className="text-lg font-bold" style={{ color: '#1A1813' }}>
+          <h3 className="text-lg font-bold text-nofx-text">
             {symbol} {interval} (Test Mode)
           </h3>
         </div>
         {loading && (
-          <div className="text-sm" style={{ color: '#8A8478' }}>
-            Loading...
-          </div>
+          <div className="text-sm text-nofx-text-muted">Loading...</div>
         )}
       </div>
 
@@ -87,29 +79,33 @@ export function ChartWithOrdersSimple({
         {error ? (
           <div className="text-center">
             <div className="text-2xl mb-2">⚠️</div>
-            <div style={{ color: '#D6433A' }}>{error}</div>
+            <div className="text-nofx-danger">{error}</div>
           </div>
         ) : (
           <>
-            <div className="p-4 rounded" style={{ background: '#F7F4EC', border: '1px solid rgba(26, 24, 19, 0.14)' }}>
-              <div className="text-sm mb-2" style={{ color: '#8A8478' }}>Binance Kline Data</div>
-              <div className="text-2xl font-bold" style={{ color: '#2E8B57' }}>
+            <div className="p-4 rounded bg-nofx-bg-lighter border border-nofx-border">
+              <div className="text-sm mb-2 text-nofx-text-muted">
+                Binance Kline Data
+              </div>
+              <div className="text-2xl font-bold text-nofx-success">
                 {klineCount} klines
               </div>
             </div>
 
             {traderID && (
-              <div className="p-4 rounded" style={{ background: '#F7F4EC', border: '1px solid rgba(26, 24, 19, 0.14)' }}>
-                <div className="text-sm mb-2" style={{ color: '#8A8478' }}>Historical Order Data</div>
-                <div className="text-2xl font-bold" style={{ color: '#E0483B' }}>
+              <div className="p-4 rounded bg-nofx-bg-lighter border border-nofx-border">
+                <div className="text-sm mb-2 text-nofx-text-muted">
+                  Historical Order Data
+                </div>
+                <div className="text-2xl font-bold text-nofx-gold">
                   {orderCount} orders
                 </div>
               </div>
             )}
 
-            <div className="p-4 rounded" style={{ background: '#F7F4EC', border: '1px solid rgba(26, 24, 19, 0.14)' }}>
-              <div className="text-sm mb-2" style={{ color: '#8A8478' }}>Status</div>
-              <div className="text-lg" style={{ color: '#1A1813' }}>
+            <div className="p-4 rounded bg-nofx-bg-lighter border border-nofx-border">
+              <div className="text-sm mb-2 text-nofx-text-muted">Status</div>
+              <div className="text-lg text-nofx-text">
                 ✅ Data fetched successfully, chart component in development
               </div>
             </div>

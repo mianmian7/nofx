@@ -66,17 +66,14 @@ function LoadingScreen() {
   const { language } = useLanguage()
 
   return (
-    <div
-      className="min-h-screen flex items-center justify-center"
-      style={{ background: '#F1ECE2' }}
-    >
+    <div className="min-h-screen flex items-center justify-center bg-nofx-bg text-nofx-text">
       <div className="text-center">
         <img
           src="/icons/nofx.svg"
           alt="NoFx Logo"
           className="w-16 h-16 mx-auto mb-4 animate-pulse"
         />
-        <p style={{ color: '#1A1813' }}>{t('loading', language)}</p>
+        <p className="text-nofx-text">{t('loading', language)}</p>
       </div>
     </div>
   )
@@ -153,10 +150,7 @@ function AppChrome({
   )
 
   return (
-    <div
-      className="min-h-screen"
-      style={{ background: '#F1ECE2', color: '#1A1813' }}
-    >
+    <div className="min-h-screen bg-nofx-bg text-nofx-text">
       <HeaderBar
         isLoggedIn={!!user}
         currentPage={currentPage}
@@ -199,10 +193,7 @@ function TradersRoute() {
   )
 
   return (
-    <AppChrome
-      currentPage="traders"
-      animateContent
-    >
+    <AppChrome currentPage="traders" animateContent>
       <AITradersPage
         onTraderSelect={(traderId) => {
           const trader = traders?.find((item) => item.trader_id === traderId)

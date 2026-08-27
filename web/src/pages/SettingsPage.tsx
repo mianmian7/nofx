@@ -10,9 +10,12 @@ import {
   ChevronRight,
   Plus,
   Pencil,
+  Sun,
+  Moon,
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { useLanguage } from '../contexts/LanguageContext'
+import { useTheme } from '../contexts/ThemeContext'
 import { api } from '../lib/api'
 import { ExchangeConfigModal } from '../components/trader/ExchangeConfigModal'
 import { TelegramConfigModal } from '../components/trader/TelegramConfigModal'
@@ -38,6 +41,7 @@ function configBadge(label: string, active: boolean) {
 export function SettingsPage() {
   const { user } = useAuth()
   const { language } = useLanguage()
+  const { setTheme, isDark } = useTheme()
   const [activeTab, setActiveTab] = useState<Tab>('account')
 
   // Account state
@@ -337,15 +341,12 @@ export function SettingsPage() {
   ]
 
   return (
-    <div
-      className="min-h-screen pt-20 pb-12 px-4"
-      style={{ background: '#F1ECE2' }}
-    >
+    <div className="min-h-screen pt-20 pb-12 px-4 bg-nofx-bg text-nofx-text">
       <div className="max-w-2xl mx-auto">
         <h1 className="text-xl font-bold text-nofx-text mb-6">Settings</h1>
 
         {/* Tabs */}
-        <div className="flex gap-1 mb-6 bg-nofx-bg-lighter border border-[rgba(26,24,19,0.14)] rounded-xl p-1">
+        <div className="flex gap-1 mb-6 bg-nofx-bg-lighter border border-nofx-border rounded-xl p-1">
           {tabs.map((tab) => (
             <button
               key={tab.key}
@@ -364,7 +365,7 @@ export function SettingsPage() {
         </div>
 
         {/* Tab Content */}
-        <div className="bg-nofx-bg-lighter backdrop-blur-xl border border-[rgba(26,24,19,0.14)] rounded-2xl p-6">
+        <div className="bg-nofx-bg-lighter backdrop-blur-xl border border-nofx-border rounded-2xl p-6">
           {/* Account Tab */}
           {activeTab === 'account' && (
             <div className="space-y-6">
@@ -375,7 +376,40 @@ export function SettingsPage() {
                 </p>
               </div>
 
-              <div className="border-t border-[rgba(26,24,19,0.14)] pt-6">
+              {/* Theme Settings */}
+              <div className="border-t border-nofx-border pt-6">
+                <h3 className="text-sm font-semibold text-nofx-text mb-3">
+                  Appearance / Theme
+                </h3>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setTheme('dark')}
+                    className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl border font-mono text-xs font-semibold transition-all ${
+                      isDark
+                        ? 'border-nofx-gold bg-nofx-gold/15 text-nofx-gold'
+                        : 'border-nofx-border bg-nofx-bg-deeper text-nofx-text-muted hover:text-nofx-text'
+                    }`}
+                  >
+                    <Moon size={16} />
+                    Dark Mode {isDark && '✓'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTheme('light')}
+                    className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl border font-mono text-xs font-semibold transition-all ${
+                      !isDark
+                        ? 'border-nofx-gold bg-nofx-gold/15 text-nofx-gold'
+                        : 'border-nofx-border bg-nofx-bg-deeper text-nofx-text-muted hover:text-nofx-text'
+                    }`}
+                  >
+                    <Sun size={16} />
+                    Light Mode {!isDark && '✓'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="border-t border-nofx-border pt-6">
                 <h3 className="text-sm font-semibold text-nofx-text mb-4">
                   Change Password
                 </h3>
@@ -389,7 +423,7 @@ export function SettingsPage() {
                         type={showPassword ? 'text' : 'password'}
                         value={newPassword}
                         onChange={(e) => setNewPassword(e.target.value)}
-                        className="w-full bg-nofx-bg-deeper border border-[rgba(26,24,19,0.14)] rounded-xl px-4 py-3 pr-11 text-sm text-nofx-text placeholder-nofx-text-muted focus:outline-none focus:border-nofx-gold/60 focus:ring-1 focus:ring-nofx-gold/30 transition-all"
+                        className="w-full bg-nofx-bg-deeper border border-nofx-border rounded-xl px-4 py-3 pr-11 text-sm text-nofx-text placeholder-nofx-text-muted focus:outline-none focus:border-nofx-gold/60 focus:ring-1 focus:ring-nofx-gold/30 transition-all"
                         placeholder="At least 8 characters"
                         required
                       />
@@ -451,7 +485,7 @@ export function SettingsPage() {
                         setEditingModel(model.id)
                         setShowModelModal(true)
                       }}
-                      className="w-full flex items-center justify-between px-4 py-3 rounded-xl bg-nofx-bg-deeper hover:bg-nofx-bg-deeper border border-[rgba(26,24,19,0.14)] transition-colors group"
+                      className="w-full flex items-center justify-between px-4 py-3 rounded-xl bg-nofx-bg-deeper hover:bg-nofx-bg-deeper border border-nofx-border transition-colors group"
                     >
                       <div className="flex items-center gap-3">
                         <div className="w-8 h-8 rounded-lg bg-nofx-bg-deeper flex items-center justify-center">
@@ -537,7 +571,7 @@ export function SettingsPage() {
                           setEditingExchange(exchange.id)
                           setShowExchangeModal(true)
                         }}
-                        className="w-full flex items-center justify-between px-4 py-3 rounded-xl bg-nofx-bg-deeper hover:bg-nofx-bg-deeper border border-[rgba(26,24,19,0.14)] transition-colors group"
+                        className="w-full flex items-center justify-between px-4 py-3 rounded-xl bg-nofx-bg-deeper hover:bg-nofx-bg-deeper border border-nofx-border transition-colors group"
                       >
                         <div className="flex items-center gap-3">
                           <div className="w-8 h-8 rounded-lg bg-nofx-bg-deeper flex items-center justify-center">
@@ -619,7 +653,7 @@ export function SettingsPage() {
               </p>
               <button
                 onClick={() => setShowTelegramModal(true)}
-                className="w-full flex items-center justify-between px-4 py-3 rounded-xl bg-nofx-bg-deeper hover:bg-nofx-bg-deeper border border-[rgba(26,24,19,0.14)] transition-colors group"
+                className="w-full flex items-center justify-between px-4 py-3 rounded-xl bg-nofx-bg-deeper hover:bg-nofx-bg-deeper border border-nofx-border transition-colors group"
               >
                 <div className="flex items-center gap-3">
                   <div className="w-8 h-8 rounded-lg bg-[#0088cc]/20 flex items-center justify-center">

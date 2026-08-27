@@ -8,14 +8,15 @@ export function modelHasCredential(model: AIModel) {
 export function exchangeHasKey(exchange: Exchange) {
   return Boolean(
     exchange.has_api_key ||
-      exchange.apiKey ||
-      (exchange.exchange_type === 'hyperliquid' &&
-        exchange.hyperliquidWalletAddr)
+    exchange.apiKey ||
+    (exchange.exchange_type === 'hyperliquid' && exchange.hyperliquidWalletAddr)
   )
 }
 
 export function pickTradingModel(models: AIModel[]) {
-  return models.find((model) => model.enabled && modelHasCredential(model)) || null
+  return (
+    models.find((model) => model.enabled && modelHasCredential(model)) || null
+  )
 }
 
 export function pickTradingExchange(exchanges: Exchange[]) {
@@ -26,7 +27,9 @@ export function pickTradingExchange(exchanges: Exchange[]) {
         exchange.enabled &&
         exchangeHasKey(exchange)
     ) ||
-    exchanges.find((exchange) => exchange.enabled && exchangeHasKey(exchange)) ||
+    exchanges.find(
+      (exchange) => exchange.enabled && exchangeHasKey(exchange)
+    ) ||
     null
   )
 }
@@ -49,6 +52,7 @@ export async function resolveLaunchExchange(): Promise<
 
   return {
     exchange: null,
-    reason: 'No enabled exchange with usable credentials is available. Configure a supported exchange first.',
+    reason:
+      'No enabled exchange with usable credentials is available. Configure a supported exchange first.',
   }
 }

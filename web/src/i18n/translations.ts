@@ -15,6 +15,11 @@ export const translations = {
     logout: 'Logout',
     switchTrader: 'Switch Trader:',
     view: 'View',
+    theme: 'Theme',
+    darkMode: 'Dark Mode',
+    lightMode: 'Light Mode',
+    switchToDarkMode: 'Switch to Dark Mode',
+    switchToLightMode: 'Switch to Light Mode',
 
     // Navigation
     realtimeNav: 'Leaderboard',
@@ -975,8 +980,7 @@ export const translations = {
       positionClosed: 'Position closed successfully',
       closeFailed: 'Failed to close position',
       closeAll: 'Close All',
-      confirmCloseAllPositions:
-        'Market-close ALL {count} open positions?',
+      confirmCloseAllPositions: 'Market-close ALL {count} open positions?',
       allPositionsClosed: 'All positions closed',
       closeAllPartial: '{failed} of {count} positions failed to close',
       hideAddress: 'Hide address',
@@ -1366,6 +1370,11 @@ export const translations = {
     logout: '退出',
     switchTrader: '切换交易员:',
     view: '查看',
+    theme: '主题',
+    darkMode: '深色模式',
+    lightMode: '浅色模式',
+    switchToDarkMode: '切换到深色模式',
+    switchToLightMode: '切换到浅色模式',
 
     // Navigation
     realtimeNav: '排行榜',
@@ -2636,6 +2645,11 @@ export const translations = {
     logout: 'Keluar',
     switchTrader: 'Ganti Trader:',
     view: 'Lihat',
+    theme: 'Tema',
+    darkMode: 'Mode Gelap',
+    lightMode: 'Mode Terang',
+    switchToDarkMode: 'Beralih ke Mode Gelap',
+    switchToLightMode: 'Beralih ke Mode Terang',
 
     // Navigation
     realtimeNav: 'Papan Peringkat',
@@ -3763,7 +3777,8 @@ export const translations = {
       otherApiEntry: 'Penyedia API Lain',
       otherApiEntryDesc:
         'Gunakan API key Anda sendiri untuk OpenAI, Claude, Gemini, DeepSeek, dan lainnya.',
-      payPerCall: 'Bayar sesuai pemakaian USDC · Semua Model AI · Tanpa API Key',
+      payPerCall:
+        'Bayar sesuai pemakaian USDC · Semua Model AI · Tanpa API Key',
       recommended: 'Terbaik',
       allModelsClaw:
         'Bayar per panggilan dengan USDC — mendukung semua model AI utama',

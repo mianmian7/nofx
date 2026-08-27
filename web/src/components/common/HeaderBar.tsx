@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Menu, X, ChevronDown, Settings, Languages } from 'lucide-react'
+import { ThemeSwitcher } from './ThemeSwitcher'
 import { t, type Language } from '../../i18n/translations'
 import { OFFICIAL_LINKS } from '../../constants/branding'
 import { getCurrentPageForPath, ROUTES, type Page } from '../../router/paths'
@@ -70,13 +71,7 @@ export default function HeaderBar({
           }}
           className="flex items-center gap-2 hover:opacity-80 transition-opacity cursor-pointer"
         >
-          <span
-            className="flex items-center justify-center w-8 h-8 rounded-md overflow-hidden shrink-0"
-            style={{
-              background: '#fff',
-              border: '1px solid rgba(26,24,19,0.12)',
-            }}
-          >
+          <span className="flex items-center justify-center w-8 h-8 rounded-md overflow-hidden shrink-0 bg-white dark:bg-white/10 border border-nofx-border transition-colors">
             <img src="/icons/nofx.svg" alt="NOFX Logo" className="w-8 h-8" />
           </span>
           <span className="text-lg font-bold text-nofx-gold tracking-wide">
@@ -170,18 +165,19 @@ export default function HeaderBar({
             {/* Dashboard context slot — terminal selector + status portals in here */}
             <div
               id="dash-header-slot"
-className="hidden min-w-0 flex-1 items-center justify-center overflow-hidden lg:flex"
+              className="hidden min-w-0 flex-1 items-center justify-center overflow-hidden lg:flex"
             />
           </div>
 
-          {/* Right Side - Language, Wallet, Social Links and User Actions */}
+          {/* Right Side - Theme, Language, Wallet, Social Links and User Actions */}
           <div className="flex shrink-0 items-center gap-2">
+            <ThemeSwitcher />
             <button
               type="button"
               onClick={() =>
                 onLanguageChange?.(language === 'zh' ? 'en' : 'zh')
               }
-              className="inline-flex items-center gap-1 rounded-lg border border-[rgba(26,24,19,0.14)] px-2.5 py-1.5 text-xs font-semibold text-nofx-text-muted transition hover:text-nofx-gold"
+              className="inline-flex items-center gap-1 rounded-lg border border-nofx-border px-2.5 py-1.5 text-xs font-semibold text-nofx-text-muted transition hover:text-nofx-gold hover:border-nofx-gold/40"
               title={language === 'zh' ? 'Switch to English' : '切换到中文'}
             >
               <Languages className="h-4 w-4" />
@@ -194,7 +190,7 @@ className="hidden min-w-0 flex-1 items-center justify-center overflow-hidden lg:
                 href={OFFICIAL_LINKS.github}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="p-2 rounded-lg transition-all hover:scale-110 text-nofx-text-muted hover:text-nofx-text hover:bg-[rgba(26,24,19,0.06)]"
+                className="p-2 rounded-lg transition-all hover:scale-110 text-nofx-text-muted hover:text-nofx-text hover:bg-nofx-gold/10"
                 title="GitHub"
               >
                 <svg
@@ -226,10 +222,7 @@ className="hidden min-w-0 flex-1 items-center justify-center overflow-hidden lg:
             </div>
 
             {/* Divider */}
-            <div
-className="hidden h-5 w-px 2xl:block"
-              style={{ background: 'rgba(26,24,19,0.15)' }}
-            />
+            <div className="hidden h-5 w-px 2xl:block bg-nofx-border" />
 
             {/* User Info and Actions */}
             {isLoggedIn && user ? (
@@ -238,7 +231,7 @@ className="hidden h-5 w-px 2xl:block"
                 <div className="relative" ref={userDropdownRef}>
                   <button
                     onClick={() => setUserDropdownOpen(!userDropdownOpen)}
-                    className="flex items-center gap-2 px-3 py-2 rounded transition-colors bg-nofx-bg-lighter border border-nofx-gold/20 hover:bg-[rgba(26,24,19,0.06)]"
+                    className="flex items-center gap-2 px-3 py-2 rounded transition-colors bg-nofx-bg-lighter border border-nofx-gold/20 hover:bg-nofx-gold/10"
                   >
                     <div className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold bg-nofx-gold text-white">
                       {user.email[0].toUpperCase()}
@@ -264,7 +257,7 @@ className="hidden h-5 w-px 2xl:block"
                           navigateInApp(ROUTES.settings)
                           setUserDropdownOpen(false)
                         }}
-                        className="w-full flex items-center gap-2 px-3 py-2 text-sm transition-colors hover:bg-[rgba(26,24,19,0.06)] text-nofx-text-muted hover:text-nofx-text"
+                        className="w-full flex items-center gap-2 px-3 py-2 text-sm transition-colors hover:bg-nofx-gold/10 text-nofx-text-muted hover:text-nofx-text"
                       >
                         <Settings className="w-3.5 h-3.5" />
                         Settings
@@ -486,12 +479,13 @@ className="hidden h-5 w-px 2xl:block"
                   ))}
                 </div>
 
+                <ThemeSwitcher showLabel className="w-full justify-center" />
                 <button
                   type="button"
                   onClick={() =>
                     onLanguageChange?.(language === 'zh' ? 'en' : 'zh')
                   }
-                  className="flex items-center justify-center gap-2 rounded-lg border border-[rgba(26,24,19,0.14)] px-3 py-2 text-sm font-semibold text-nofx-text-muted"
+                  className="flex items-center justify-center gap-2 rounded-lg border border-nofx-border px-3 py-2 text-sm font-semibold text-nofx-text-muted hover:text-nofx-gold hover:border-nofx-gold/40"
                 >
                   <Languages className="h-4 w-4" />
                   {language === 'zh' ? 'Switch to English' : '切换到中文'}

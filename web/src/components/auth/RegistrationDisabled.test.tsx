@@ -86,18 +86,11 @@ describe('RegistrationDisabled Component', () => {
   })
 
   describe('Styling', () => {
-    it('should have correct background color', () => {
+    it('should have correct background and text classes', () => {
       const { container } = renderComponent()
       const mainDiv = container.firstChild as HTMLElement
-      // Browser converts hex to rgb (cream paper theme)
-      expect(mainDiv.style.background).toMatch(/rgb\(241,\s*236,\s*226\)|#F1ECE2/i)
-    })
-
-    it('should have correct text color', () => {
-      const { container } = renderComponent()
-      const mainDiv = container.firstChild as HTMLElement
-      // Browser converts hex to rgb (ink text)
-      expect(mainDiv.style.color).toMatch(/rgb\(26,\s*24,\s*19\)|#1A1813/i)
+      expect(mainDiv.className).toContain('bg-nofx-bg')
+      expect(mainDiv.className).toContain('text-nofx-text')
     })
 
     it('should have centered layout', () => {

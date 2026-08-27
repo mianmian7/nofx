@@ -159,7 +159,12 @@ export async function signHyperliquidUserAction(
     ...action,
     signatureChainId: chainIdHex,
   }
-  const typedData = buildTypedData(primaryType, fields, signedAction, chainIdHex)
+  const typedData = buildTypedData(
+    primaryType,
+    fields,
+    signedAction,
+    chainIdHex
+  )
   const raw = await provider.request({
     method: 'eth_signTypedData_v4',
     params: [signerAddress, JSON.stringify(typedData)],

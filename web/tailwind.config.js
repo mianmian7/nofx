@@ -1,5 +1,6 @@
 /** @type {import('tailwindcss').Config} */
 export default {
+  darkMode: 'class',
   content: [
     "./index.html",
     "./src/**/*.{js,ts,jsx,tsx}",
@@ -7,26 +8,27 @@ export default {
   theme: {
     extend: {
       colors: {
-        // Cream-paper + vermilion terminal palette (was Neo-Gold dark)
         'nofx-gold': {
-          DEFAULT: '#E0483B', // vermilion brand accent
-          dim: 'rgba(224, 72, 59, 0.10)',
-          glow: 'rgba(224, 72, 59, 0.30)',
-          highlight: '#C8392B',
+          DEFAULT: 'var(--nofx-gold)',
+          dim: 'var(--nofx-gold-dim)',
+          glow: 'var(--nofx-gold-glow)',
+          highlight: 'var(--nofx-gold-highlight)',
         },
         'nofx-bg': {
-          DEFAULT: '#F1ECE2', // warm paper
-          deeper: '#E8E2D5',  // recessed paper
-          lighter: '#F7F4EC', // panel
+          DEFAULT: 'var(--nofx-bg)',
+          deeper: 'var(--nofx-bg-deeper)',
+          lighter: 'var(--nofx-bg-lighter)',
         },
-        'nofx-accent': '#E0483B', // vermilion (was cyan)
+        'nofx-accent': 'var(--nofx-accent)',
         'nofx-text': {
-          DEFAULT: '#1A1813', // ink
-          main: '#1A1813',
-          muted: '#8A8478',
+          DEFAULT: 'var(--text-primary)',
+          main: 'var(--text-primary)',
+          muted: 'var(--text-secondary)',
+          tertiary: 'var(--text-tertiary)',
         },
-        'nofx-success': '#2E8B57', // forest green
-        'nofx-danger': '#D6433A',  // crimson
+        'nofx-border': 'var(--nofx-border)',
+        'nofx-success': 'var(--binance-green)',
+        'nofx-danger': 'var(--binance-red)',
       },
       fontFamily: {
         sans: ['IBM Plex Mono', 'ui-monospace', 'Menlo', 'monospace'],
@@ -69,8 +71,8 @@ export default {
         },
       },
       boxShadow: {
-        'neon': '0 0 5px theme("colors.nofx-gold.DEFAULT"), 0 0 20px theme("colors.nofx-gold.dim")',
-        'neon-blue': '0 0 5px theme("colors.nofx-accent"), 0 0 20px rgba(0, 240, 255, 0.2)',
+        'neon': '0 0 5px var(--nofx-gold), 0 0 20px var(--nofx-gold-dim)',
+        'neon-blue': '0 0 5px var(--nofx-accent), 0 0 20px rgba(0, 240, 255, 0.2)',
       },
     },
   },

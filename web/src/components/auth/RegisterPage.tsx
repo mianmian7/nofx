@@ -123,7 +123,7 @@ export function RegisterPage() {
         <div className="flex justify-between items-center mb-8">
           <button
             onClick={() => navigate('/')}
-            className="flex items-center gap-2 text-nofx-text-muted hover:text-nofx-text transition-colors group px-3 py-1.5 rounded border border-transparent hover:border-[rgba(26,24,19,0.14)] bg-nofx-bg-deeper backdrop-blur-sm"
+            className="flex items-center gap-2 text-nofx-text-muted hover:text-nofx-text transition-colors group px-3 py-1.5 rounded border border-transparent hover:border-nofx-border bg-nofx-bg-deeper backdrop-blur-sm"
           >
             <div className="w-2 h-2 rounded-full bg-nofx-danger group-hover:animate-pulse"></div>
             <span className="text-xs font-mono uppercase tracking-widest">
@@ -151,8 +151,8 @@ export function RegisterPage() {
           </p>
         </div>
 
-        <div className="bg-nofx-bg-lighter backdrop-blur-md border border-[rgba(26,24,19,0.14)] rounded-lg overflow-hidden shadow-lg relative group">
-          <div className="flex items-center justify-between px-4 py-2 bg-nofx-bg-deeper border-b border-[rgba(26,24,19,0.14)]">
+        <div className="bg-nofx-bg-lighter backdrop-blur-md border border-nofx-border rounded-lg overflow-hidden shadow-lg relative group">
+          <div className="flex items-center justify-between px-4 py-2 bg-nofx-bg-deeper border-b border-nofx-border">
             <div className="flex gap-1.5">
               <div
                 className="w-2.5 h-2.5 rounded-full bg-nofx-danger/50 hover:bg-nofx-danger cursor-pointer transition-colors"
@@ -168,7 +168,7 @@ export function RegisterPage() {
           </div>
 
           <div className="p-6 md:p-8 relative">
-            <div className="mb-6 font-mono text-xs space-y-1 text-nofx-text-muted border-b border-[rgba(26,24,19,0.14)] pb-4">
+            <div className="mb-6 font-mono text-xs space-y-1 text-nofx-text-muted border-b border-nofx-border pb-4">
               <div className="flex gap-2">
                 <span className="text-nofx-success">➜</span>
                 <span>
@@ -190,7 +190,7 @@ export function RegisterPage() {
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="w-full bg-nofx-bg border border-[rgba(26,24,19,0.14)] rounded px-4 py-3 text-sm focus:border-nofx-gold focus:ring-1 focus:ring-nofx-gold/50 outline-none transition-all placeholder-nofx-text-muted text-nofx-text font-mono"
+                  className="w-full bg-nofx-bg border border-nofx-border rounded px-4 py-3 text-sm focus:border-nofx-gold focus:ring-1 focus:ring-nofx-gold/50 outline-none transition-all placeholder-nofx-text-muted text-nofx-text font-mono"
                   placeholder="user@nofx.os"
                   required
                 />
@@ -206,7 +206,7 @@ export function RegisterPage() {
                       type={showPassword ? 'text' : 'password'}
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
-                      className="w-full bg-nofx-bg border border-[rgba(26,24,19,0.14)] rounded px-4 py-3 text-sm focus:border-nofx-gold focus:ring-1 focus:ring-nofx-gold/50 outline-none transition-all placeholder-nofx-text-muted text-nofx-text font-mono pr-10"
+                      className="w-full bg-nofx-bg border border-nofx-border rounded px-4 py-3 text-sm focus:border-nofx-gold focus:ring-1 focus:ring-nofx-gold/50 outline-none transition-all placeholder-nofx-text-muted text-nofx-text font-mono pr-10"
                       placeholder="••••••••"
                       required
                     />
@@ -229,7 +229,7 @@ export function RegisterPage() {
                       type={showConfirmPassword ? 'text' : 'password'}
                       value={confirmPassword}
                       onChange={(e) => setConfirmPassword(e.target.value)}
-                      className="w-full bg-nofx-bg border border-[rgba(26,24,19,0.14)] rounded px-4 py-3 text-sm focus:border-nofx-gold focus:ring-1 focus:ring-nofx-gold/50 outline-none transition-all placeholder-nofx-text-muted text-nofx-text font-mono pr-10"
+                      className="w-full bg-nofx-bg border border-nofx-border rounded px-4 py-3 text-sm focus:border-nofx-gold focus:ring-1 focus:ring-nofx-gold/50 outline-none transition-all placeholder-nofx-text-muted text-nofx-text font-mono pr-10"
                       placeholder="••••••••"
                       required
                     />
@@ -250,7 +250,7 @@ export function RegisterPage() {
                 </div>
               </div>
 
-              <div className="bg-nofx-bg-deeper p-3 rounded border border-[rgba(26,24,19,0.14)]">
+              <div className="bg-nofx-bg-deeper p-3 rounded border border-nofx-border">
                 <div className="text-[10px] uppercase tracking-wider text-nofx-text-muted mb-2 font-bold flex items-center gap-2">
                   <div className="w-1 h-1 rounded-full bg-nofx-text-muted"></div>
                   Password Strength Protocol
@@ -296,7 +296,7 @@ export function RegisterPage() {
                         e.target.value.replace(/[^a-z0-9]/gi, '').toLowerCase()
                       )
                     }
-                    className="w-full bg-nofx-bg border border-[rgba(26,24,19,0.14)] rounded px-4 py-3 text-sm focus:border-nofx-gold focus:ring-1 focus:ring-nofx-gold/50 outline-none transition-all placeholder-nofx-text-muted text-nofx-text font-mono tracking-widest"
+                    className="w-full bg-nofx-bg border border-nofx-border rounded px-4 py-3 text-sm focus:border-nofx-gold focus:ring-1 focus:ring-nofx-gold/50 outline-none transition-all placeholder-nofx-text-muted text-nofx-text font-mono tracking-widest"
                     placeholder="XXXXXX"
                     maxLength={6}
                     required={betaMode}
@@ -334,7 +334,7 @@ export function RegisterPage() {
             </form>
           </div>
 
-          <div className="bg-nofx-bg-deeper p-3 flex justify-between items-center text-[10px] font-mono text-nofx-text-muted border-t border-[rgba(26,24,19,0.14)]">
+          <div className="bg-nofx-bg-deeper p-3 flex justify-between items-center text-[10px] font-mono text-nofx-text-muted border-t border-nofx-border">
             <div>ENCRYPTION: AES-256</div>
             <div>SECURE_REGISTRY</div>
           </div>

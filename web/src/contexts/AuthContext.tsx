@@ -91,10 +91,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
-  const handlePostAuthSuccess = (
-    authToken: string,
-    userInfo: User
-  ) => {
+  const handlePostAuthSuccess = (authToken: string, userInfo: User) => {
     reset401Flag()
 
     localStorage.setItem('auth_token', authToken)

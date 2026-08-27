@@ -18,14 +18,7 @@ export function Tooltip({ content, children }: TooltipProps) {
         {children}
       </div>
       {show && (
-        <div
-          className="absolute z-10 px-3 py-2 text-sm rounded-lg shadow-lg w-64 left-1/2 transform -translate-x-1/2 bottom-full mb-2"
-          style={{
-            background: '#F7F4EC',
-            color: '#1A1813',
-            border: '1px solid rgba(26,24,19,0.14)',
-          }}
-        >
+        <div className="absolute z-10 px-3 py-2 text-sm rounded-lg shadow-lg w-64 left-1/2 transform -translate-x-1/2 bottom-full mb-2 bg-nofx-bg-lighter text-nofx-text border border-nofx-border">
           {content}
           <div
             className="absolute left-1/2 transform -translate-x-1/2 top-full"
@@ -34,7 +27,7 @@ export function Tooltip({ content, children }: TooltipProps) {
               height: 0,
               borderLeft: '6px solid transparent',
               borderRight: '6px solid transparent',
-              borderTop: '6px solid #F7F4EC',
+              borderTop: '6px solid var(--panel-bg)',
             }}
           />
         </div>

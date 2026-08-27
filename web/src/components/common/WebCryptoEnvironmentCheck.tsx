@@ -73,8 +73,8 @@ export function WebCryptoEnvironmentCheck({
 
   const isCompact = variant === 'compact'
   const containerClass = isCompact
-    ? 'p-3 rounded border border-[rgba(26,24,19,0.14)] bg-nofx-bg-lighter space-y-3'
-    : 'p-4 rounded border border-[rgba(26,24,19,0.14)] bg-nofx-bg-lighter space-y-4'
+    ? 'p-3 rounded border border-nofx-border bg-nofx-bg-lighter space-y-3'
+    : 'p-4 rounded border border-nofx-border bg-nofx-bg-lighter space-y-4'
 
   const descriptionColor = isCompact ? '#8A8478' : '#8A8478'
   const showInfo = status !== 'idle'

@@ -24,16 +24,27 @@ export default function FooterSection({ language }: FooterSectionProps) {
       { name: 'Binance', href: 'https://www.binance.com/join?ref=NOFXENG' },
       { name: 'Bybit', href: 'https://partner.bybit.com/b/83856' },
       { name: 'OKX', href: 'https://www.okx.com/join/1865360' },
-      { name: 'Bitget', href: 'https://www.bitget.com/referral/register?from=referral&clacCode=c8a43172' },
+      {
+        name: 'Bitget',
+        href: 'https://www.bitget.com/referral/register?from=referral&clacCode=c8a43172',
+      },
       { name: 'Gate.io', href: 'https://www.gatenode.xyz/share/VQBGUAxY' },
       { name: 'KuCoin', href: 'https://www.kucoin.com/r/broker/CXEV7XKK' },
-      { name: 'Aster DEX', href: 'https://www.asterdex.com/en/referral/fdfc0e' },
+      {
+        name: 'Aster DEX',
+        href: 'https://www.asterdex.com/en/referral/fdfc0e',
+      },
       { name: 'Lighter', href: 'https://app.lighter.xyz/?referral=68151432' },
     ],
   }
 
   return (
-    <footer style={{ background: '#F1ECE2', borderTop: '1px solid rgba(26, 24, 19, 0.14)' }}>
+    <footer
+      style={{
+        background: '#F1ECE2',
+        borderTop: '1px solid rgba(26, 24, 19, 0.14)',
+      }}
+    >
       <div className="max-w-6xl mx-auto px-4 py-8 md:py-12">
         {/* Top Section */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-8 md:gap-10 mb-8 md:mb-12">
@@ -71,7 +82,10 @@ export default function FooterSection({ language }: FooterSectionProps) {
 
           {/* Links */}
           <div>
-            <h4 className="text-sm font-semibold mb-4" style={{ color: '#1A1813' }}>
+            <h4
+              className="text-sm font-semibold mb-4"
+              style={{ color: '#1A1813' }}
+            >
               {t('links', language)}
             </h4>
             <ul className="space-y-3">
@@ -93,7 +107,10 @@ export default function FooterSection({ language }: FooterSectionProps) {
 
           {/* Resources */}
           <div>
-            <h4 className="text-sm font-semibold mb-4" style={{ color: '#1A1813' }}>
+            <h4
+              className="text-sm font-semibold mb-4"
+              style={{ color: '#1A1813' }}
+            >
               {t('resources', language)}
             </h4>
             <ul className="space-y-3">
@@ -116,7 +133,10 @@ export default function FooterSection({ language }: FooterSectionProps) {
 
           {/* Supporters */}
           <div>
-            <h4 className="text-sm font-semibold mb-4" style={{ color: '#1A1813' }}>
+            <h4
+              className="text-sm font-semibold mb-4"
+              style={{ color: '#1A1813' }}
+            >
               {t('supporters', language)}
             </h4>
             <div className="flex flex-wrap gap-2">
@@ -126,7 +146,7 @@ export default function FooterSection({ language }: FooterSectionProps) {
                   href={link.href}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-xs border border-[rgba(26,24,19,0.14)] bg-nofx-bg-lighter rounded px-3 py-1.5 transition-all hover:border-[#E0483B] hover:text-[#E0483B] hover:bg-[#E0483B]/10"
+                  className="text-xs border border-nofx-border bg-nofx-bg-lighter rounded px-3 py-1.5 transition-all hover:border-[#E0483B] hover:text-[#E0483B] hover:bg-[#E0483B]/10"
                   style={{ color: '#8A8478' }}
                 >
                   {link.name}
@@ -139,7 +159,10 @@ export default function FooterSection({ language }: FooterSectionProps) {
         {/* Bottom Section */}
         <div
           className="pt-6 text-center text-xs"
-          style={{ color: '#8A8478', borderTop: '1px solid rgba(26, 24, 19, 0.14)' }}
+          style={{
+            color: '#8A8478',
+            borderTop: '1px solid rgba(26, 24, 19, 0.14)',
+          }}
         >
           <p className="mb-2">{t('footerTitle', language)}</p>
           <p style={{ color: '#B4B2A9' }}>{t('footerWarning', language)}</p>

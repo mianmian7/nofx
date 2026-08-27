@@ -93,23 +93,28 @@ export function ChartTabs({
 
   return (
     <div
-      className={`nofx-glass rounded-lg border border-[rgba(26,24,19,0.1)] relative z-10 w-full flex flex-col transition-all duration-300 ${typeof window !== 'undefined' && window.innerWidth < 768 ? 'h-[500px]' : 'h-[600px]'}`}
+      className={`nofx-glass rounded-lg border border-nofx-border relative z-10 w-full flex flex-col transition-all duration-300 ${typeof window !== 'undefined' && window.innerWidth < 768 ? 'h-[500px]' : 'h-[600px]'}`}
     >
-      <div
-        className="relative z-20 flex flex-wrap md:flex-nowrap items-center justify-between gap-y-2 px-3 py-2 shrink-0 backdrop-blur-md bg-nofx-bg/80 rounded-t-lg"
-        style={{ borderBottom: '1px solid rgba(26,24,19,0.14)' }}
-      >
+      <div className="relative z-20 flex flex-wrap md:flex-nowrap items-center justify-between gap-y-2 px-3 py-2 shrink-0 backdrop-blur-md bg-nofx-bg/80 rounded-t-lg border-b border-nofx-border">
         <div className="flex items-center gap-1">
           <button
             onClick={() => setActiveTab('equity')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-medium transition-all ${activeTab === 'equity' ? 'bg-nofx-gold/10 text-nofx-gold border border-nofx-gold/20' : 'text-nofx-text-muted hover:text-nofx-text-main hover:bg-black/5'}`}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-medium transition-all ${
+              activeTab === 'equity'
+                ? 'bg-nofx-gold/15 text-nofx-gold border border-nofx-gold/30 font-bold'
+                : 'text-nofx-text-muted hover:text-nofx-text hover:bg-nofx-gold/10'
+            }`}
           >
             <BarChart3 className="w-3.5 h-3.5" />
             <span>{t('accountEquityCurve', language)}</span>
           </button>
           <button
             onClick={() => setActiveTab('kline')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-medium transition-all ${activeTab === 'kline' ? 'bg-nofx-gold/10 text-nofx-gold border border-nofx-gold/20' : 'text-nofx-text-muted hover:text-nofx-text-main hover:bg-black/5'}`}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-medium transition-all ${
+              activeTab === 'kline'
+                ? 'bg-nofx-gold/15 text-nofx-gold border border-nofx-gold/30 font-bold'
+                : 'text-nofx-text-muted hover:text-nofx-text hover:bg-nofx-gold/10'
+            }`}
           >
             <CandlestickChart className="w-3.5 h-3.5" />
             <span>{t('marketChart', language)}</span>
@@ -122,7 +127,11 @@ export function ChartTabs({
                   setMarketType(type)
                   setChartSymbol(MARKET_CONFIG[type].symbol)
                 }}
-                className={`hidden md:inline-flex px-2 py-1 rounded text-[10px] ${marketType === type ? 'bg-nofx-gold/10 text-nofx-gold' : 'text-nofx-text-muted hover:text-nofx-text'}`}
+                className={`hidden md:inline-flex px-2 py-1 rounded text-[10px] ${
+                  marketType === type
+                    ? 'bg-nofx-gold/15 text-nofx-gold font-bold'
+                    : 'text-nofx-text-muted hover:text-nofx-text'
+                }`}
               >
                 {MARKET_CONFIG[type].label}
               </button>
@@ -131,15 +140,19 @@ export function ChartTabs({
 
         {activeTab === 'kline' && (
           <div className="flex items-center gap-2 md:gap-3 w-full md:w-auto min-w-0">
-            <span className="px-2.5 py-1 bg-nofx-bg-deeper border border-[rgba(26,24,19,0.14)] rounded text-[11px] font-bold text-nofx-text-main font-mono">
+            <span className="px-2.5 py-1 bg-nofx-bg-deeper border border-nofx-border rounded text-[11px] font-bold text-nofx-text font-mono">
               {market.label} · {chartSymbol}
             </span>
-            <div className="flex items-center bg-nofx-bg-deeper rounded border border-[rgba(26,24,19,0.14)] overflow-x-auto no-scrollbar">
+            <div className="flex items-center bg-nofx-bg-deeper rounded border border-nofx-border overflow-x-auto no-scrollbar">
               {INTERVALS.map((value) => (
                 <button
                   key={value}
                   onClick={() => setInterval(value)}
-                  className={`px-2 py-1 text-[10px] font-medium transition-all ${interval === value ? 'bg-nofx-gold/20 text-nofx-gold' : 'text-nofx-text-muted hover:text-nofx-text hover:bg-black/5'}`}
+                  className={`px-2 py-1 text-[10px] font-medium transition-all ${
+                    interval === value
+                      ? 'bg-nofx-gold/20 text-nofx-gold font-bold'
+                      : 'text-nofx-text-muted hover:text-nofx-text hover:bg-nofx-gold/10'
+                  }`}
                 >
                   {value}
                 </button>
@@ -153,11 +166,11 @@ export function ChartTabs({
                 value={symbolInput}
                 onChange={(event) => setSymbolInput(event.target.value)}
                 placeholder="BTC"
-                className="w-20 px-2 py-1 bg-nofx-bg-deeper border border-[rgba(26,24,19,0.14)] rounded-l text-[10px] text-nofx-text placeholder-nofx-text-muted focus:outline-none focus:border-nofx-gold/50 font-mono"
+                className="w-20 px-2 py-1 bg-nofx-bg-deeper border border-nofx-border rounded-l text-[10px] text-nofx-text placeholder-nofx-text-muted focus:outline-none focus:border-nofx-gold/50 font-mono"
               />
               <button
                 type="submit"
-                className="px-2 py-1 bg-black/5 border border-[rgba(26,24,19,0.14)] border-l-0 rounded-r text-[10px] text-nofx-text-muted hover:text-nofx-text"
+                className="px-2 py-1 bg-nofx-bg-lighter border border-nofx-border border-l-0 rounded-r text-[10px] text-nofx-text-muted hover:text-nofx-text"
               >
                 Go
               </button>

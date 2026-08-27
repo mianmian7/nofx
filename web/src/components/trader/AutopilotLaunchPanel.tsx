@@ -1,5 +1,11 @@
 import { useMemo, useState } from 'react'
-import { AlertCircle, CheckCircle2, Loader2, ShieldCheck, Zap } from 'lucide-react'
+import {
+  AlertCircle,
+  CheckCircle2,
+  Loader2,
+  ShieldCheck,
+  Zap,
+} from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { buildDashboardPath } from '../../router/paths'
@@ -101,7 +107,9 @@ export function AutopilotLaunchPanel({
 
       if (outcome.warning) toast.warning(outcome.warning)
       await onRefresh()
-      toast.success(isZh ? 'NOFX Autopilot 已启动' : 'NOFX Autopilot is running')
+      toast.success(
+        isZh ? 'NOFX Autopilot 已启动' : 'NOFX Autopilot is running'
+      )
       navigate(buildDashboardPath(outcome.traderId))
     } finally {
       setLaunching(false)

@@ -55,7 +55,6 @@ export function SetupPage() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
-
   // Clear any stale authentication state before creating the first account.
   useEffect(() => {
     localStorage.removeItem('auth_token')
@@ -153,7 +152,7 @@ export function SetupPage() {
           </div>
 
           {/* Card */}
-          <div className="bg-nofx-bg-lighter backdrop-blur-2xl border border-[rgba(26,24,19,0.14)] rounded-2xl p-8 shadow-lg">
+          <div className="bg-nofx-bg-lighter backdrop-blur-2xl border border-nofx-border rounded-2xl p-8 shadow-lg">
             <form onSubmit={handleSubmit} className="space-y-5">
               {/* Email */}
               <div>
@@ -164,7 +163,7 @@ export function SetupPage() {
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="w-full bg-nofx-bg-deeper border border-[rgba(26,24,19,0.14)] rounded-xl px-4 py-3 text-sm text-nofx-text placeholder-nofx-text-muted focus:outline-none focus:border-nofx-gold/60 focus:ring-1 focus:ring-nofx-gold/30 transition-all"
+                  className="w-full bg-nofx-bg-deeper border border-nofx-border rounded-xl px-4 py-3 text-sm text-nofx-text placeholder-nofx-text-muted focus:outline-none focus:border-nofx-gold/60 focus:ring-1 focus:ring-nofx-gold/30 transition-all"
                   placeholder={l.emailPlaceholder}
                   required
                   autoFocus
@@ -181,7 +180,7 @@ export function SetupPage() {
                     type={showPassword ? 'text' : 'password'}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    className="w-full bg-nofx-bg-deeper border border-[rgba(26,24,19,0.14)] rounded-xl px-4 py-3 pr-11 text-sm text-nofx-text placeholder-nofx-text-muted focus:outline-none focus:border-nofx-gold/60 focus:ring-1 focus:ring-nofx-gold/30 transition-all"
+                    className="w-full bg-nofx-bg-deeper border border-nofx-border rounded-xl px-4 py-3 pr-11 text-sm text-nofx-text placeholder-nofx-text-muted focus:outline-none focus:border-nofx-gold/60 focus:ring-1 focus:ring-nofx-gold/30 transition-all"
                     placeholder={l.passwordPlaceholder}
                     required
                   />

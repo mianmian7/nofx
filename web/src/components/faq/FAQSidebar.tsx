@@ -25,7 +25,7 @@ export function FAQSidebar({
                 {category.title}
               </h3>
             </div>
-            <ul className="space-y-0.5 border-l border-[rgba(26,24,19,0.12)]">
+            <ul className="space-y-0.5 border-l border-nofx-border">
               {category.items.map((item) => {
                 const isActive = activeItemId === item.id
                 return (

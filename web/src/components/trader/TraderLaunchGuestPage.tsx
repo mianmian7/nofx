@@ -77,7 +77,8 @@ export function TraderLaunchGuestPage() {
             </h1>
             <p className="mt-5 max-w-2xl text-base leading-7 text-nofx-text-muted">
               NOFX uses public Binance market data for dynamic candidates, then
-              sends closed candles to the AI model you configured, then executes only on Binance Futures.
+              sends closed candles to the AI model you configured, then executes
+              only on Binance Futures.
             </p>
             <div className="mt-7 flex flex-col gap-3 sm:flex-row">
               <Link
@@ -176,13 +177,24 @@ export function TraderLaunchGuestPage() {
           <div className="grid gap-3 lg:grid-cols-3">
             {[
               ['API key', 'Create a dedicated Binance Futures API key.'],
-              ['Permissions', 'Enable futures trading and keep withdrawals disabled.'],
-              ['IP allowlist', 'Restrict the key to the NOFX server public IP.'],
+              [
+                'Permissions',
+                'Enable futures trading and keep withdrawals disabled.',
+              ],
+              [
+                'IP allowlist',
+                'Restrict the key to the NOFX server public IP.',
+              ],
             ].map(([title, detail]) => (
-              <div key={title} className="rounded-xl border border-nofx-gold/20 bg-nofx-bg-deeper p-4">
+              <div
+                key={title}
+                className="rounded-xl border border-nofx-gold/20 bg-nofx-bg-deeper p-4"
+              >
                 <ShieldCheck className="mb-3 h-4 w-4 text-nofx-gold" />
                 <div className="font-semibold text-nofx-text">{title}</div>
-                <p className="mt-2 text-sm leading-6 text-nofx-text-muted">{detail}</p>
+                <p className="mt-2 text-sm leading-6 text-nofx-text-muted">
+                  {detail}
+                </p>
               </div>
             ))}
           </div>

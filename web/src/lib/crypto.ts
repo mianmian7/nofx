@@ -45,7 +45,9 @@ export class CryptoService {
     }
     const data = await response.json()
     if (typeof data.transport_encryption !== 'boolean') {
-      throw new Error('Server returned an invalid transport-encryption configuration')
+      throw new Error(
+        'Server returned an invalid transport-encryption configuration'
+      )
     }
     this._transportEncryption = data.transport_encryption
     return data
@@ -181,7 +183,9 @@ export class CryptoService {
     }
     const publicKey = data.public_key || ''
     if (this._transportEncryption !== true || !publicKey) {
-      throw new Error('Server did not provide an active transport-encryption key')
+      throw new Error(
+        'Server did not provide an active transport-encryption key'
+      )
     }
     return publicKey
   }

@@ -179,5 +179,4 @@ export const configApi = {
     if (!result.success) throw new Error('Failed to fetch server IP')
     return result.data!
   },
-
 }

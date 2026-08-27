@@ -136,7 +136,9 @@ export function ModelConfigModal({
   }
 
   const availableModels = allModels || []
-  const configuredIds = new Set(configuredModels?.map((model) => model.id) || [])
+  const configuredIds = new Set(
+    configuredModels?.map((model) => model.id) || []
+  )
   const stepLabels = [
     t('modelConfig.selectModel', language),
     t('modelConfig.configureApi', language),
@@ -160,7 +162,7 @@ export function ModelConfigModal({
                 <span aria-hidden="true">←</span>
               </button>
             )}
-            <h3 className="text-xl font-bold" style={{ color: '#1A1813' }}>
+            <h3 className="text-xl font-bold text-nofx-text">
               {editingModelId
                 ? t('editAIModel', language)
                 : t('addAIModel', language)}
@@ -181,8 +183,7 @@ export function ModelConfigModal({
             <button
               type="button"
               onClick={onClose}
-              className="rounded-lg p-2 transition-colors hover:bg-nofx-bg-deeper"
-              style={{ color: '#8A8478' }}
+              className="rounded-lg p-2 transition-colors hover:bg-nofx-bg-deeper text-nofx-text-muted hover:text-nofx-text"
               aria-label="Close"
             >
               ×
@@ -252,7 +253,7 @@ function ModelSelectionStep({
 }) {
   return (
     <div className="space-y-4">
-      <div className="text-sm font-semibold" style={{ color: '#1A1813' }}>
+      <div className="text-sm font-semibold text-nofx-text">
         {t('modelConfig.chooseProvider', language)}
       </div>
       <div className="grid grid-cols-3 gap-3 sm:grid-cols-4">
@@ -266,7 +267,7 @@ function ModelSelectionStep({
           />
         ))}
       </div>
-      <div className="pt-2 text-center text-xs" style={{ color: '#8A8478' }}>
+      <div className="pt-2 text-center text-xs text-nofx-text-muted">
         {t('modelConfig.modelsConfigured', language)}
       </div>
     </div>
@@ -317,23 +318,24 @@ function StandardProviderConfigForm({
 
   return (
     <form onSubmit={onSubmit} className="space-y-5">
-      <div className="flex items-center gap-4 rounded-xl border border-black/10 bg-[#F1ECE2] p-4">
+      <div className="flex items-center gap-4 rounded-xl border border-nofx-border bg-nofx-bg p-4">
         <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-nofx-gold/20 bg-nofx-bg-deeper">
           {getModelIcon(selectedModel.provider || selectedModel.id, {
             width: 32,
             height: 32,
           }) || (
-            <span className="text-lg font-bold" style={{ color: '#E0483B' }}>
+            <span className="text-lg font-bold text-nofx-gold">
               {selectedModel.name[0]}
             </span>
           )}
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-lg font-semibold" style={{ color: '#1A1813' }}>
+          <div className="text-lg font-semibold text-nofx-text">
             {getShortName(selectedModel.name)}
           </div>
-          <div className="text-xs" style={{ color: '#8A8478' }}>
-            {selectedModel.provider} · {providerConfig?.defaultModel || selectedModel.id}
+          <div className="text-xs text-nofx-text-muted">
+            {selectedModel.provider} ·{' '}
+            {providerConfig?.defaultModel || selectedModel.id}
           </div>
         </div>
         {providerConfig?.apiUrl && (
@@ -357,26 +359,23 @@ function StandardProviderConfigForm({
       )}
 
       <div className="space-y-2">
-        <label className="text-sm font-semibold" style={{ color: '#1A1813' }}>
-          API Key
-        </label>
+        <label className="text-sm font-semibold text-nofx-text">API Key</label>
         <input
           type="password"
           value={apiKey}
           onChange={(event) => onApiKeyChange(event.target.value)}
-          placeholder={hasSavedKey ? 'Saved. Re-enter to replace.' : t('enterAPIKey', language)}
-          className="w-full rounded-xl px-4 py-3"
-          style={{
-            background: '#F1ECE2',
-            border: '1px solid rgba(26,24,19,0.14)',
-            color: '#1A1813',
-          }}
+          placeholder={
+            hasSavedKey
+              ? 'Saved. Re-enter to replace.'
+              : t('enterAPIKey', language)
+          }
+          className="w-full rounded-xl px-4 py-3 bg-nofx-bg border border-nofx-border text-nofx-text focus:border-nofx-gold focus:outline-none"
           required={!editingModelId || !hasSavedKey}
         />
       </div>
 
       <div className="space-y-2">
-        <label className="text-sm font-semibold" style={{ color: '#1A1813' }}>
+        <label className="text-sm font-semibold text-nofx-text">
           {t('customBaseURL', language)}
         </label>
         <input
@@ -384,20 +383,15 @@ function StandardProviderConfigForm({
           value={baseUrl}
           onChange={(event) => onBaseUrlChange(event.target.value)}
           placeholder={t('customBaseURLPlaceholder', language)}
-          className="w-full rounded-xl px-4 py-3"
-          style={{
-            background: '#F1ECE2',
-            border: '1px solid rgba(26,24,19,0.14)',
-            color: '#1A1813',
-          }}
+          className="w-full rounded-xl px-4 py-3 bg-nofx-bg border border-nofx-border text-nofx-text focus:border-nofx-gold focus:outline-none"
         />
-        <div className="text-xs" style={{ color: '#8A8478' }}>
+        <div className="text-xs text-nofx-text-muted">
           {t('leaveBlankForDefault', language)}
         </div>
       </div>
 
       <div className="space-y-2">
-        <label className="text-sm font-semibold" style={{ color: '#1A1813' }}>
+        <label className="text-sm font-semibold text-nofx-text">
           {language === 'zh' ? '默认模型名称' : 'Primary model name'}
         </label>
         <input
@@ -405,25 +399,20 @@ function StandardProviderConfigForm({
           value={modelName}
           onChange={(event) => onModelNameChange(event.target.value)}
           placeholder={providerConfig?.defaultModel || selectedModel.id}
-          className="w-full rounded-xl px-4 py-3"
-          style={{
-            background: '#F1ECE2',
-            border: '1px solid rgba(26,24,19,0.14)',
-            color: '#1A1813',
-          }}
+          className="w-full rounded-xl px-4 py-3 bg-nofx-bg border border-nofx-border text-nofx-text focus:border-nofx-gold focus:outline-none"
         />
       </div>
 
       <div className="space-y-2">
         <div className="flex items-center justify-between gap-3">
-          <label className="text-sm font-semibold" style={{ color: '#1A1813' }}>
+          <label className="text-sm font-semibold text-nofx-text">
             {language === 'zh' ? 'API 模型列表' : 'API model catalog'}
           </label>
           <button
             type="button"
             onClick={onDiscoverModels}
             disabled={isDiscoveringModels || (!apiKey.trim() && !hasSavedKey)}
-            className="rounded-lg bg-[#E8E2D5] px-3 py-1.5 text-xs font-semibold disabled:opacity-50"
+            className="rounded-lg bg-nofx-bg-deeper border border-nofx-border px-3 py-1.5 text-xs font-semibold text-nofx-text disabled:opacity-50 hover:border-nofx-gold"
           >
             {isDiscoveringModels
               ? language === 'zh'
@@ -493,7 +482,10 @@ function StandardProviderConfigForm({
                             ? modelNames.filter((item) => item !== name)
                             : [...modelNames, name]
                           onModelNamesChange(nextModelNames)
-                          if (name === modelName && !nextModelNames.includes(name)) {
+                          if (
+                            name === modelName &&
+                            !nextModelNames.includes(name)
+                          ) {
                             onModelNameChange(nextModelNames[0] || '')
                           } else if (!modelName && nextModelNames.length > 0) {
                             onModelNameChange(nextModelNames[0])

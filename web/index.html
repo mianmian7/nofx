@@ -12,6 +12,25 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
     <link rel="icon" type="image/svg+xml" href="/icons/nofx.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>NOFX - AI Auto Trading Dashboard</title>
+    <script>
+      (function() {
+        try {
+          var saved = localStorage.getItem('nofx-theme');
+          var theme = (saved === 'light') ? 'light' : 'dark';
+          if (theme === 'dark') {
+            document.documentElement.classList.add('dark');
+            document.documentElement.classList.remove('light');
+            document.documentElement.setAttribute('data-theme', 'dark');
+            document.documentElement.style.colorScheme = 'dark';
+          } else {
+            document.documentElement.classList.remove('dark');
+            document.documentElement.classList.add('light');
+            document.documentElement.setAttribute('data-theme', 'light');
+            document.documentElement.style.colorScheme = 'light';
+          }
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <!-- Google Tag Manager (noscript) -->

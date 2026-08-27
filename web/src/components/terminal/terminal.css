@@ -1,27 +1,25 @@
 /*
- * NOFX orchestration terminal theme — cream paper + vermilion accent.
- * Scoped under .nofx-terminal so it can be built and previewed without
- * disturbing the global Neo-Gold theme. The global flip (task #6) promotes
- * these tokens to :root once the look is approved.
+ * NOFX orchestration terminal theme — supports both dark and light modes
+ * via CSS custom properties.
  */
 @import url('https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&display=swap');
 
 .nofx-terminal {
-  /* surfaces */
-  --tm-paper: #f1ece2;
-  --tm-panel: #f7f4ec;
-  --tm-ink: #1a1813;
-  --tm-ink-2: #3a372e;
-  --tm-muted: #8a8478;
-  --tm-hair: #d8d2c4;
-  --tm-rule: #1a1813;
-  --tm-head: #16140f;
+  /* surfaces linked to global theme */
+  --tm-paper: var(--nofx-bg);
+  --tm-panel: var(--nofx-bg-lighter);
+  --tm-ink: var(--text-primary);
+  --tm-ink-2: var(--text-secondary);
+  --tm-muted: var(--text-tertiary);
+  --tm-hair: var(--nofx-border);
+  --tm-rule: var(--nofx-border);
+  --tm-head: var(--nofx-bg-deeper);
 
   /* brand + semantic */
-  --tm-red: #e0483b;
-  --tm-red-soft: #f6d9d2;
-  --tm-up: #2e8b57;
-  --tm-dn: #d6433a;
+  --tm-red: var(--nofx-gold);
+  --tm-red-soft: var(--nofx-gold-dim);
+  --tm-up: var(--binance-green);
+  --tm-dn: var(--binance-red);
 
   --tm-mono: 'IBM Plex Mono', 'Courier New', monospace;
   --tm-px: 'Silkscreen', 'IBM Plex Mono', monospace;
@@ -30,6 +28,9 @@
   color: var(--tm-ink);
   font-family: var(--tm-mono);
   font-variant-numeric: tabular-nums;
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease;
 }
 
 .terminal-dashboard-shell {

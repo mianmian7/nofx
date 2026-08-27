@@ -89,7 +89,7 @@ export function WhitelistFullPage({ onBack }: WhitelistFullPageProps) {
             <div className="space-y-3">
               <button
                 onClick={handleBackToLogin}
-                className="w-full flex items-center justify-center gap-2 py-3 border border-[rgba(26,24,19,0.14)] bg-nofx-bg hover:bg-nofx-bg-deeper hover:border-[#D6433A] hover:text-[#D6433A] text-nofx-text-muted transition-all text-xs font-bold tracking-widest uppercase group"
+                className="w-full flex items-center justify-center gap-2 py-3 border border-nofx-border bg-nofx-bg hover:bg-nofx-bg-deeper hover:border-[#D6433A] hover:text-[#D6433A] text-nofx-text-muted transition-all text-xs font-bold tracking-widest uppercase group"
               >
                 <ArrowLeft className="w-3 h-3 group-hover:-translate-x-1 transition-transform" />
                 RETURN TO LOGIN
@@ -100,7 +100,7 @@ export function WhitelistFullPage({ onBack }: WhitelistFullPageProps) {
                   href={OFFICIAL_LINKS.telegram}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex items-center justify-center gap-2 py-2 border border-[rgba(26,24,19,0.14)] bg-nofx-bg hover:bg-nofx-bg-deeper text-nofx-text-muted hover:text-nofx-text transition-colors text-[10px] uppercase"
+                  className="flex items-center justify-center gap-2 py-2 border border-nofx-border bg-nofx-bg hover:bg-nofx-bg-deeper text-nofx-text-muted hover:text-nofx-text transition-colors text-[10px] uppercase"
                 >
                   <Send className="w-3 h-3" />
                   Support
@@ -110,7 +110,7 @@ export function WhitelistFullPage({ onBack }: WhitelistFullPageProps) {
           </div>
 
           {/* Footer */}
-          <div className="bg-nofx-bg-deeper p-2 text-[9px] text-nofx-text-muted text-center border-t border-[rgba(26,24,19,0.14)] font-mono uppercase">
+          <div className="bg-nofx-bg-deeper p-2 text-[9px] text-nofx-text-muted text-center border-t border-nofx-border font-mono uppercase">
             ERR_CODE: WLIST_0x403 // SECURITY_LAYER_ACTIVE
           </div>
         </div>

@@ -931,9 +931,9 @@ export function HyperliquidWalletConnect({
 
       {(open || inline) && (
         <div
-          className={`${inline ? 'relative w-full' : 'absolute right-0 top-full mt-2 w-[min(420px,calc(100vw-2rem))] shadow-2xl shadow-black/10'} max-h-[calc(100vh-5.5rem)] overflow-y-auto rounded-2xl border border-[rgba(26,24,19,0.14)] bg-nofx-bg-lighter z-[80]`}
+          className={`${inline ? 'relative w-full' : 'absolute right-0 top-full mt-2 w-[min(420px,calc(100vw-2rem))] shadow-2xl shadow-black/10'} max-h-[calc(100vh-5.5rem)] overflow-y-auto rounded-2xl border border-nofx-border bg-nofx-bg-lighter z-[80]`}
         >
-          <div className="flex items-start justify-between gap-4 border-b border-[rgba(26,24,19,0.14)] p-4 sm:p-5">
+          <div className="flex items-start justify-between gap-4 border-b border-nofx-border p-4 sm:p-5">
             <div className="min-w-0">
               <h2 className="font-bold text-nofx-text">Connect Hyperliquid</h2>
               <p className="mt-1 text-xs leading-5 text-nofx-text-muted">
@@ -944,7 +944,7 @@ export function HyperliquidWalletConnect({
               <button
                 type="button"
                 onClick={() => setOpen(false)}
-                className="p-1 rounded hover:bg-[rgba(26,24,19,0.06)] text-nofx-text-muted"
+                className="p-1 rounded hover:bg-nofx-gold/10 text-nofx-text-muted"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -1013,7 +1013,7 @@ export function HyperliquidWalletConnect({
                     href="https://rabby.io/"
                     target="_blank"
                     rel="noreferrer"
-                    className="inline-flex items-center gap-2 rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-deeper px-3 py-2 text-xs font-semibold text-nofx-text hover:border-[rgba(26,24,19,0.24)] hover:bg-nofx-bg"
+                    className="inline-flex items-center gap-2 rounded-lg border border-nofx-border bg-nofx-bg-deeper px-3 py-2 text-xs font-semibold text-nofx-text hover:border-nofx-border hover:bg-nofx-bg"
                   >
                     <Download className="h-3.5 w-3.5" />
                     {text.installRabby}
@@ -1022,7 +1022,7 @@ export function HyperliquidWalletConnect({
                     href="https://metamask.io/download/"
                     target="_blank"
                     rel="noreferrer"
-                    className="inline-flex items-center gap-2 rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-deeper px-3 py-2 text-xs font-semibold text-nofx-text hover:border-[rgba(26,24,19,0.24)] hover:bg-nofx-bg"
+                    className="inline-flex items-center gap-2 rounded-lg border border-nofx-border bg-nofx-bg-deeper px-3 py-2 text-xs font-semibold text-nofx-text hover:border-nofx-border hover:bg-nofx-bg"
                   >
                     <ExternalLink className="h-3.5 w-3.5" />
                     {text.installMetaMask}
@@ -1072,7 +1072,7 @@ export function HyperliquidWalletConnect({
             )}
 
             <div
-              className={`rounded-xl border border-[rgba(26,24,19,0.14)] bg-nofx-bg-deeper p-3 space-y-2 text-xs ${state.mainWallet ? '' : 'hidden'}`}
+              className={`rounded-xl border border-nofx-border bg-nofx-bg-deeper p-3 space-y-2 text-xs ${state.mainWallet ? '' : 'hidden'}`}
             >
               {state.mainWallet && (
                 <div className="flex items-center justify-between gap-3">
@@ -1107,7 +1107,7 @@ export function HyperliquidWalletConnect({
                 </span>
               </div>
               {complete && state.mainWallet && (
-                <div className="flex items-center justify-between gap-3 border-t border-[rgba(26,24,19,0.14)] pt-2">
+                <div className="flex items-center justify-between gap-3 border-t border-nofx-border pt-2">
                   <span className="text-nofx-text-muted">
                     {text.agentExpiry}
                   </span>
@@ -1251,7 +1251,7 @@ export function HyperliquidWalletConnect({
               )}
             </div>
 
-            <div className="flex items-center justify-between pt-2 border-t border-[rgba(26,24,19,0.14)]">
+            <div className="flex items-center justify-between pt-2 border-t border-nofx-border">
               <a
                 href="https://app.hyperliquid.xyz/"
                 target="_blank"
