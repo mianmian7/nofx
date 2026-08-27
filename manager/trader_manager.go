@@ -111,6 +111,7 @@ func (tm *TraderManager) startupDelaysLocked() map[string]time.Duration {
 			ID:              traderID,
 			Name:            at.GetName(),
 			ModelKey:        at.GetAIModelScheduleIdentity(),
+			Exchange:        at.GetExchange(),
 			ScanInterval:    at.GetScanInterval(),
 			ConfiguredDelay: at.GetStartupDelay(),
 		})
