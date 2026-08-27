@@ -20,8 +20,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// handleKlines returns exchange-aware public K-line data. Binance, OKX, and
-// Bitget use native providers; legacy venues remain on the CoinAnk adapter.
+// handleKlines returns exchange-aware public K-line data for UI consumers.
+// Binance, OKX, and Bitget use native providers; legacy venue display remains
+// on the explicit CoinAnk adapter and is not used by trading analysis.
 func (s *Server) handleKlines(c *gin.Context) {
 	// Get query parameters
 	symbol := c.Query("symbol")

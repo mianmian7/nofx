@@ -1,5 +1,9 @@
 package market
 
+// CoinAnk depth streaming is retained for diagnostics/legacy display only.
+// Native trading providers deliberately use their exchange REST depth path and
+// never call streamedDepth.
+
 import (
 	"context"
 	"errors"

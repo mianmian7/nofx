@@ -29,7 +29,7 @@ func TestMarketDataHealthEndpointIncludesCapabilitiesAndStreams(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if response.Capabilities["binance"] == "" || response.Capabilities["lighter"] != "none" || response.KlineSources == nil || response.DepthStreams == nil {
+	if response.Capabilities["binance"] == "" || response.Capabilities["bybit"] != "none" || response.Capabilities["lighter"] != "none" || response.KlineSources == nil || response.DepthStreams == nil {
 		t.Fatalf("market-data health response = %#v", response)
 	}
 }

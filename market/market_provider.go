@@ -36,17 +36,14 @@ type MarketDataProvider interface {
 // exchange-neutral market-data interface. APIClient retains ownership of the
 // Binance proxy, cache, fresh/stale, singleflight, and rate-limit behavior.
 type BinanceMarketDataProvider struct {
-	client          *APIClient
-	streamDepth     bool
-	redundantKlines bool
+	client *APIClient
 }
 
 func NewBinanceMarketDataProvider(client *APIClient) *BinanceMarketDataProvider {
 	if client == nil {
 		client = NewAPIClient()
 	}
-	liveUpstreams := strings.Contains(strings.ToLower(client.binanceBaseURL()), "binance.com")
-	return &BinanceMarketDataProvider{client: client, streamDepth: liveUpstreams, redundantKlines: liveUpstreams}
+	return &BinanceMarketDataProvider{client: client}
 }
 
 func (provider *BinanceMarketDataProvider) Exchange() string { return "binance" }
@@ -79,19 +76,7 @@ func (provider *BinanceMarketDataProvider) GetKlinesFreshContext(ctx context.Con
 		ctx = context.Background()
 	}
 	normalizedSymbol := provider.NormalizeSymbol(symbol)
-	if provider.redundantKlines {
-		klines, proof, err := hedgedFreshKlines(ctx, provider.Exchange(), normalizedSymbol, interval,
-			func(ctx context.Context) ([]Kline, error) {
-				return provider.client.GetKlinesFreshContext(ctx, normalizedSymbol, interval, limit)
-			},
-			func(ctx context.Context) ([]Kline, error) {
-				return getKlinesFromCoinAnkFreshContext(ctx, normalizedSymbol, interval, provider.Exchange(), limit)
-			},
-		)
-		recordKlineHealth(provider.Exchange(), normalizedSymbol, interval, proof, err)
-		return klines, err
-	}
-	klines, err := provider.client.GetKlinesFresh(normalizedSymbol, interval, limit)
+	klines, err := provider.client.GetKlinesFreshContext(ctx, normalizedSymbol, interval, limit)
 	recordKlineHealth(provider.Exchange(), normalizedSymbol, interval, proofFromKlines(provider.Exchange(), "primary-rest", klines), err)
 	return klines, err
 }
@@ -101,11 +86,6 @@ func (provider *BinanceMarketDataProvider) GetDepth(symbol string, limit int) (*
 }
 
 func (provider *BinanceMarketDataProvider) GetDepthFresh(symbol string, limit int) (*DepthSnapshot, error) {
-	if provider.streamDepth {
-		if depth, err := streamedDepth(provider.Exchange(), provider.NormalizeSymbol(symbol), limit); err == nil {
-			return depth, nil
-		}
-	}
 	depth, err := provider.client.GetDepthFresh(provider.NormalizeSymbol(symbol), limit)
 	if err == nil {
 		recordDepthRESTFallback(provider.Exchange(), symbol, depth)
@@ -143,13 +123,6 @@ func (provider *BinanceMarketDataProvider) ListPerpetualSymbols(limit int) ([]st
 
 func (provider *BinanceMarketDataProvider) ValidateMarketAvailability(symbol string) (*MarketAvailability, error) {
 	return provider.client.ValidateMarketAvailability(provider.NormalizeSymbol(symbol))
-}
-
-// coinAnkMarketDataProvider preserves support for exchanges that do not yet
-// have a native provider in this package. It intentionally does not fall back
-// to Binance: a successful response must identify the requested venue.
-type coinAnkMarketDataProvider struct {
-	exchange string
 }
 
 // unavailableMarketDataProvider preserves the requested exchange identity
@@ -236,90 +209,24 @@ func (provider *unavailableMarketDataProvider) ValidateMarketAvailability(string
 	return nil, provider.unavailableError()
 }
 
-func newCoinAnkMarketDataProvider(exchange string) *coinAnkMarketDataProvider {
-	return &coinAnkMarketDataProvider{exchange: strings.ToLower(strings.TrimSpace(exchange))}
-}
-
-func (provider *coinAnkMarketDataProvider) Exchange() string { return provider.exchange }
-func (provider *coinAnkMarketDataProvider) Capabilities() MarketCapability {
-	if provider.exchange == "kucoin" {
-		return 0
-	}
-	return CapabilityPrice | CapabilityKlines
-}
-
-func (provider *coinAnkMarketDataProvider) NormalizeSymbol(symbol string) string {
-	return NormalizeForExchange(provider.exchange, symbol)
-}
-
-func (provider *coinAnkMarketDataProvider) GetCurrentPrice(symbol string) (float64, error) {
-	return provider.GetCurrentPriceFresh(symbol)
-}
-
-func (provider *coinAnkMarketDataProvider) GetCurrentPriceFresh(symbol string) (float64, error) {
-	klines, err := provider.GetKlinesFresh(symbol, "1m", 1)
-	if err != nil {
-		return 0, err
-	}
-	if len(klines) == 0 || klines[len(klines)-1].Close <= 0 {
-		return 0, fmt.Errorf("%s returned no current price for %s", provider.exchange, symbol)
-	}
-	return klines[len(klines)-1].Close, nil
-}
-
-func (provider *coinAnkMarketDataProvider) GetKlines(symbol, interval string, limit int) ([]Kline, error) {
-	return provider.GetKlinesFresh(symbol, interval, limit)
-}
-
-func (provider *coinAnkMarketDataProvider) GetKlinesFresh(symbol, interval string, limit int) ([]Kline, error) {
-	return getKlinesFromCoinAnkFresh(provider.NormalizeSymbol(symbol), interval, provider.exchange, limit)
-}
-
-func (provider *coinAnkMarketDataProvider) GetDepth(string, int) (*DepthSnapshot, error) {
-	return nil, fmt.Errorf("%s public depth provider is not implemented", provider.exchange)
-}
-
-func (provider *coinAnkMarketDataProvider) GetDepthFresh(symbol string, limit int) (*DepthSnapshot, error) {
-	return provider.GetDepth(symbol, limit)
-}
-
-func (provider *coinAnkMarketDataProvider) GetFundingSnapshot(string) (*FundingSnapshot, error) {
-	return nil, fmt.Errorf("%s public funding provider is not implemented", provider.exchange)
-}
-
-func (provider *coinAnkMarketDataProvider) GetFundingHistory(string, int64, int64) ([]FundingEvent, error) {
-	return nil, fmt.Errorf("%s public funding history provider is not implemented", provider.exchange)
-}
-
-func (provider *coinAnkMarketDataProvider) GetOpenInterest(string) (*OIData, error) {
-	return nil, fmt.Errorf("%s public open-interest provider is not implemented", provider.exchange)
-}
-
-func (provider *coinAnkMarketDataProvider) GetContractSpec(string) (*ContractSpec, error) {
-	return nil, fmt.Errorf("%s contract specification provider is not implemented", provider.exchange)
-}
-
-func (provider *coinAnkMarketDataProvider) ListPerpetualSymbols(int) ([]string, error) {
-	return nil, fmt.Errorf("%s perpetual-symbol provider is not implemented", provider.exchange)
-}
-
-func (provider *coinAnkMarketDataProvider) ValidateMarketAvailability(symbol string) (*MarketAvailability, error) {
-	price, err := provider.GetCurrentPrice(symbol)
-	if err != nil {
-		return nil, err
-	}
-	return &MarketAvailability{
-		Symbol:    provider.NormalizeSymbol(symbol),
-		Price:     price,
-		CheckedAt: nowUTC(),
-	}, nil
-}
-
 func nowUTC() (value time.Time) { return time.Now().UTC() }
 
+func proofFromKlines(exchange, transport string, klines []Kline) FreshnessProof {
+	if len(klines) == 0 {
+		return FreshnessProof{Exchange: exchange, Transport: transport}
+	}
+	receivedAt := nowUTC()
+	sourceTime := time.UnixMilli(klines[len(klines)-1].OpenTime).UTC()
+	return FreshnessProof{
+		Exchange: exchange, Transport: transport, SourceTime: sourceTime,
+		ReceivedAt: receivedAt, Age: receivedAt.Sub(sourceTime), SequenceOK: true, Reconciled: true,
+	}
+}
+
 // NewMarketDataProvider returns the canonical public provider for an exchange.
-// Binance, OKX, and Bitget use native APIs; other supported legacy CEXes keep
-// their CoinAnk path until a native provider is added.
+// Trading analysis may use only native exchange data. Exchanges without a
+// native provider remain explicitly unavailable; UI-only CoinAnk adapters are
+// kept in their API handlers and are never selected here.
 func NewMarketDataProvider(exchange string) (MarketDataProvider, error) {
 	normalizedExchange := strings.ToLower(strings.TrimSpace(exchange))
 	switch normalizedExchange {
@@ -334,7 +241,7 @@ func NewMarketDataProvider(exchange string) (MarketDataProvider, error) {
 			return NewBitgetMarketDataProvider()
 		}), nil
 	case "bybit", "gate", "kucoin", "hyperliquid", "aster":
-		return newCoinAnkMarketDataProvider(normalizedExchange), nil
+		return NewUnavailableMarketDataProvider(normalizedExchange, fmt.Errorf("native market-data provider unavailable; CoinAnk is disabled for trading")), nil
 	default:
 		return nil, fmt.Errorf("unsupported public market-data exchange: %s", exchange)
 	}

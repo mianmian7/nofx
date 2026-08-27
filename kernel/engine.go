@@ -260,8 +260,8 @@ func (e *StrategyEngine) isHyperliquidExchange() bool {
 }
 
 // ValidateCandidateContract verifies that a symbol is an active USDT
-// perpetual on a native unified venue. Legacy CoinAnk-only venues retain
-// their existing K-line validation path until native contract metadata exists.
+// perpetual on a native unified venue. Exchanges without a native provider
+// remain unavailable to trading analysis.
 func (e *StrategyEngine) ValidateCandidateContract(symbol string) (*market.ContractSpec, error) {
 	if e == nil || e.marketDataProvider == nil {
 		return nil, fmt.Errorf("strategy market-data provider is unavailable")

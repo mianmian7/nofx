@@ -32,137 +32,11 @@ func Get(symbol string) (*Data, error) {
 
 // GetWithExchange retrieves market data for the specified token using exchange-specific data
 func GetWithExchange(symbol, exchange string) (*Data, error) {
-	if isUnifiedPublicExchange(exchange) {
-		provider, providerErr := NewMarketDataProvider(exchange)
-		if providerErr != nil {
-			return nil, providerErr
-		}
-		return getWithTimeframesFromProvider(provider, symbol, []string{"3m", "4h"}, "3m", 100)
+	provider, providerErr := NewMarketDataProvider(exchange)
+	if providerErr != nil {
+		return nil, providerErr
 	}
-
-	var klines3m, klines4h []Kline
-	var err error
-	// Normalize within the selected venue. Explicit Binance TradFi USDT
-	// contracts must never be reinterpreted through the Hyperliquid XYZ list.
-	symbol = NormalizeForExchange(exchange, symbol)
-
-	// Check if this is an xyz dex asset (use Hyperliquid API)
-	isXyzAsset := IsXyzDexAsset(symbol)
-
-	// For hyperliquid exchange, also use Hyperliquid API
-	useHyperliquidAPI := strings.EqualFold(exchange, "hyperliquid") && isXyzAsset
-
-	// Get 3-minute K-line data (or 5-minute for xyz assets as 3m may not be available)
-	if strings.EqualFold(exchange, "binance") {
-		klines3m, err = GetBinanceKlines(symbol, "3m", 100)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get 3-minute K-line from Binance: %v", err)
-		}
-	} else if useHyperliquidAPI {
-		// Use Hyperliquid API for xyz dex assets (use 5m since 3m may not be available)
-		klines3m, err = getKlinesFromHyperliquid(symbol, "5m", 100)
-		if err != nil {
-			return nil, fmt.Errorf("Failed to get 5-minute K-line from Hyperliquid: %v", err)
-		}
-	} else {
-		// Use CoinAnk for regular crypto assets with exchange-specific data
-		klines3m, err = getKlinesFromCoinAnk(symbol, "3m", exchange, 100)
-		if err != nil {
-			return nil, fmt.Errorf("Failed to get 3-minute K-line from CoinAnk (%s): %v", exchange, err)
-		}
-	}
-
-	// Data staleness detection: Prevent DOGEUSDT-style price freeze issues
-	if isStaleData(klines3m, symbol) {
-		logger.Infof("⚠️  WARNING: %s detected stale data (consecutive price freeze), skipping symbol", symbol)
-		return nil, fmt.Errorf("%s data is stale, possible cache failure", symbol)
-	}
-
-	// Get 4-hour K-line data
-	if strings.EqualFold(exchange, "binance") {
-		klines4h, err = GetBinanceKlines(symbol, "4h", 100)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get 4-hour K-line from Binance: %v", err)
-		}
-	} else if useHyperliquidAPI {
-		klines4h, err = getKlinesFromHyperliquid(symbol, "4h", 100)
-		if err != nil {
-			return nil, fmt.Errorf("Failed to get 4-hour K-line from Hyperliquid: %v", err)
-		}
-	} else {
-		klines4h, err = getKlinesFromCoinAnk(symbol, "4h", exchange, 100)
-		if err != nil {
-			return nil, fmt.Errorf("Failed to get 4-hour K-line from CoinAnk (%s): %v", exchange, err)
-		}
-	}
-
-	// Check if data is empty
-	if len(klines3m) == 0 {
-		return nil, fmt.Errorf("3-minute K-line data is empty")
-	}
-	if len(klines4h) == 0 {
-		return nil, fmt.Errorf("4-hour K-line data is empty")
-	}
-
-	// Calculate current indicators (based on 3-minute latest data)
-	currentPrice := klines3m[len(klines3m)-1].Close
-	currentEMA20 := calculateEMA(klines3m, 20)
-	currentMACD := calculateMACD(klines3m)
-	currentRSI7 := calculateRSI(klines3m, 7)
-
-	// Calculate price change percentage
-	// 1-hour price change = price from 20 3-minute K-lines ago
-	priceChange1h := 0.0
-	if len(klines3m) >= 21 { // Need at least 21 K-lines (current + 20 previous)
-		price1hAgo := klines3m[len(klines3m)-21].Close
-		if price1hAgo > 0 {
-			priceChange1h = ((currentPrice - price1hAgo) / price1hAgo) * 100
-		}
-	}
-
-	// 4-hour price change = price from 1 4-hour K-line ago
-	priceChange4h := 0.0
-	if len(klines4h) >= 2 {
-		price4hAgo := klines4h[len(klines4h)-2].Close
-		if price4hAgo > 0 {
-			priceChange4h = ((currentPrice - price4hAgo) / price4hAgo) * 100
-		}
-	}
-
-	// Legacy providers may not expose OI or funding. Do not fill those fields
-	// from Binance: that would make a CoinAnk/Hyperliquid analysis appear to be
-	// sourced from the selected venue while mixing data from another exchange.
-	oiData := &OIData{Latest: 0, Average: 0}
-	fundingRate := 0.0
-	if provider, providerErr := NewMarketDataProvider(exchange); providerErr == nil {
-		if providerOI, oiErr := provider.GetOpenInterest(symbol); oiErr == nil && providerOI != nil {
-			oiData = providerOI
-		}
-		if fundingSnapshot, fundingErr := provider.GetFundingSnapshot(symbol); fundingErr == nil && fundingSnapshot != nil {
-			fundingRate = fundingSnapshot.Rate
-		}
-	}
-
-	// Calculate intraday series data
-	intradayData := calculateIntradaySeries(klines3m)
-
-	// Calculate longer-term data
-	longerTermData := calculateLongerTermData(klines4h)
-
-	return &Data{
-		Symbol:            symbol,
-		Exchange:          strings.ToLower(strings.TrimSpace(exchange)),
-		CurrentPrice:      currentPrice,
-		PriceChange1h:     priceChange1h,
-		PriceChange4h:     priceChange4h,
-		CurrentEMA20:      currentEMA20,
-		CurrentMACD:       currentMACD,
-		CurrentRSI7:       currentRSI7,
-		OpenInterest:      oiData,
-		FundingRate:       fundingRate,
-		IntradaySeries:    intradayData,
-		LongerTermContext: longerTermData,
-	}, nil
+	return getWithTimeframesFromProvider(provider, symbol, []string{"3m", "4h"}, "3m", 100)
 }
 
 // GetWithTimeframes retrieves market data for specified multiple timeframes
@@ -388,15 +262,6 @@ func getWithTimeframesFromProviderContext(requestCtx context.Context, provider M
 	}
 
 	return data, nil
-}
-
-func isUnifiedPublicExchange(exchange string) bool {
-	switch strings.ToLower(strings.TrimSpace(exchange)) {
-	case "binance", "okx", "bitget":
-		return true
-	default:
-		return false
-	}
 }
 
 // getOpenInterestData retrieves OI data

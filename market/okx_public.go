@@ -39,8 +39,6 @@ const (
 // the AI, paper broker, and UI all observe the same venue.
 type OKXMarketDataProvider struct {
 	httpClient               nativePublicHTTPClient
-	streamDepth              bool
-	redundantKlines          bool
 	priceStream              priceStreamSnapshot
 	fundingStream            fundingStreamSnapshot
 	marketRESTBudget         time.Duration
@@ -57,8 +55,6 @@ func NewOKXMarketDataProviderWithHTTPClient(baseURL string, client *http.Client)
 	}
 	provider := &OKXMarketDataProvider{
 		httpClient:               newNativePublicHTTPClient(baseURL, client),
-		streamDepth:              strings.Contains(strings.ToLower(baseURL), "okx.com"),
-		redundantKlines:          strings.Contains(strings.ToLower(baseURL), "okx.com"),
 		marketRESTBudget:         okxMarketRESTBudget,
 		marketRESTAttemptTimeout: okxMarketAttemptTimeout,
 	}
@@ -147,6 +143,13 @@ func (provider *OKXMarketDataProvider) GetKlines(symbol, interval string, limit 
 }
 
 func (provider *OKXMarketDataProvider) getKlines(symbol, interval string, limit int) ([]Kline, error) {
+	return provider.getKlinesContext(context.Background(), symbol, interval, limit)
+}
+
+func (provider *OKXMarketDataProvider) getKlinesContext(ctx context.Context, symbol, interval string, limit int) ([]Kline, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	bar, err := okxBarInterval(interval)
 	if err != nil {
 		return nil, err
@@ -162,7 +165,7 @@ func (provider *OKXMarketDataProvider) getKlines(symbol, interval string, limit 
 		"bar":    {bar},
 		"limit":  {strconv.Itoa(limit)},
 	}
-	body, err := provider.httpClient.getFresh(okxPublicCandlesPath, query)
+	body, err := provider.httpClient.getFreshContext(ctx, okxPublicCandlesPath, query, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -222,18 +225,12 @@ func (provider *OKXMarketDataProvider) getKlines(symbol, interval string, limit 
 }
 
 func (provider *OKXMarketDataProvider) GetKlinesFresh(symbol, interval string, limit int) ([]Kline, error) {
-	if provider.redundantKlines {
-		normalizedSymbol := provider.NormalizeSymbol(symbol)
-		klines, proof, err := hedgedFreshKlines(context.Background(), provider.Exchange(), normalizedSymbol, interval,
-			func(context.Context) ([]Kline, error) { return provider.getKlines(normalizedSymbol, interval, limit) },
-			func(ctx context.Context) ([]Kline, error) {
-				return getKlinesFromCoinAnkFreshContext(ctx, normalizedSymbol, interval, provider.Exchange(), limit)
-			},
-		)
-		recordKlineHealth(provider.Exchange(), normalizedSymbol, interval, proof, err)
-		return klines, err
-	}
-	klines, err := provider.getKlines(symbol, interval, limit)
+	return provider.GetKlinesFreshContext(context.Background(), symbol, interval, limit)
+}
+
+func (provider *OKXMarketDataProvider) GetKlinesFreshContext(ctx context.Context, symbol, interval string, limit int) ([]Kline, error) {
+	normalizedSymbol := provider.NormalizeSymbol(symbol)
+	klines, err := provider.getKlinesContext(ctx, normalizedSymbol, interval, limit)
 	recordKlineHealth(provider.Exchange(), provider.NormalizeSymbol(symbol), interval, proofFromKlines(provider.Exchange(), "primary-rest", klines), err)
 	return klines, err
 }
@@ -243,11 +240,6 @@ func (provider *OKXMarketDataProvider) GetDepth(symbol string, limit int) (*Dept
 }
 
 func (provider *OKXMarketDataProvider) GetDepthFresh(symbol string, limit int) (*DepthSnapshot, error) {
-	if provider.streamDepth {
-		if depth, err := streamedDepth(provider.Exchange(), provider.NormalizeSymbol(symbol), limit); err == nil {
-			return depth, nil
-		}
-	}
 	if limit <= 0 {
 		limit = 20
 	}

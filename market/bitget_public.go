@@ -33,8 +33,6 @@ const (
 // Bitget exposes a USD notional or contract multiplier.
 type BitgetMarketDataProvider struct {
 	httpClient                nativePublicHTTPClient
-	streamDepth               bool
-	redundantKlines           bool
 	fundingStream             fundingStreamSnapshot
 	fundingRESTBudget         time.Duration
 	fundingRESTAttemptTimeout time.Duration
@@ -50,8 +48,6 @@ func NewBitgetMarketDataProviderWithHTTPClient(baseURL string, client *http.Clie
 	}
 	provider := &BitgetMarketDataProvider{
 		httpClient:                newNativePublicHTTPClient(baseURL, client),
-		streamDepth:               strings.Contains(strings.ToLower(baseURL), "bitget.com"),
-		redundantKlines:           strings.Contains(strings.ToLower(baseURL), "bitget.com"),
 		fundingRESTBudget:         bitgetFundingRESTBudget,
 		fundingRESTAttemptTimeout: bitgetFundingAttemptTimeout,
 	}
@@ -109,6 +105,13 @@ func (provider *BitgetMarketDataProvider) GetKlines(symbol, interval string, lim
 }
 
 func (provider *BitgetMarketDataProvider) getKlines(symbol, interval string, limit int) ([]Kline, error) {
+	return provider.getKlinesContext(context.Background(), symbol, interval, limit)
+}
+
+func (provider *BitgetMarketDataProvider) getKlinesContext(ctx context.Context, symbol, interval string, limit int) ([]Kline, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	granularity, err := bitgetGranularity(interval)
 	if err != nil {
 		return nil, err
@@ -125,7 +128,7 @@ func (provider *BitgetMarketDataProvider) getKlines(symbol, interval string, lim
 		"granularity": {granularity},
 		"limit":       {strconv.Itoa(limit)},
 	}
-	body, err := provider.httpClient.getFresh(bitgetPublicCandlesPath, query)
+	body, err := provider.httpClient.getFreshContext(ctx, bitgetPublicCandlesPath, query, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -185,18 +188,12 @@ func (provider *BitgetMarketDataProvider) getKlines(symbol, interval string, lim
 }
 
 func (provider *BitgetMarketDataProvider) GetKlinesFresh(symbol, interval string, limit int) ([]Kline, error) {
-	if provider.redundantKlines {
-		normalizedSymbol := provider.NormalizeSymbol(symbol)
-		klines, proof, err := hedgedFreshKlines(context.Background(), provider.Exchange(), normalizedSymbol, interval,
-			func(context.Context) ([]Kline, error) { return provider.getKlines(normalizedSymbol, interval, limit) },
-			func(ctx context.Context) ([]Kline, error) {
-				return getKlinesFromCoinAnkFreshContext(ctx, normalizedSymbol, interval, provider.Exchange(), limit)
-			},
-		)
-		recordKlineHealth(provider.Exchange(), normalizedSymbol, interval, proof, err)
-		return klines, err
-	}
-	klines, err := provider.getKlines(symbol, interval, limit)
+	return provider.GetKlinesFreshContext(context.Background(), symbol, interval, limit)
+}
+
+func (provider *BitgetMarketDataProvider) GetKlinesFreshContext(ctx context.Context, symbol, interval string, limit int) ([]Kline, error) {
+	normalizedSymbol := provider.NormalizeSymbol(symbol)
+	klines, err := provider.getKlinesContext(ctx, normalizedSymbol, interval, limit)
 	recordKlineHealth(provider.Exchange(), provider.NormalizeSymbol(symbol), interval, proofFromKlines(provider.Exchange(), "primary-rest", klines), err)
 	return klines, err
 }
@@ -206,11 +203,6 @@ func (provider *BitgetMarketDataProvider) GetDepth(symbol string, limit int) (*D
 }
 
 func (provider *BitgetMarketDataProvider) GetDepthFresh(symbol string, limit int) (*DepthSnapshot, error) {
-	if provider.streamDepth {
-		if depth, err := streamedDepth(provider.Exchange(), provider.NormalizeSymbol(symbol), limit); err == nil {
-			return depth, nil
-		}
-	}
 	if limit <= 0 {
 		limit = 20
 	}
