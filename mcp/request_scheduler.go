@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	defaultModelRequestMaxConcurrency      = 2
-	defaultModelRequestStartIntervalSecond = 30
+	defaultModelRequestMaxConcurrency      = 1
+	defaultModelRequestStartIntervalSecond = 15
 )
 
 var defaultModelRequestScheduler = newModelRequestScheduler(
