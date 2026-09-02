@@ -692,9 +692,6 @@ func (at *AutoTrader) run(startupDelay time.Duration) error {
 	} else {
 		if err := at.runAutomaticCycle(); err != nil {
 			at.logErrorf("❌ Execution failed: %v", err)
-			if errors.Is(err, ErrDecisionCycleTimeout) {
-				return err
-			}
 		}
 	}
 
@@ -719,9 +716,6 @@ func (at *AutoTrader) run(startupDelay time.Duration) error {
 			} else {
 				if err := at.runAutomaticCycle(); err != nil {
 					at.logErrorf("❌ Execution failed: %v", err)
-					if errors.Is(err, ErrDecisionCycleTimeout) {
-						return err
-					}
 				}
 			}
 		case <-runStopCh:
@@ -766,9 +760,9 @@ func (at *AutoTrader) runAutomaticCycle() error {
 			if completionErr == nil {
 				completionErr = err
 			}
-			at.recordCycleCompletion(completionErr)
 			at.saveCycleTimeoutRecord(timeout)
-			at.requestCycleStop()
+			at.recordCycleCompletion(completionErr)
+			at.handleCycleTimeoutFailure(timeout)
 			return fmt.Errorf("%w after %s", ErrDecisionCycleTimeout, timeout)
 		}
 		at.recordCycleCompletion(err)
@@ -780,16 +774,26 @@ func (at *AutoTrader) runAutomaticCycle() error {
 			// context: do not let the loop exit while that cycle is still running.
 			return <-done
 		}
-		at.recordCycleCompletion(ctx.Err())
 		at.saveCycleTimeoutRecord(timeout)
-		at.requestCycleStop()
+		at.recordCycleCompletion(ctx.Err())
+		at.handleCycleTimeoutFailure(timeout)
 		return fmt.Errorf("%w after %s", ErrDecisionCycleTimeout, timeout)
 	}
 }
 
+func (at *AutoTrader) handleCycleTimeoutFailure(timeout time.Duration) {
+	at.consecutiveAIFailures++
+	if at.consecutiveAIFailures >= 3 && !at.isSafeMode() {
+		at.setSafeMode(true, fmt.Sprintf("Decision cycle timed out %d consecutive times (timeout=%s)", at.consecutiveAIFailures, timeout))
+		at.logErrorf("🛡️ SAFE MODE ACTIVATED — Decision cycle timed out %d times in a row. No new positions will be opened. Existing positions are protected with current stop-loss settings.", at.consecutiveAIFailures)
+		at.logErrorf("🛡️ Reason: Decision cycle timed out after %s", timeout)
+		at.logErrorf("🛡️ Action: Will keep trying each cycle. Safe mode auto-deactivates when cycle recovers.")
+	}
+}
+
 // ErrDecisionCycleTimeout is returned when a single decision cycle exceeds its
-// hard deadline. The runtime stops after this error so a stalled upstream cannot
-// silently consume every future scan interval.
+// hard deadline. The runtime records the failure and retries on the next scan
+// interval while background risk monitoring remains active.
 var ErrDecisionCycleTimeout = errors.New("decision cycle timed out")
 
 const defaultDecisionCycleTimeout = 10 * time.Minute
@@ -802,20 +806,6 @@ func (at *AutoTrader) decisionCycleTimeout() time.Duration {
 		return 2 * at.config.ScanInterval
 	}
 	return defaultDecisionCycleTimeout
-}
-
-func (at *AutoTrader) requestCycleStop() {
-	at.runLifecycleMu.Lock()
-	if at.runActive && !at.runStopRequested {
-		at.runStopRequested = true
-		at.isRunningMutex.Lock()
-		at.isRunning = false
-		at.isRunningMutex.Unlock()
-		if at.runStopCh != nil {
-			close(at.runStopCh)
-		}
-	}
-	at.runLifecycleMu.Unlock()
 }
 
 func (at *AutoTrader) recordCycleCompletion(err error) {

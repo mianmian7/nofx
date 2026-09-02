@@ -41,10 +41,13 @@ func (at *AutoTrader) saveCycleTimeoutRecord(timeout time.Duration) {
 	at.cycleStateMu.RLock()
 	phase := at.cyclePhase
 	at.cycleStateMu.RUnlock()
+	if phase == "" || phase == "idle" {
+		phase = "unknown"
+	}
 	record := &store.DecisionRecord{
 		Success:      false,
 		ExecutionLog: []string{fmt.Sprintf("Decision cycle timed out after %s (phase=%s)", timeout, phase)},
-		ErrorMessage: fmt.Sprintf("Decision cycle timed out after %s", timeout),
+		ErrorMessage: fmt.Sprintf("Decision cycle timed out after %s (phase=%s)", timeout, phase),
 	}
 	if err := at.saveDecision(record); err != nil {
 		at.logWarnf("⚠ Failed to save decision timeout record: %v", err)
