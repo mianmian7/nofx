@@ -176,8 +176,8 @@ func openSQLite(path string) (*sql.DB, error) {
 	}
 
 	// SQLite configuration
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(2)
 
 	// Enable foreign key constraints
 	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
@@ -185,23 +185,27 @@ func openSQLite(path string) (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to enable foreign keys: %w", err)
 	}
 
-	// Use DELETE mode for Docker compatibility
-	if _, err := db.Exec("PRAGMA journal_mode=DELETE"); err != nil {
+	// Use WAL mode for concurrent read/write performance
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to set journal_mode: %w", err)
 	}
 
-	// Set synchronous=FULL
+	// Set synchronous=FULL for ACID durability
 	if _, err := db.Exec("PRAGMA synchronous=FULL"); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to set synchronous: %w", err)
 	}
 
-	// Set busy_timeout
-	if _, err := db.Exec("PRAGMA busy_timeout = 5000"); err != nil {
+	// Set busy_timeout to 10s to prevent lock errors under concurrent load
+	if _, err := db.Exec("PRAGMA busy_timeout = 10000"); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to set busy_timeout: %w", err)
 	}
+
+	// Optimize in-memory cache and temporary table storage
+	_, _ = db.Exec("PRAGMA cache_size = -64000") // 64MB memory page cache
+	_, _ = db.Exec("PRAGMA temp_store = MEMORY")
 
 	return db, nil
 }

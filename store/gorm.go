@@ -36,14 +36,16 @@ func InitGorm(dbPath string) (*gorm.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	sqlDB.SetMaxOpenConns(1)
-	sqlDB.SetMaxIdleConns(1)
+	sqlDB.SetMaxOpenConns(4)
+	sqlDB.SetMaxIdleConns(2)
 
-	// Enable foreign keys for SQLite
+	// Enable foreign keys and WAL for SQLite
 	db.Exec("PRAGMA foreign_keys = ON")
-	db.Exec("PRAGMA journal_mode = DELETE")
+	db.Exec("PRAGMA journal_mode = WAL")
 	db.Exec("PRAGMA synchronous = FULL")
-	db.Exec("PRAGMA busy_timeout = 5000")
+	db.Exec("PRAGMA busy_timeout = 10000")
+	db.Exec("PRAGMA cache_size = -64000")
+	db.Exec("PRAGMA temp_store = MEMORY")
 
 	gormDB = db
 	return db, nil
