@@ -15,6 +15,9 @@ services:
     environment:
       TZ: ${TZ:-Asia/Shanghai}
       AI_MAX_TOKENS: "16000"
+      AI_STREAM_ENABLED: "true"
+      AI_MODEL_REQUEST_MAX_CONCURRENCY: "1"
+      AI_MODEL_REQUEST_START_INTERVAL_SECONDS: "15"
       HTTP_PROXY: ${HTTP_PROXY:-}
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       NO_PROXY: localhost,127.0.0.1,nofx,nofx-trading,nofx-frontend,host.docker.internal
