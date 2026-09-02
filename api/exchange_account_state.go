@@ -132,7 +132,27 @@ func (s *Server) getExchangeAccountStates(userID string) (map[string]ExchangeAcc
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			state := probeExchangeAccountState(exchangeCfg, userID)
+			stateChan := make(chan ExchangeAccountState, 1)
+			go func() {
+				stateChan <- probeExchangeAccountState(exchangeCfg, userID)
+			}()
+
+			var state ExchangeAccountState
+			select {
+			case res := <-stateChan:
+				state = res
+			case <-time.After(8 * time.Second):
+				state = ExchangeAccountState{
+					ExchangeID:   exchangeCfg.ID,
+					CheckedAt:    time.Now().UTC(),
+					Asset:        accountAssetForExchange(exchangeCfg.ExchangeType),
+					Status:       exchangeAccountStatusUnavailable,
+					ErrorCode:    "PROBE_TIMEOUT",
+					ErrorMessage: "Connection timed out while probing exchange",
+				}
+				logger.Warnf("⚠️ Timeout probing exchange account %s (%s)", exchangeCfg.ID, exchangeCfg.ExchangeType)
+			}
+
 			mu.Lock()
 			states[exchangeCfg.ID] = state
 			mu.Unlock()
