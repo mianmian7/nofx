@@ -170,7 +170,9 @@ func (t *FuturesTrader) setDualSidePosition() error {
 
 // syncBinanceServerTime syncs Binance server time to ensure request timestamps are valid
 func syncBinanceServerTime(client *futures.Client) {
-	serverTime, err := client.NewServerTimeService().Do(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	serverTime, err := client.NewServerTimeService().Do(ctx)
 	if err != nil {
 		logger.Infof("⚠️ Failed to sync Binance server time: %v", err)
 		return
