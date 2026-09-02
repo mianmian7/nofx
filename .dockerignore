@@ -3,6 +3,9 @@
 .gitignore
 .github
 
+# Personal deploy scripts (never part of the build context)
+deploy-*.sh
+
 # Docker
 Dockerfile
 docker-compose.yml
@@ -29,6 +32,7 @@ nofx_test
 docs/
 
 # Runtime data
+data/
 decision_logs/
 *.log
 
@@ -65,3 +69,6 @@ screenshots/
 coverage/
 playwright-report/
 test-results/
+
+# Private local overrides are never build inputs
+/.private/
