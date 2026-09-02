@@ -448,6 +448,7 @@ func extractCoTTrace(response string) string {
 func extractDecisions(response string) ([]Decision, error) {
 	s := removeInvisibleRunes(response)
 	s = strings.TrimSpace(s)
+	s = fixEnglishNumberWords(s)
 	s = fixMissingQuotes(s)
 
 	var jsonPart string
@@ -459,11 +460,13 @@ func extractDecisions(response string) ([]Decision, error) {
 		logger.Infof("⚠️  <decision> tag not found, searching JSON in full text")
 	}
 
+	jsonPart = fixEnglishNumberWords(jsonPart)
 	jsonPart = fixMissingQuotes(jsonPart)
 
 	if m := reJSONFence.FindStringSubmatch(jsonPart); m != nil && len(m) > 1 {
 		jsonContent := strings.TrimSpace(m[1])
 		jsonContent = compactArrayOpen(jsonContent)
+		jsonContent = fixEnglishNumberWords(jsonContent)
 		jsonContent = fixMissingQuotes(jsonContent)
 		if err := validateJSONFormat(jsonContent); err != nil {
 			return nil, fmt.Errorf("JSON format validation failed: %w\nJSON content: %s\nFull response:\n%s", err, jsonContent, response)
@@ -494,6 +497,7 @@ func extractDecisions(response string) ([]Decision, error) {
 	}
 
 	jsonContent = compactArrayOpen(jsonContent)
+	jsonContent = fixEnglishNumberWords(jsonContent)
 	jsonContent = fixMissingQuotes(jsonContent)
 
 	if err := validateJSONFormat(jsonContent); err != nil {
@@ -506,6 +510,49 @@ func extractDecisions(response string) ([]Decision, error) {
 	}
 
 	return decisions, nil
+}
+
+var englishNumberWords = map[string]int{
+	"zero": 0, "one": 1, "two": 2, "three": 3, "four": 4,
+	"five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
+	"ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+	"fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
+	"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
+	"sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+	"hundred": 100, "one hundred": 100,
+}
+
+var reConfidenceWord = regexp.MustCompile(`(?i)"confidence"\s*:\s*([a-zA-Z\-]+(?:\s+[a-zA-Z\-]+)?)`)
+
+func parseEnglishNumber(s string) (int, bool) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if val, ok := englishNumberWords[s]; ok {
+		return val, true
+	}
+	parts := strings.FieldsFunc(s, func(r rune) bool {
+		return r == '-' || r == ' '
+	})
+	if len(parts) == 2 {
+		tens, ok1 := englishNumberWords[parts[0]]
+		units, ok2 := englishNumberWords[parts[1]]
+		if ok1 && ok2 {
+			return tens + units, true
+		}
+	}
+	return 0, false
+}
+
+func fixEnglishNumberWords(jsonStr string) string {
+	return reConfidenceWord.ReplaceAllStringFunc(jsonStr, func(match string) string {
+		sub := reConfidenceWord.FindStringSubmatch(match)
+		if len(sub) > 1 {
+			word := strings.TrimSpace(sub[1])
+			if num, ok := parseEnglishNumber(word); ok {
+				return fmt.Sprintf(`"confidence": %d`, num)
+			}
+		}
+		return match
+	})
 }
 
 func fixMissingQuotes(jsonStr string) string {

@@ -110,6 +110,40 @@ func TestXyzAllowsConfiguredTenXNotional(t *testing.T) {
 	}
 }
 
+func TestExtractDecisionsParsesEnglishConfidenceWords(t *testing.T) {
+	rawResponse := `<reasoning>
+Evaluating market condition
+</reasoning>
+<decision>
+[
+  {"symbol": "SKHYNIXUSDT", "action": "wait", "confidence": sixty},
+  {"symbol": "SAMSUNGUSDT", "action": "wait", "confidence": sixty-two},
+  {"symbol": "DRAMUSDT", "action": "wait", "confidence": fifty-eight},
+  {"symbol": "SOXLUSDT", "action": "wait", "confidence": sixty-four}
+]
+</decision>`
+
+	decisions, err := extractDecisions(rawResponse)
+	if err != nil {
+		t.Fatalf("extractDecisions failed: %v", err)
+	}
+	if len(decisions) != 4 {
+		t.Fatalf("expected 4 decisions, got %d", len(decisions))
+	}
+	if decisions[0].Confidence != 60 {
+		t.Errorf("expected confidence 60, got %d", decisions[0].Confidence)
+	}
+	if decisions[1].Confidence != 62 {
+		t.Errorf("expected confidence 62, got %d", decisions[1].Confidence)
+	}
+	if decisions[2].Confidence != 58 {
+		t.Errorf("expected confidence 58, got %d", decisions[2].Confidence)
+	}
+	if decisions[3].Confidence != 64 {
+		t.Errorf("expected confidence 64, got %d", decisions[3].Confidence)
+	}
+}
+
 // contains checks if string contains substring (helper function)
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
