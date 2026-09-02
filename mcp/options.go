@@ -109,6 +109,16 @@ func WithTemperature(temperature float64) ClientOption {
 	}
 }
 
+// WithStream sets whether to use streaming responses
+//
+// Usage example:
+//   client := mcp.NewClient(mcp.WithStream(true))
+func WithStream(stream bool) ClientOption {
+	return func(c *Config) {
+		c.Stream = stream
+	}
+}
+
 // ============================================================
 // Provider Configuration Options
 // ============================================================

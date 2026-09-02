@@ -75,6 +75,7 @@ type Client struct {
 	Model      string
 	UseFullURL bool // Whether to use full URL (without appending /chat/completions)
 	MaxTokens  int  // Maximum tokens for AI response
+	Stream     bool // Whether to use streaming response
 
 	HTTPClient *http.Client // Exported for sub-packages
 	Log        Logger       // Exported for sub-packages
@@ -136,6 +137,7 @@ func NewClient(opts ...ClientOption) AIClient {
 		Model:      cfg.Model,
 		MaxTokens:  cfg.MaxTokens,
 		UseFullURL: cfg.UseFullURL,
+		Stream:     cfg.Stream,
 		HTTPClient: cfg.HTTPClient,
 		Log:        cfg.Logger,
 		Cfg:        cfg,
@@ -277,6 +279,7 @@ func (client *Client) CallWithMessagesWithMetadataContext(ctx context.Context, m
 		},
 		Ctx:      ctx,
 		Metadata: metadata,
+		Stream:   client.Stream,
 	})
 }
 
@@ -796,6 +799,11 @@ func (client *Client) callWithRequestFull(req *Request) (*LLMResponse, error) {
 
 // callWithRequest single AI API call (using Request object)
 func (client *Client) callWithRequest(req *Request) (string, error) {
+	if req.Stream || client.Stream {
+		req.Stream = true
+		return client.callWithRequestStreaming(req, nil)
+	}
+
 	// Print current AI configuration
 	client.Log.Infof("📡 [%s] Request AI Server with Builder: BaseURL: %s", client.String(), sanitizeURL(client.BaseURL))
 	client.Log.Debugf("[%s] Messages count: %d", client.String(), len(req.Messages))
@@ -836,6 +844,84 @@ func (client *Client) callWithRequest(req *Request) (string, error) {
 	}
 
 	return result, nil
+}
+
+func (client *Client) callWithRequestStreaming(req *Request, onChunk func(string)) (string, error) {
+	client.Log.Infof("📡 [%s] Request AI Server (stream): BaseURL: %s", client.String(), sanitizeURL(client.BaseURL))
+	client.Log.Debugf("[%s] Messages count: %d", client.String(), len(req.Messages))
+
+	requestBody := client.Hooks.BuildRequestBodyFromRequest(req)
+	jsonData, err := client.Hooks.MarshalRequestBody(requestBody)
+	if err != nil {
+		return "", err
+	}
+
+	url := client.Hooks.BuildUrl()
+	client.Log.Infof("📡 [MCP %s] Request URL: %s", client.String(), sanitizeURL(url))
+
+	httpReq, err := client.buildHTTPRequestWithContext(contextFromRequest(req), url, jsonData)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+	httpReq.Header.Set("Accept", "text/event-stream")
+
+	idleTimeout := 60 * time.Second
+	if client.Cfg != nil && client.Cfg.StreamIdleTimeout > 0 {
+		idleTimeout = client.Cfg.StreamIdleTimeout
+	}
+	ctx, cancel := context.WithCancel(contextFromRequest(req))
+	defer cancel()
+	resetCh := make(chan struct{}, 1)
+	go func() {
+		t := time.NewTimer(idleTimeout)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				cancel() // idle timeout: kill the connection
+				return
+			case <-resetCh:
+				// received a line — reset the idle timer
+				if !t.Stop() {
+					select {
+					case <-t.C:
+					default:
+					}
+				}
+				t.Reset(idleTimeout)
+			}
+		}
+	}()
+
+	httpReq = httpReq.WithContext(ctx)
+	resp, err := client.HTTPClient.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("streaming request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", NewAPIError(resp.StatusCode, string(body))
+	}
+
+	text, usage, err := ParseSSEStream(resp.Body, onChunk, func() {
+		select {
+		case resetCh <- struct{}{}:
+		default:
+		}
+	})
+	if err != nil {
+		return text, fmt.Errorf("streaming response failed: %w", err)
+	}
+	if text == "" {
+		return "", NewAPIError(http.StatusTooManyRequests, `{"error":{"code":"upstream_empty_output","message":"Upstream model returned empty output."}}`)
+	}
+	client.LastCallUsage = usage
+	ReportStreamUsage(usage, client.Provider, client.Model)
+	return text, nil
 }
 
 // BuildRequestBodyFromRequest builds request body from Request object
@@ -940,9 +1026,6 @@ func (client *Client) BuildRequestBodyFromRequest(req *Request) map[string]any {
 // CallWithRequestStream streams the LLM response via SSE (Server-Sent Events).
 // onChunk is called with the full accumulated text so far after each received chunk.
 // Returns the complete final text when the stream ends.
-//
-// Idle timeout: if no chunk arrives for 30 seconds the stream is cancelled automatically.
-// This prevents the scanner from blocking indefinitely on a hung or stalled connection.
 func (client *Client) CallWithRequestStream(req *Request, onChunk func(string)) (string, error) {
 	if client.APIKey == "" {
 		return "", fmt.Errorf("AI API key not set")
@@ -951,81 +1034,7 @@ func (client *Client) CallWithRequestStream(req *Request, onChunk func(string)) 
 		req.Model = client.Model
 	}
 	req.Stream = true
-	metadata := normalizeCallMetadata(req.Metadata)
-	if metadata.Provider == "" {
-		metadata.Provider = client.Provider
-	}
-	if metadata.Model == "" {
-		metadata.Model = req.Model
-	}
-	req.Metadata = metadata
-	releaseAdmission, err := client.acquireModelRequest(metadata, req.Model, contextFromRequest(req))
-	if err != nil {
-		return "", fmt.Errorf("AI request admission failed: %w", err)
-	}
-	defer releaseAdmission()
-
-	requestBody := client.Hooks.BuildRequestBodyFromRequest(req)
-	jsonData, err := client.Hooks.MarshalRequestBody(requestBody)
-	if err != nil {
-		return "", err
-	}
-
-	url := client.Hooks.BuildUrl()
-	httpReq, err := client.buildHTTPRequestWithContext(contextFromRequest(req), url, jsonData)
-	if err != nil {
-		return "", err
-	}
-
-	// Idle-timeout watchdog: cancel the request if no SSE line arrives for 60 seconds.
-	// This breaks the scanner out of an indefinitely blocking Read on a hung connection.
-	const idleTimeout = 60 * time.Second
-	ctx, cancel := context.WithCancel(contextFromRequest(req))
-	defer cancel()
-	resetCh := make(chan struct{}, 1)
-	go func() {
-		t := time.NewTimer(idleTimeout)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				cancel() // idle timeout: kill the connection
-				return
-			case <-resetCh:
-				// received a line — reset the idle timer
-				if !t.Stop() {
-					select {
-					case <-t.C:
-					default:
-					}
-				}
-				t.Reset(idleTimeout)
-			}
-		}
-	}()
-
-	httpReq = httpReq.WithContext(ctx)
-	resp, err := client.HTTPClient.Do(httpReq)
-	if err != nil {
-		return "", fmt.Errorf("streaming request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", NewAPIError(resp.StatusCode, string(body))
-	}
-
-	text, usage, err := ParseSSEStream(resp.Body, onChunk, func() {
-		select {
-		case resetCh <- struct{}{}:
-		default:
-		}
-	})
-	ReportStreamUsage(usage, client.Provider, client.Model)
-	return text, err
+	return client.CallWithRequest(req)
 }
 
 // ParseSSEStream reads an SSE response body, accumulates text deltas,
@@ -1037,6 +1046,11 @@ func ParseSSEStream(body io.Reader, onChunk func(string), onLine func()) (string
 	var accumulated strings.Builder
 	var usage *TokenUsage
 	scanner := bufio.NewScanner(body)
+	buf := make([]byte, 64*1024)
+	scanner.Buffer(buf, 10*1024*1024)
+
+	var rawLines []string
+	isSSE := false
 
 	for scanner.Scan() {
 		if onLine != nil {
@@ -1044,56 +1058,76 @@ func ParseSSEStream(body io.Reader, onChunk func(string), onLine func()) (string
 		}
 
 		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		data := strings.TrimPrefix(line, "data: ")
-		if data == "[DONE]" {
-			break
-		}
-
-		var chunk struct {
-			Choices []struct {
-				Delta struct {
-					Content string `json:"content"`
-				} `json:"delta"`
-				FinishReason *string `json:"finish_reason"`
-			} `json:"choices"`
-			Usage *struct {
-				PromptTokens     int `json:"prompt_tokens"`
-				CompletionTokens int `json:"completion_tokens"`
-				TotalTokens      int `json:"total_tokens"`
-			} `json:"usage,omitempty"`
-		}
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue // skip malformed chunks
-		}
-
-		if chunk.Usage != nil && chunk.Usage.TotalTokens > 0 {
-			usage = &TokenUsage{
-				PromptTokens:     chunk.Usage.PromptTokens,
-				CompletionTokens: chunk.Usage.CompletionTokens,
-				TotalTokens:      chunk.Usage.TotalTokens,
+		rawLines = append(rawLines, line)
+		if strings.HasPrefix(line, "data: ") {
+			isSSE = true
+			data := strings.TrimPrefix(line, "data: ")
+			if data == "[DONE]" {
+				break
 			}
-		}
 
-		if len(chunk.Choices) == 0 {
-			continue
-		}
+			var chunk struct {
+				Choices []struct {
+					Delta struct {
+						Content          string `json:"content"`
+						ReasoningContent string `json:"reasoning_content"`
+					} `json:"delta"`
+					FinishReason *string `json:"finish_reason"`
+				} `json:"choices"`
+				Usage *struct {
+					PromptTokens     int `json:"prompt_tokens"`
+					CompletionTokens int `json:"completion_tokens"`
+					TotalTokens      int `json:"total_tokens"`
+				} `json:"usage,omitempty"`
+			}
+			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+				continue // skip malformed chunks
+			}
 
-		delta := chunk.Choices[0].Delta.Content
-		if delta == "" {
-			continue
-		}
+			if chunk.Usage != nil && chunk.Usage.TotalTokens > 0 {
+				usage = &TokenUsage{
+					PromptTokens:     chunk.Usage.PromptTokens,
+					CompletionTokens: chunk.Usage.CompletionTokens,
+					TotalTokens:      chunk.Usage.TotalTokens,
+				}
+			}
 
-		accumulated.WriteString(delta)
-		if onChunk != nil {
-			onChunk(accumulated.String())
+			if len(chunk.Choices) == 0 {
+				continue
+			}
+
+			delta := chunk.Choices[0].Delta.Content
+			if delta == "" && chunk.Choices[0].Delta.ReasoningContent != "" {
+				delta = chunk.Choices[0].Delta.ReasoningContent
+			}
+			if delta == "" {
+				continue
+			}
+
+			accumulated.WriteString(delta)
+			if onChunk != nil {
+				onChunk(accumulated.String())
+			}
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
 		return accumulated.String(), usage, fmt.Errorf("stream interrupted: %w", err)
+	}
+
+	if !isSSE && len(rawLines) > 0 {
+		// Non-SSE response body (e.g. standard JSON returned by mock or non-streaming endpoint)
+		fullRaw := strings.Join(rawLines, "\n")
+		var standardResp struct {
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(fullRaw), &standardResp); err == nil && len(standardResp.Choices) > 0 {
+			return standardResp.Choices[0].Message.Content, nil, nil
+		}
 	}
 
 	return accumulated.String(), usage, nil

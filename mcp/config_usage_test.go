@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -13,6 +14,72 @@ import (
 // ============================================================
 // Test Config Fields Are Actually Used (Verify Issue 2 Fix)
 // ============================================================
+
+func TestDefaultConfig_StreamIdleTimeoutFromEnv(t *testing.T) {
+	t.Setenv("AI_STREAM_IDLE_TIMEOUT_SECONDS", "180")
+
+	cfg := DefaultConfig()
+	if cfg.StreamIdleTimeout != 180*time.Second {
+		t.Fatalf("StreamIdleTimeout = %v, want 180s", cfg.StreamIdleTimeout)
+	}
+}
+
+func TestConfig_StreamIdleTimeout_IsUsed(t *testing.T) {
+	tests := []struct {
+		name           string
+		timeoutSeconds string
+		responseDelay  time.Duration
+		wantErr        bool
+	}{
+		{name: "response before timeout", timeoutSeconds: "2", responseDelay: 1200 * time.Millisecond},
+		{name: "response after timeout", timeoutSeconds: "1", responseDelay: 1200 * time.Millisecond, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("AI_STREAM_IDLE_TIMEOUT_SECONDS", tt.timeoutSeconds)
+			mockHTTP := NewMockHTTPClient()
+			mockHTTP.ResponseFunc = func(req *http.Request) (*http.Response, error) {
+				reader, writer := io.Pipe()
+				go func() {
+					select {
+					case <-time.After(tt.responseDelay):
+						_, _ = io.WriteString(writer, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n")
+						_ = writer.Close()
+					case <-req.Context().Done():
+						_ = writer.CloseWithError(req.Context().Err())
+					}
+				}()
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       reader,
+					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				}, nil
+			}
+
+			client := NewClient(
+				WithAPIKey("sk-test-key"),
+				WithHTTPClient(mockHTTP.ToHTTPClient()),
+				WithLogger(NewMockLogger()),
+				WithStream(true),
+			)
+			request := NewRequestBuilder().WithUserPrompt("test").MustBuild()
+			result, err := client.CallWithRequest(request)
+			if tt.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "context canceled") {
+					t.Fatalf("expected idle timeout cancellation, got result=%q err=%v", result, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result != "ok" {
+				t.Fatalf("result = %q, want ok", result)
+			}
+		})
+	}
+}
 
 func TestConfig_MaxRetries_IsUsed(t *testing.T) {
 	mockHTTP := NewMockHTTPClient()

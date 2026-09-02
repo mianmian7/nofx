@@ -585,3 +585,27 @@ func TestClient_CallWithRequest_UsesClientModel(t *testing.T) {
 		t.Errorf("expected model %s, got %v", DefaultDeepSeekModel, body["model"])
 	}
 }
+
+func TestClient_CallWithRequest_SSEStream(t *testing.T) {
+	mockHTTP := NewMockHTTPClient()
+	sseBody := "data: {\"choices\":[{\"delta\":{\"content\":\"Hello \"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\"world!\"}}],\"usage\":{\"total_tokens\":10}}\n\n" +
+		"data: [DONE]\n\n"
+	mockHTTP.Response = sseBody
+
+	client := NewClient(
+		WithAPIKey("sk-test-key"),
+		WithHTTPClient(mockHTTP.ToHTTPClient()),
+		WithLogger(NewMockLogger()),
+		WithStream(true),
+	)
+
+	req := NewRequestBuilder().WithUserPrompt("Hi").MustBuild()
+	res, err := client.CallWithRequest(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res != "Hello world!" {
+		t.Fatalf("expected 'Hello world!', got %q", res)
+	}
+}

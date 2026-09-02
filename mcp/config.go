@@ -23,6 +23,7 @@ type Config struct {
 	MaxContext  int // Model's max context window in tokens (0 = no limit)
 	Temperature float64
 	UseFullURL  bool
+	Stream      bool // Whether to use streaming response
 
 	// Retry configuration
 	// MaxRetries is retained for compatibility and represents the total number
@@ -35,7 +36,8 @@ type Config struct {
 	RetryableErrors []string
 
 	// Timeout configuration
-	Timeout time.Duration
+	Timeout           time.Duration
+	StreamIdleTimeout time.Duration
 
 	// Dependency injection
 	Logger     Logger
@@ -46,12 +48,14 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		// Default values
-		MaxTokens:       getEnvInt("AI_MAX_TOKENS", 2000),
-		Temperature:     MCPClientTemperature,
-		MaxRetries:      MaxRetryTimes,
-		RetryWaitBase:   2 * time.Second,
-		Timeout:         DefaultTimeout,
-		RetryableErrors: retryableErrors,
+		MaxTokens:         getEnvInt("AI_MAX_TOKENS", 2000),
+		Temperature:       MCPClientTemperature,
+		MaxRetries:        MaxRetryTimes,
+		RetryWaitBase:     2 * time.Second,
+		Timeout:           DefaultTimeout,
+		StreamIdleTimeout: time.Duration(getEnvInt("AI_STREAM_IDLE_TIMEOUT_SECONDS", 60)) * time.Second,
+		RetryableErrors:   retryableErrors,
+		Stream:            getEnvBool("AI_STREAM_ENABLED", true),
 
 		// Default dependencies (use global logger)
 		Logger:     logger.NewMCPLogger(),
@@ -63,6 +67,16 @@ func DefaultConfig() *Config {
 func getEnvInt(key string, defaultValue int) int {
 	if val := os.Getenv(key); val != "" {
 		if parsed, err := strconv.Atoi(val); err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	return defaultValue
+}
+
+// getEnvBool reads boolean from environment variable, returns default value if failed
+func getEnvBool(key string, defaultValue bool) bool {
+	if val := os.Getenv(key); val != "" {
+		if parsed, err := strconv.ParseBool(val); err == nil {
 			return parsed
 		}
 	}
