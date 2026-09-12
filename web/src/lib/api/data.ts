@@ -165,7 +165,8 @@ export const dataApi = {
     symbol: string,
     limit: 5 | 10 | 20 = 20,
     exchangeOrSilent: string | boolean = 'binance',
-    silent?: boolean
+    silent?: boolean,
+    signal?: AbortSignal
   ): Promise<DepthSnapshot> {
     const exchange =
       typeof exchangeOrSilent === 'string' ? exchangeOrSilent : 'binance'
@@ -178,7 +179,7 @@ export const dataApi = {
     })
     const result = await httpClient.request<DepthSnapshot>(
       `${API_BASE}/depth?${params}`,
-      { silent: requestSilent }
+      { silent: requestSilent, signal }
     )
     if (!result.success) throw new Error(`Failed to fetch ${exchange} depth`)
     return result.data!

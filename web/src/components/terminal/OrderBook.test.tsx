@@ -183,7 +183,13 @@ describe('OrderBook', () => {
       expect(screen.getByText('4,119.06')).toBeInTheDocument()
     )
     expect(screen.getByText('4,119.07')).toBeInTheDocument()
-    expect(getDepthMock).toHaveBeenCalledWith('XAUUSDT', 20, true)
+    expect(getDepthMock).toHaveBeenCalledWith(
+      'XAUUSDT',
+      20,
+      'binance',
+      true,
+      expect.any(AbortSignal)
+    )
     expect(screen.getByText(/○ 同步中/)).toBeInTheDocument()
   })
 
@@ -198,7 +204,13 @@ describe('OrderBook', () => {
       expect(screen.getByText('4,119.06')).toBeInTheDocument()
     )
 
-    expect(getDepthMock).toHaveBeenCalledWith('BTCUSDT', 20, 'okx', true)
+    expect(getDepthMock).toHaveBeenCalledWith(
+      'BTCUSDT',
+      20,
+      'okx',
+      true,
+      expect.any(AbortSignal)
+    )
     expect(FakeWebSocket.instances).toHaveLength(0)
     expect(screen.getByText(/OKX USDⓈ-M/)).toBeInTheDocument()
   })
@@ -281,6 +293,7 @@ describe('OrderBook', () => {
       </LanguageProvider>
     )
     await waitFor(() => expect(screen.getByText('500.00')).toBeInTheDocument())
+    expect((getDepthMock.mock.calls[0][4] as AbortSignal).aborted).toBe(true)
     await act(async () => {
       resolveMU({
         lastUpdateId: 1,
@@ -291,5 +304,43 @@ describe('OrderBook', () => {
     })
     expect(screen.queryByText('100.00')).not.toBeInTheDocument()
     expect(screen.getByText('500.00')).toBeInTheDocument()
+  })
+
+  it('keeps at most one REST request in flight and aborts it on unmount', async () => {
+    vi.useFakeTimers()
+    try {
+      let resolveDepth!: (value: unknown) => void
+      getDepthMock.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveDepth = resolve
+          })
+      )
+      const { unmount } = render(
+        <LanguageProvider>
+          <OrderBook symbol="BTCUSDT" exchange="okx" />
+        </LanguageProvider>
+      )
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15000)
+      })
+      expect(getDepthMock).toHaveBeenCalledTimes(1)
+      await act(async () => {
+        resolveDepth({ bids: [['100.00', '2']], asks: [['100.01', '3']] })
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+      expect(getDepthMock).toHaveBeenCalledTimes(2)
+      const signal = getDepthMock.mock.calls[1][4] as AbortSignal
+      expect(signal.aborted).toBe(false)
+      unmount()
+      expect(signal.aborted).toBe(true)
+      await act(async () => {
+        resolveDepth({ bids: [['500.00', '2']], asks: [['500.01', '3']] })
+      })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

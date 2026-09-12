@@ -119,16 +119,19 @@ export function OrderBook({
 
   useEffect(() => {
     let active = true
+    let inFlight = false
+    let hasSnapshot = false
+    const controller = new AbortController()
     setBook(null)
     setStatus('connecting')
     const refresh = () => {
-      const depthRequest =
-        venue === 'binance'
-          ? api.getDepth(coin, 20, true)
-          : api.getDepth(coin, 20, venue, true)
-      depthRequest
+      if (!active || inFlight) return
+      inFlight = true
+      api
+        .getDepth(coin, 20, venue, true, controller.signal)
         .then((snapshot) => {
           if (!active) return
+          hasSnapshot = true
           setBook({
             coin,
             bids: toLevels(snapshot.bids),
@@ -138,7 +141,11 @@ export function OrderBook({
         })
         .catch(() => {
           // Keep the last successful snapshot visible during transient outages.
-          if (active && !book) setStatus('down')
+          if (active && !controller.signal.aborted && !hasSnapshot)
+            setStatus('down')
+        })
+        .finally(() => {
+          inFlight = false
         })
     }
     refresh()
@@ -146,11 +153,13 @@ export function OrderBook({
       const intervalId = setInterval(refresh, 5000)
       return () => {
         active = false
+        controller.abort()
         clearInterval(intervalId)
       }
     }
     return () => {
       active = false
+      controller.abort()
     }
   }, [coin, venue])
 
