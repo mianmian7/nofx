@@ -494,7 +494,7 @@ export function ExchangeConfigModal({
               <button
                 type="button"
                 onClick={() => setShowGuide(true)}
-                className="px-3 py-2 rounded-lg text-sm font-semibold transition-all hover:scale-105 flex items-center gap-2 bg-nofx-gold/15 text-nofx-gold border border-nofx-gold/30"
+                className="px-3 py-2 rounded-lg text-sm font-semibold transition-all active:scale-95 flex items-center gap-2 bg-nofx-gold/15 text-nofx-gold border border-nofx-gold/30 hover:bg-nofx-gold/25"
               >
                 <BookOpen className="w-4 h-4" />
                 {t('viewGuide', language)}
@@ -643,7 +643,7 @@ export function ExchangeConfigModal({
                   }
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex items-center gap-2 px-4 py-2 rounded-lg transition-all hover:scale-105 bg-nofx-gold/10 border border-nofx-gold/30"
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg transition-all active:scale-95 bg-nofx-gold/10 border border-nofx-gold/30 hover:bg-nofx-gold/20"
                 >
                   <UserPlus className="w-4 h-4 text-nofx-gold" />
                   <span className="text-sm font-medium text-nofx-gold">
@@ -885,7 +885,7 @@ export function ExchangeConfigModal({
                           <button
                             type="button"
                             onClick={() => handleCopyIP(serverIP.public_ip)}
-                            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all hover:scale-105"
+                            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all active:scale-95 hover:opacity-90"
                             style={{
                               background: 'rgba(224, 72, 59, 0.2)',
                               color: '#E0483B',

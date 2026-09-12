@@ -826,7 +826,7 @@ export function TraderDashboardPage({
                                   )
                                 }}
                                 disabled={closingPosition === pos.symbol}
-                                className="inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-semibold transition-all hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed mx-auto bg-nofx-danger/10 text-nofx-danger border border-nofx-danger/30 hover:bg-nofx-danger/20"
+                                className="inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-semibold transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed mx-auto bg-nofx-danger/10 text-nofx-danger border border-nofx-danger/30 hover:bg-nofx-danger/25"
                                 title={t(
                                   'traderDashboard.closePosition',
                                   language
