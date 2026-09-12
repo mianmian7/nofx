@@ -955,6 +955,10 @@ type RiskControlConfig struct {
 
 	// Max margin utilization (e.g. 0.9 = 90%) (CODE ENFORCED)
 	MaxMarginUsage float64 `json:"max_margin_usage"`
+	// Optional Paper-only equity risk limits, enforced atomically by the broker.
+	// Includes costs and all resting entry remainders; zero preserves old behavior.
+	PaperMaxTradeRiskRatio     float64 `json:"paper_max_trade_risk_ratio,omitempty"`
+	PaperMaxPortfolioRiskRatio float64 `json:"paper_max_portfolio_risk_ratio,omitempty"`
 	// Min position size in USDT (CODE ENFORCED)
 	MinPositionSize float64 `json:"min_position_size"`
 

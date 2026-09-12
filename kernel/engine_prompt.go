@@ -347,6 +347,12 @@ func writeHardConstraints(sb *strings.Builder, accountEquity, availableBalance f
 		sb.WriteString(fmt.Sprintf("- Position Value Limit (BTC/ETH): max %.0f USDT (= equity %.0f × %.1fx)\n", accountEquity*btcEthPosValueRatio, accountEquity, btcEthPosValueRatio))
 	}
 	sb.WriteString(fmt.Sprintf("- Maximum total margin usage: %.0f%% of account equity, including open positions and pending entry orders\n", riskControl.MaxMarginUsage*100))
+	if riskControl.PaperMaxTradeRiskRatio > 0 {
+		sb.WriteString(fmt.Sprintf("- Paper single-position stop-risk cap: %.2f%% of current account equity (currently %.4f USDT), including a conservative fee/slippage allowance. A larger or missing AI risk_usd cannot bypass it.\n", riskControl.PaperMaxTradeRiskRatio*100, accountEquity*riskControl.PaperMaxTradeRiskRatio))
+	}
+	if riskControl.PaperMaxPortfolioRiskRatio > 0 {
+		sb.WriteString(fmt.Sprintf("- Paper portfolio stop-risk cap: %.2f%% of current account equity, including every open position and unfilled entry order. Legacy positions above this cap block new entries; do not force-close or loosen their protections merely to satisfy the new entry policy.\n", riskControl.PaperMaxPortfolioRiskRatio*100))
+	}
 	if zh {
 		sb.WriteString(fmt.Sprintf("- Min Position Size: ≥%.0f USDT\n\n", riskControl.MinPositionSize))
 		sb.WriteString("## AI GUIDED (recommended):\n")
@@ -370,6 +376,9 @@ func writeHardConstraints(sb *strings.Builder, accountEquity, availableBalance f
 	}
 	sb.WriteString("- Directional protection (mandatory for opening): open_long: stop_loss < entry/current price < take_profit; open_short: take_profit < entry/current price < stop_loss. If this cannot be satisfied, output wait.\n")
 	sb.WriteString("- Unified hard stop boundary: -20% Margin/Position PnL. Convert it to the actual trigger price with the final leverage; do not send the percentage as a price.\n")
+	if riskControl.PaperMaxTradeRiskRatio > 0 || riskControl.PaperMaxPortfolioRiskRatio > 0 {
+		sb.WriteString("- The -20% margin boundary is an emergency ceiling, NOT a default entry stop or a reason to hold a broken thesis. First choose a structure/volatility-based stop appropriate to the signal timeframe, then size notional from the smaller of your risk_usd and the account risk caps, and only then choose leverage. Do not manufacture risk/reward by placing an implausibly distant target.\n")
+	}
 	sb.WriteString("- Take-profit thresholds are gross Margin/Position PnL, not prices; realized net PnL still includes fees, funding, and slippage. For a +40% target use long entry × (1 + 0.40 / leverage) or short entry × (1 - 0.40 / leverage), then send only that absolute price to the execution layer.\n")
 	sb.WriteString(fmt.Sprintf("- Risk-Reward Ratio: ≥1:%.1f. For longs calculate (take_profit - entry_price) / (entry_price - stop_loss); for shorts calculate (entry_price - take_profit) / (stop_loss - entry_price). Both distances must be positive; never use the raw take_profit / stop_loss price ratio.\n", riskControl.MinRiskRewardRatio))
 	if zh {
