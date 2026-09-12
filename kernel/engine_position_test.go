@@ -79,3 +79,59 @@ func TestUnifiedMaximumLeverageAppliesToEveryAssetClass(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateDecision_CloseRatioValidation(t *testing.T) {
+	risk := store.RiskControlConfig{}
+
+	// 1. Omitted close_ratio is valid (defaults to full close)
+	dOmitted := &Decision{
+		Symbol: "BTCUSDT",
+		Action: "close_long",
+	}
+	if err := validateDecisionWithRisk(dOmitted, 100, risk); err != nil {
+		t.Fatalf("omitted close_ratio must be valid: %v", err)
+	}
+
+	// 2. Valid ratios: (0.0, 1.0]
+	validCases := []float64{0.01, 0.5, 0.99, 1.0}
+	for _, ratio := range validCases {
+		r := ratio
+		d := &Decision{
+			Symbol:     "BTCUSDT",
+			Action:     "close_long",
+			CloseRatio: &r,
+		}
+		if err := validateDecisionWithRisk(d, 100, risk); err != nil {
+			t.Errorf("expected close_ratio %.2f to be valid, got: %v", ratio, err)
+		}
+	}
+
+	// 3. Explicitly zero, negative, or > 1.0 must be rejected
+	invalidCases := []float64{0.0, -0.1, 1.01, 2.0}
+	for _, ratio := range invalidCases {
+		r := ratio
+		d := &Decision{
+			Symbol:     "BTCUSDT",
+			Action:     "close_short",
+			CloseRatio: &r,
+		}
+		if err := validateDecisionWithRisk(d, 100, risk); err == nil {
+			t.Errorf("expected close_ratio %.2f to be invalid, got nil error", ratio)
+		}
+	}
+
+	// 4. close_ratio on non-close actions must be rejected
+	rVal := 0.5
+	dOpen := &Decision{
+		Symbol:          "BTCUSDT",
+		Action:          "open_long",
+		Leverage:        3,
+		PositionSizeUSD: 20,
+		StopLoss:        4076,
+		TakeProfit:      4106,
+		CloseRatio:      &rVal,
+	}
+	if err := validateDecisionWithRisk(dOpen, 100, risk); err == nil {
+		t.Errorf("close_ratio on open_long must be rejected")
+	}
+}

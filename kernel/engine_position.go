@@ -49,6 +49,17 @@ func validateDecisionWithRisk(d *Decision, accountEquity float64, risk store.Ris
 		return fmt.Errorf("update_position requires new_stop_loss or new_take_profit")
 	}
 
+	if d.Action == "close_long" || d.Action == "close_short" {
+		if d.CloseRatio != nil {
+			r := *d.CloseRatio
+			if r <= 0 || r > 1.0 || math.IsNaN(r) || math.IsInf(r, 0) {
+				return fmt.Errorf("close_ratio must be between 0.0 (exclusive) and 1.0 (inclusive), got: %v", r)
+			}
+		}
+	} else if d.CloseRatio != nil {
+		return fmt.Errorf("close_ratio is only allowed for close_long and close_short actions")
+	}
+
 	if d.Action == "open_long" || d.Action == "open_short" {
 		// Asset tiering for validation:
 		//   - BTC/ETH crypto perps use the BTC/ETH tier (typically 5x equity).

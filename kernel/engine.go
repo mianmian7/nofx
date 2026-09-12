@@ -133,6 +133,9 @@ type Decision struct {
 	LevelIndex int     `json:"level_index,omitempty"` // Grid level index
 	OrderID    string  `json:"order_id,omitempty"`    // Order ID (for cancel)
 
+	// Closing position parameters
+	CloseRatio *float64 `json:"close_ratio,omitempty"` // Fraction of position to close (0.0 < close_ratio <= 1.0; omitted defaults to 1.0 full close; explicitly 0 is invalid)
+
 	// Common parameters
 	Confidence int     `json:"confidence,omitempty"` // Confidence level (0-100)
 	RiskUSD    float64 `json:"risk_usd,omitempty"`   // Maximum USD risk
