@@ -160,11 +160,7 @@ func (s *PositionStore) InitTables() error {
 				}
 			}
 
-			// Keep the idempotency key trader-scoped so separate traders may reuse
-			// the same paper order ID.
-			s.db.Exec(`DROP INDEX IF EXISTS idx_positions_exchange_pos_unique`)
-			s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_positions_exchange_pos_unique ON trader_positions(trader_id, exchange_id, exchange_position_id) WHERE exchange_position_id != ''`)
-			return nil
+			return s.migratePositionIdentityIndex()
 		}
 	}
 
@@ -172,20 +168,22 @@ func (s *PositionStore) InitTables() error {
 		return fmt.Errorf("failed to migrate trader_positions table: %w", err)
 	}
 
-	// Create unique partial index for exchange position deduplication
-	var indexSQL string
-	if s.isPostgres() {
-		indexSQL = `CREATE UNIQUE INDEX IF NOT EXISTS idx_positions_exchange_pos_unique ON trader_positions(trader_id, exchange_id, exchange_position_id) WHERE exchange_position_id != ''`
-	} else {
-		indexSQL = `CREATE UNIQUE INDEX IF NOT EXISTS idx_positions_exchange_pos_unique ON trader_positions(trader_id, exchange_id, exchange_position_id) WHERE exchange_position_id != ''`
-	}
-	if err := s.db.Exec(indexSQL).Error; err != nil {
-		if !strings.Contains(err.Error(), "already exists") && !strings.Contains(err.Error(), "UNIQUE constraint failed") {
-			return fmt.Errorf("failed to create unique index: %w", err)
-		}
-	}
+	return s.migratePositionIdentityIndex()
+}
 
-	return nil
+// Replace the legacy global key atomically. IF NOT EXISTS alone keeps the old
+// SQLite index definition forever, so independent Paper traders collide after
+// their per-account order counters restart. A failed rebuild rolls back the DDL.
+func (s *PositionStore) migratePositionIdentityIndex() error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec(`DROP INDEX IF EXISTS idx_positions_exchange_pos_unique`).Error; err != nil {
+			return fmt.Errorf("drop legacy position identity index: %w", err)
+		}
+		if err := tx.Exec(`CREATE UNIQUE INDEX idx_positions_exchange_pos_unique ON trader_positions(trader_id, exchange_id, exchange_position_id) WHERE exchange_position_id != ''`).Error; err != nil {
+			return fmt.Errorf("create trader-scoped position identity index: %w", err)
+		}
+		return nil
+	})
 }
 
 // Create creates position record
