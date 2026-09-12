@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import useSWR from 'swr'
+import { useMyTraders } from '../hooks/useMyTraders'
 import {
   Navigate,
   Route,
@@ -182,15 +183,7 @@ function AppChrome({
 
 function TradersRoute() {
   const navigate = useNavigate()
-  const { user, token } = useAuth()
-  const { data: traders } = useSWR<TraderInfo[]>(
-    user && token ? 'traders-route' : null,
-    api.getTraders,
-    {
-      refreshInterval: 5000,
-      shouldRetryOnError: false,
-    }
-  )
+  const { data: traders } = useMyTraders({ refreshInterval: 0 })
 
   return (
     <AppChrome currentPage="traders" animateContent>
@@ -207,7 +200,6 @@ function TradersRoute() {
 }
 
 function DashboardRoute() {
-  const { user, token } = useAuth()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const selectedTraderSlug = searchParams.get('trader') || undefined
@@ -224,14 +216,7 @@ function DashboardRoute() {
     setDecisionsPollOff(false)
   }, [selectedTraderId])
 
-  const { data: traders } = useSWR<TraderInfo[]>(
-    user && token ? 'traders-dashboard' : null,
-    () => api.getTraders(true),
-    {
-      refreshInterval: 10000,
-      shouldRetryOnError: false,
-    }
-  )
+  const { data: traders } = useMyTraders({ refreshInterval: 10000, silent: true })
 
   useEffect(() => {
     if (!traders || traders.length === 0) {

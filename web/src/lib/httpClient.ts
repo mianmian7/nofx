@@ -112,6 +112,8 @@ export class HttpClient {
    * Only business errors are returned to caller
    */
   private async handleError(error: AxiosError): Promise<any> {
+    // Navigation/unmount cancellation is expected, not a network outage.
+    if (axios.isCancel(error)) throw error
     const isSilent = (error.config as any)?.silentError === true
     const errorData = error.response?.data as
       | {
@@ -229,6 +231,7 @@ export class HttpClient {
       headers?: Record<string, string>
       silent?: boolean
       timeout?: number
+      signal?: AbortSignal
     } = {}
   ): Promise<ApiResponse<T>> {
     try {
@@ -239,6 +242,7 @@ export class HttpClient {
         params: options.params,
         headers: options.headers,
         timeout: options.timeout,
+        signal: options.signal,
         ...(options.silent && { silentError: true }),
       })
 

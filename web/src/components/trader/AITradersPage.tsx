@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import useSWR from 'swr'
+import { useMyTraders } from '../../hooks/useMyTraders'
 import { api } from '../../lib/api'
 import { ApiError } from '../../lib/httpClient'
 import type {
@@ -124,9 +124,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
     data: traders,
     mutate: mutateTraders,
     isLoading: isTradersLoading,
-  } = useSWR<TraderInfo[]>(user && token ? 'traders' : null, api.getTraders, {
-    refreshInterval: 5000,
-  })
+  } = useMyTraders()
 
   useEffect(() => {
     loadConfigs().catch((error) => {
