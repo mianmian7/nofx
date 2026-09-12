@@ -26,7 +26,7 @@ func (s *Server) handleUpdateTraderPrompt(c *gin.Context) {
 	// Update database
 	err := s.store.Trader().UpdateCustomPrompt(userID, traderID, req.CustomPrompt, req.OverrideBasePrompt)
 	if err != nil {
-		SafeInternalError(c, "Failed to update custom prompt", err)
+		respondTraderStoreError(c, "Failed to update custom prompt", err)
 		return
 	}
 
@@ -58,7 +58,7 @@ func (s *Server) handleToggleCompetition(c *gin.Context) {
 	// Update database
 	err := s.store.Trader().UpdateShowInCompetition(userID, traderID, req.ShowInCompetition)
 	if err != nil {
-		SafeInternalError(c, "Update competition visibility", err)
+		respondTraderStoreError(c, "Update competition visibility", err)
 		return
 	}
 

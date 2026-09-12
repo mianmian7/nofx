@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 type traderUpdateHooks struct {
@@ -63,6 +65,12 @@ func NewServer(traderManager *manager.TraderManager, st *store.Store, cryptoServ
 		cryptoHandler:             cryptoHandler,
 		exchangeAccountStateCache: NewExchangeAccountStateCache(),
 		port:                      port,
+		// Construct before Start's goroutine so Shutdown also handles an early
+		// signal, and never races with publication of the HTTP server pointer.
+		httpServer: &http.Server{
+			Addr:    fmt.Sprintf(":%d", port),
+			Handler: router,
+		},
 		// Auth throttle: allow a small burst (typos / page reloads) then ~1
 		// attempt every 6s (10/min) sustained per IP. Generous for a human,
 		// hostile to online password brute-force.
@@ -653,8 +661,8 @@ func isPrivateIP(ip net.IP) bool {
 // getTraderFromQuery resolves a trader from the ?trader_id= query parameter,
 // strictly scoped to the authenticated caller.
 //
-// Ownership is always enforced against the caller's own trader list in the
-// store. We deliberately never fall back to the global in-memory trader map
+// Ownership is enforced by a user-scoped database query. Never fall back to
+// the global in-memory trader map
 // (TraderManager holds every account's traders): returning an entry from it for
 // a trader the caller does not own is a cross-tenant data leak (IDOR) — a
 // freshly-registered user with no traders of their own could otherwise pass any
@@ -663,39 +671,31 @@ func (s *Server) getTraderFromQuery(c *gin.Context) (*manager.TraderManager, str
 	userID := c.GetString("user_id")
 	traderID := c.Query("trader_id")
 
-	// Resolve strictly from the caller's own trader list.
-	userTraders, err := s.store.Trader().List(userID)
+	// Dashboard polling needs one record, not the user's entire trader list.
+	var ownedTrader *store.Trader
+	var err error
+	if traderID == "" {
+		ownedTrader, err = s.store.Trader().GetLatestForUser(userID)
+	} else {
+		ownedTrader, err = s.store.Trader().GetForUser(userID, traderID)
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		if traderID == "" {
+			return nil, "", fmt.Errorf("No available traders")
+		}
+		return nil, "", fmt.Errorf("trader not found for this account")
+	}
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to load traders for this account: %w", err)
 	}
-	if len(userTraders) == 0 {
-		return nil, "", fmt.Errorf("No available traders")
-	}
-
-	resolvedTraderID := traderID
-	if resolvedTraderID == "" {
-		// No trader_id specified — default to the caller's first trader.
-		resolvedTraderID = userTraders[0].ID
-	}
-
-	// A trader_id was supplied — it must belong to the caller.
-	owned := false
-	for _, t := range userTraders {
-		if t.ID == resolvedTraderID {
-			owned = true
-			break
-		}
-	}
-	if !owned {
-		return nil, "", fmt.Errorf("trader not found for this account")
-	}
+	resolvedTraderID := ownedTrader.ID
 
 	// The dashboard polls several endpoints in parallel. Only restore the
 	// caller's in-memory runtimes when the requested trader is absent; repeated
 	// reads of an already-loaded trader must not reload every config or attempt
 	// duplicate Run calls while holding the manager lock.
 	if _, getErr := s.traderManager.GetTrader(resolvedTraderID); getErr != nil {
-		if loadErr := s.traderManager.LoadUserTradersFromStore(s.store, userID); loadErr != nil {
+		if loadErr := s.loadUserTradersFromStore(userID); loadErr != nil {
 			logger.Infof("⚠️ Failed to load traders for user %s: %v", userID, loadErr)
 		}
 	}
@@ -775,11 +775,13 @@ func (s *Server) Start() error {
 	logger.Infof("  • GET  /api/performance?trader_id=xxx - Specified trader's AI learning performance analysis")
 	logger.Info()
 
-	s.httpServer = &http.Server{
-		Addr:    addr,
-		Handler: s.router,
+	err := s.httpServer.ListenAndServe()
+	if errors.Is(err, http.ErrServerClosed) {
+		// Shutdown closes the listener before draining active requests. A
+		// normal stop must not trigger main's fatal startup error handler.
+		return nil
 	}
-	return s.httpServer.ListenAndServe()
+	return err
 }
 
 // Shutdown Gracefully shutdown server

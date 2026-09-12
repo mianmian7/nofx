@@ -26,6 +26,10 @@ import (
 // handleGetGridRiskInfo returns current risk information for a grid trader
 func (s *Server) handleGetGridRiskInfo(c *gin.Context) {
 	traderID := c.Param("id")
+	if _, err := s.store.Trader().GetForUser(c.GetString("user_id"), traderID); err != nil {
+		respondTraderStoreError(c, "Failed to load trader", err)
+		return
+	}
 
 	autoTrader, err := s.traderManager.GetTrader(traderID)
 	if err != nil {

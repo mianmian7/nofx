@@ -180,18 +180,38 @@ func (s *TraderStore) List(userID string) ([]*Trader, error) {
 	return traders, nil
 }
 
+// GetForUser gets one trader without loading model or exchange credentials.
+func (s *TraderStore) GetForUser(userID, traderID string) (*Trader, error) {
+	var trader Trader
+	if err := s.db.Where("user_id = ? AND id = ?", userID, traderID).First(&trader).Error; err != nil {
+		return nil, err
+	}
+	return &trader, nil
+}
+
+// GetLatestForUser preserves List's default selection while reading one row.
+func (s *TraderStore) GetLatestForUser(userID string) (*Trader, error) {
+	var trader Trader
+	if err := s.db.Where("user_id = ?", userID).Order("created_at DESC").First(&trader).Error; err != nil {
+		return nil, err
+	}
+	return &trader, nil
+}
+
 // UpdateStatus updates trader running status
 func (s *TraderStore) UpdateStatus(userID, id string, isRunning bool) error {
-	return s.db.Model(&Trader{}).
+	result := s.db.Model(&Trader{}).
 		Where("id = ? AND user_id = ?", id, userID).
-		Update("is_running", isRunning).Error
+		Update("is_running", isRunning)
+	return traderMutationError(result)
 }
 
 // UpdateShowInCompetition updates trader competition visibility
 func (s *TraderStore) UpdateShowInCompetition(userID, id string, showInCompetition bool) error {
-	return s.db.Model(&Trader{}).
+	result := s.db.Model(&Trader{}).
 		Where("id = ? AND user_id = ?", id, userID).
-		Update("show_in_competition", showInCompetition).Error
+		Update("show_in_competition", showInCompetition)
+	return traderMutationError(result)
 }
 
 // Update updates trader configuration
@@ -229,35 +249,54 @@ func (s *TraderStore) Update(trader *Trader) error {
 		fmt.Printf("⚠️ TraderStore.Update: scan_interval_minutes=%d (<=0, NOT updating)\n", trader.ScanIntervalMinutes)
 	}
 
-	return s.db.Model(&Trader{}).
+	result := s.db.Model(&Trader{}).
 		Where("id = ? AND user_id = ?", trader.ID, trader.UserID).
-		Updates(updates).Error
+		Updates(updates)
+	return traderMutationError(result)
 }
 
 // UpdateInitialBalance updates initial balance
 func (s *TraderStore) UpdateInitialBalance(userID, id string, newBalance float64) error {
-	return s.db.Model(&Trader{}).
+	result := s.db.Model(&Trader{}).
 		Where("id = ? AND user_id = ?", id, userID).
-		Update("initial_balance", newBalance).Error
+		Update("initial_balance", newBalance)
+	return traderMutationError(result)
 }
 
 // UpdateCustomPrompt updates custom prompt
 func (s *TraderStore) UpdateCustomPrompt(userID, id string, customPrompt string, overrideBase bool) error {
-	return s.db.Model(&Trader{}).
+	result := s.db.Model(&Trader{}).
 		Where("id = ? AND user_id = ?", id, userID).
 		Updates(map[string]interface{}{
 			"custom_prompt":        customPrompt,
 			"override_base_prompt": overrideBase,
-		}).Error
+		})
+	return traderMutationError(result)
 }
 
 // Delete deletes trader and associated data
 func (s *TraderStore) Delete(userID, id string) error {
-	// Delete associated equity snapshots first
-	s.db.Where("trader_id = ?", id).Delete(&EquitySnapshot{})
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		// The owner-scoped delete must succeed before touching associated data
+		// or allowing callers to remove the trader from the global runtime map.
+		if err := traderMutationError(tx.Where("id = ? AND user_id = ?", id, userID).Delete(&Trader{})); err != nil {
+			return err
+		}
+		// Roll back the trader deletion as well if related cleanup fails.
+		return tx.Where("trader_id = ?", id).Delete(&EquitySnapshot{}).Error
+	})
+}
 
-	// Delete the trader
-	return s.db.Where("id = ? AND user_id = ?", id, userID).Delete(&Trader{}).Error
+// A successful SQL statement matching no owned trader is not authorization
+// to mutate an entry in TraderManager, which contains every user's traders.
+func traderMutationError(result *gorm.DB) error {
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 // GetFullConfig gets trader full configuration

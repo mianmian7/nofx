@@ -1040,7 +1040,7 @@ func (s *Server) handleDeleteTrader(c *gin.Context) {
 	// Delete from database
 	err := s.store.Trader().Delete(userID, traderID)
 	if err != nil {
-		SafeInternalError(c, "Failed to delete trader", err)
+		respondTraderStoreError(c, "Failed to delete trader", err)
 		return
 	}
 
