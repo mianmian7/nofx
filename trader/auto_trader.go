@@ -233,6 +233,7 @@ type AutoTrader struct {
 	protectionSnapshotMu   sync.Mutex         // Guards the read-only snapshot shared by prompt and executor
 	protectionSnapshots    map[string]managedPosition
 	lastBalanceSyncTime    time.Time          // Last balance sync time
+	safeModeTransitionMu   sync.Mutex         // Serializes SafeMode state changes and database writes
 	userID                 string             // User ID
 	gridState              *GridState         // Grid trading state (only used when StrategyType == "grid_trading")
 	runStopCh              chan struct{}      // Stops only the AI decision loop when the trader is paused
@@ -250,14 +251,41 @@ type AutoTrader struct {
 	cycleStartedAt         time.Time
 	lastCycleCompletedAt   time.Time
 	lastCycleError         string
-	consecutiveAIFailures  int           // Consecutive AI call failures
-	monitorLifecycleMu     sync.Mutex    // Guards background monitor startup and shutdown
-	monitorsStarted        bool          // Background position/risk monitors are running
-	monitorsStopped        bool          // This trader instance has been permanently shut down
-	monitorShutdownDone    chan struct{} // Closed after permanent monitor shutdown completes
-	runtimeHealthMu        sync.RWMutex  // Guards safe mode state (loop writes, API reads)
-	safeMode               bool          // Safe mode: no new positions, protect existing ones
-	safeModeReason         string        // Why safe mode was activated
+	consecutiveAIFailures  int             // Consecutive AI call failures
+	monitorLifecycleMu     sync.Mutex      // Guards background monitor startup and shutdown
+	monitorsStarted        bool            // Background position/risk monitors are running
+	monitorsStopped        bool            // This trader instance has been permanently shut down
+	monitorShutdownDone    chan struct{}   // Closed after permanent monitor shutdown completes
+	runtimeHealthMu        sync.RWMutex    // Guards safe mode state (loop writes, API reads)
+	safeMode               bool            // Safe mode: no new positions, protect existing ones
+	safeModeCause          SafeModeCause   // Specific cause that triggered safe mode
+	safeModeReason         string          // Why safe mode was activated
+	sleeper                Sleeper         // Optional custom sleeper for testing backoff
+	stopLossRetryDelays    []time.Duration // Backoff intervals for opening stop loss retries
+}
+
+// Sleeper abstracts time.Sleep for deterministic testing
+type Sleeper func(d time.Duration)
+
+var defaultStopLossRetryDelays = []time.Duration{
+	100 * time.Millisecond,
+	250 * time.Millisecond,
+	500 * time.Millisecond,
+}
+
+func (at *AutoTrader) sleep(d time.Duration) {
+	if at != nil && at.sleeper != nil {
+		at.sleeper(d)
+		return
+	}
+	time.Sleep(d)
+}
+
+func (at *AutoTrader) getStopLossRetryDelays() []time.Duration {
+	if at != nil && len(at.stopLossRetryDelays) > 0 {
+		return at.stopLossRetryDelays
+	}
+	return defaultStopLossRetryDelays
 }
 
 // NewAutoTrader creates an automatic trader
@@ -270,7 +298,7 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 	if config.PaperFundingMonitorInterval <= 0 {
 		config.PaperFundingMonitorInterval = time.Minute
 	}
-	if config.ID == "" {
+	if strings.TrimSpace(config.ID) == "" {
 		config.ID = "default_trader"
 	}
 	if config.Name == "" {
@@ -366,6 +394,19 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 	if config.ExecutionMode != ExecutionModePaper && config.ExecutionMode != ExecutionModeLive {
 		return nil, fmt.Errorf("unsupported execution mode: %s", config.ExecutionMode)
 	}
+
+	// Early check: validate persisted safe mode state before creating side-effectful exchange clients
+	earlyTrader := &AutoTrader{
+		id:     config.ID,
+		userID: userID,
+		store:  st,
+	}
+	if restoreErr := earlyTrader.restorePersistedSafeMode(); restoreErr != nil {
+		return nil, fmt.Errorf("refusing to initialize trader %q: safe mode state in database is invalid or unreadable: %w", config.ID, restoreErr)
+	}
+	restoredSafeMode := earlyTrader.isSafeMode()
+	restoredSafeModeCause := earlyTrader.getSafeModeCause()
+	_, restoredSafeModeReason := earlyTrader.safeModeState()
 
 	// Create corresponding trader based on configuration
 	var trader Trader
@@ -472,6 +513,13 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 		}
 	}
 
+	// In live trading mode, require trader adapter to implement EmergencyCloser for fail-closed protection
+	if config.ExecutionMode == ExecutionModeLive {
+		if _, ok := trader.(EmergencyCloser); !ok {
+			return nil, fmt.Errorf("refusing to start live trader for %s: exchange adapter does not implement verified EmergencyCloser fail-closed contract", config.Exchange)
+		}
+	}
+
 	// Validate initial balance configuration, auto-fetch from exchange if 0
 	if config.InitialBalance <= 0 {
 		logger.Infof("📊 [%s] Initial balance not set, attempting to fetch current balance from exchange...", config.Name)
@@ -511,7 +559,7 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 	strategyEngine := kernel.NewStrategyEngineForExchange(config.StrategyConfig, config.Exchange)
 	logger.Infof("✓ [%s] Using strategy engine (strategy configuration loaded)", config.Name)
 
-	return &AutoTrader{
+	at := &AutoTrader{
 		id:                    config.ID,
 		name:                  config.Name,
 		aiModel:               config.AIModel,
@@ -542,7 +590,12 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 		peakPnLCacheMutex:     sync.RWMutex{},
 		lastBalanceSyncTime:   time.Now(),
 		userID:                userID,
-	}, nil
+		safeMode:              restoredSafeMode,
+		safeModeCause:         restoredSafeModeCause,
+		safeModeReason:        restoredSafeModeReason,
+	}
+
+	return at, nil
 }
 
 func (at *AutoTrader) reloadStrategyConfigIfChanged() error {
@@ -796,7 +849,7 @@ func (at *AutoTrader) runAutomaticCycle() error {
 func (at *AutoTrader) handleCycleTimeoutFailure(timeout time.Duration) {
 	at.consecutiveAIFailures++
 	if at.consecutiveAIFailures >= 3 && !at.isSafeMode() {
-		at.setSafeMode(true, fmt.Sprintf("Decision cycle timed out %d consecutive times (timeout=%s)", at.consecutiveAIFailures, timeout))
+		at.setSafeModeWithCause(true, SafeModeCauseTimeout, fmt.Sprintf("Decision cycle timed out %d consecutive times (timeout=%s)", at.consecutiveAIFailures, timeout))
 		at.logErrorf("🛡️ SAFE MODE ACTIVATED — Decision cycle timed out %d times in a row. No new positions will be opened. Existing positions are protected with current stop-loss settings.", at.consecutiveAIFailures)
 		at.logErrorf("🛡️ Reason: Decision cycle timed out after %s", timeout)
 		at.logErrorf("🛡️ Action: Will keep trying each cycle. Safe mode auto-deactivates when cycle recovers.")

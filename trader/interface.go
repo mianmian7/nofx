@@ -20,7 +20,14 @@ type (
 	ProtectionLevelSnapshot    = types.ProtectionLevelSnapshot
 	ProtectionSnapshot         = types.ProtectionSnapshot
 	ProtectionSnapshotProvider = types.ProtectionSnapshotProvider
+	OpeningProtectionError     = types.OpeningProtectionError
+	EmergencyCloseResult       = types.EmergencyCloseResult
+	EmergencyCloser            = types.EmergencyCloser
+	EmergencyCloseVerifier     = types.EmergencyCloseVerifier
+	PartialPositionCloser      = types.PartialPositionCloser
 )
+
+var DefaultEmergencyCloseVerifier = types.DefaultEmergencyCloseVerifier
 
 const (
 	ProtectionPresent         = types.ProtectionPresent

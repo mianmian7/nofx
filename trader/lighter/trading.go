@@ -2,6 +2,7 @@ package lighter
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -991,5 +992,91 @@ func (t *LighterTraderV2) PlaceLimitOrder(req *tradertypes.LimitOrderRequest) (*
 		Price:        req.Price,
 		Quantity:     req.Quantity,
 		Status:       "NEW",
+	}, nil
+}
+
+// EmergencyClosePosition implements types.EmergencyCloser for Lighter.
+// It executes a reduce-only market order without pre-emptively cancelling stop orders,
+// polls for status, and verifies that the remaining position is zero.
+func (t *LighterTraderV2) EmergencyClosePosition(ctx context.Context, symbol, positionSide string, quantity float64) (*tradertypes.EmergencyCloseResult, error) {
+	if quantity <= 0 {
+		return nil, fmt.Errorf("emergency close requires positive quantity, got %.8f", quantity)
+	}
+	if t.txClient == nil {
+		return nil, fmt.Errorf("TxClient not initialized")
+	}
+
+	// For Lighter: close long is isAsk=true (sell), close short is isAsk=false (buy)
+	isAsk := !strings.EqualFold(positionSide, "SHORT")
+
+	// Notice: DO NOT call CancelAllOrders here!
+	orderResult, err := t.CreateOrder(symbol, isAsk, quantity, 0, "market", true)
+	if err != nil {
+		return nil, fmt.Errorf("failed to submit Lighter emergency close order: %w", err)
+	}
+
+	txHash, _ := orderResult["orderId"].(string)
+
+	// Poll status / verify position zero
+	positionZero := false
+	status := "SUBMITTED"
+	var avgPrice float64
+	var executedQty float64
+
+	for poll := 0; poll < 5; poll++ {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+
+		if statusMap, sErr := t.GetOrderStatus(symbol, txHash); sErr == nil && statusMap != nil {
+			if s, ok := statusMap["status"].(string); ok {
+				status = s
+				if p, ok := statusMap["avgPrice"].(float64); ok && p > 0 {
+					avgPrice = p
+				}
+				if q, ok := statusMap["executedQty"].(float64); ok && q > 0 {
+					executedQty = q
+				}
+			}
+		}
+
+		pos, posErr := t.GetPosition(symbol)
+		if posErr == nil {
+			if pos == nil || pos.Size == 0 {
+				positionZero = true
+				if status == "SUBMITTED" {
+					status = "FILLED"
+				}
+				break
+			}
+			targetSide := strings.ToLower(positionSide)
+			if strings.ToLower(pos.Side) != targetSide {
+				positionZero = true
+				if status == "SUBMITTED" {
+					status = "FILLED"
+				}
+				break
+			}
+		}
+	}
+
+	isFilled := (status == "FILLED")
+	if executedQty == 0 && isFilled {
+		executedQty = quantity
+	}
+
+	return &tradertypes.EmergencyCloseResult{
+		OrderID:      txHash,
+		Symbol:       symbol,
+		PositionSide: strings.ToUpper(positionSide),
+		Quantity:     quantity,
+		ExecutedQty:  executedQty,
+		AvgPrice:     avgPrice,
+		Status:       status,
+		Submitted:    true,
+		Filled:       isFilled,
+		PositionZero: positionZero,
 	}, nil
 }

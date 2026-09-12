@@ -1,6 +1,7 @@
 package binance
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -28,6 +29,7 @@ type BinanceFuturesTestSuite struct {
 	orderSymbols              *[]string
 	orderTimeInForces         *[]string
 	orderPositionSides        *[]string
+	mockPositionAmt           *string
 }
 
 // NewBinanceFuturesTestSuite Creates Binance Futures test suite
@@ -36,6 +38,8 @@ func NewBinanceFuturesTestSuite(t *testing.T) *BinanceFuturesTestSuite {
 	var orderSymbols []string
 	var orderTimeInForces []string
 	var orderPositionSides []string
+	defaultAmt := "0.5"
+	mockPositionAmt := &defaultAmt
 	// Create mock HTTP server
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Return different mock responses based on URL path
@@ -84,10 +88,14 @@ func NewBinanceFuturesTestSuite(t *testing.T) *BinanceFuturesTestSuite {
 
 		// Mock GetPositions - /fapi/v2/positionRisk
 		case path == "/fapi/v2/positionRisk":
+			amt := "0.5"
+			if mockPositionAmt != nil && *mockPositionAmt != "" {
+				amt = *mockPositionAmt
+			}
 			respBody = []map[string]interface{}{
 				{
 					"symbol":           "BTCUSDT",
-					"positionAmt":      "0.5",
+					"positionAmt":      amt,
 					"entryPrice":       "50000.00",
 					"markPrice":        "50500.00",
 					"unRealizedProfit": "250.00",
@@ -328,6 +336,7 @@ func NewBinanceFuturesTestSuite(t *testing.T) *BinanceFuturesTestSuite {
 		orderSymbols:       &orderSymbols,
 		orderTimeInForces:  &orderTimeInForces,
 		orderPositionSides: &orderPositionSides,
+		mockPositionAmt:    mockPositionAmt,
 	}
 }
 
@@ -499,5 +508,51 @@ func TestGetBrOrderID(t *testing.T) {
 		// Check uniqueness
 		assert.False(t, ids[id], "order ID should be unique")
 		ids[id] = true
+	}
+}
+
+func TestBinance_EmergencyClosePosition_RequestCapture(t *testing.T) {
+	suite := NewBinanceFuturesTestSuite(t)
+	defer suite.Cleanup()
+
+	closer, ok := suite.Trader.(types.EmergencyCloser)
+	if !ok {
+		t.Fatalf("Binance FuturesTrader does not implement types.EmergencyCloser")
+	}
+
+	// Scenario 1: Position confirmed zero on exchange
+	*suite.mockPositionAmt = "0"
+	res, err := closer.EmergencyClosePosition(context.Background(), "BTCUSDT", "LONG", 0.05)
+	if err != nil {
+		t.Fatalf("EmergencyClosePosition failed: %v", err)
+	}
+
+	if !res.Submitted {
+		t.Errorf("expected Submitted = true")
+	}
+	if !res.Filled {
+		t.Errorf("expected Filled = true")
+	}
+	if !res.PositionZero {
+		t.Errorf("expected PositionZero = true when positionAmt is 0")
+	}
+
+	// Assert captured parameters from mock server
+	if len(*suite.orderPositionSides) == 0 {
+		t.Fatalf("no order was captured")
+	}
+	lastPosSide := (*suite.orderPositionSides)[len(*suite.orderPositionSides)-1]
+	if lastPosSide != "LONG" {
+		t.Errorf("captured positionSide = %s, want LONG", lastPosSide)
+	}
+
+	// Scenario 2: Position still exists on exchange (not zero)
+	*suite.mockPositionAmt = "0.5"
+	res2, err2 := closer.EmergencyClosePosition(context.Background(), "BTCUSDT", "LONG", 0.05)
+	if err2 != nil {
+		t.Fatalf("unexpected error: %v", err2)
+	}
+	if res2.PositionZero {
+		t.Errorf("expected PositionZero = false when positionAmt is still 0.5")
 	}
 }

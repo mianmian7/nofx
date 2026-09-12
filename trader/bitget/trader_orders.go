@@ -1,6 +1,7 @@
 package bitget
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -975,4 +976,98 @@ func (t *BitgetTrader) CancelOrder(symbol, orderID string) error {
 
 	logger.Infof("✓ [Bitget] Order cancelled: %s %s", symbol, orderID)
 	return nil
+}
+
+// EmergencyClosePosition implements types.EmergencyCloser for Bitget.
+// It executes a market close with explicit tradeSide="close", polls for execution,
+// verifies that the remaining position is zero, and does NOT cancel stop orders before verified exit.
+func (t *BitgetTrader) EmergencyClosePosition(ctx context.Context, symbol, positionSide string, quantity float64) (*types.EmergencyCloseResult, error) {
+	if quantity <= 0 {
+		return nil, fmt.Errorf("emergency close requires positive quantity, got %.8f", quantity)
+	}
+
+	bitgetSymbol := t.convertSymbol(symbol)
+	qtyStr, err := t.FormatQuantity(bitgetSymbol, quantity)
+	if err != nil {
+		return nil, fmt.Errorf("format quantity failed: %w", err)
+	}
+
+	side := "buy"
+	if strings.EqualFold(positionSide, "SHORT") {
+		side = "sell"
+	}
+
+	body := map[string]interface{}{
+		"symbol":      bitgetSymbol,
+		"productType": "USDT-FUTURES",
+		"marginMode":  "crossed",
+		"marginCoin":  "USDT",
+		"side":        side,
+		"tradeSide":   "close",
+		"orderType":   "market",
+		"size":        qtyStr,
+		"clientOid":   genBitgetClientOid(),
+	}
+
+	data, err := t.doRequest("POST", bitgetOrderPath, body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to submit Bitget emergency close order: %w", err)
+	}
+
+	var order struct {
+		OrderId string `json:"orderId"`
+	}
+	if err := json.Unmarshal(data, &order); err != nil {
+		return nil, fmt.Errorf("failed to parse Bitget emergency close response: %w", err)
+	}
+	if order.OrderId == "" {
+		return nil, fmt.Errorf("empty order ID in Bitget emergency close response")
+	}
+
+	t.clearCache()
+	verifier := types.DefaultEmergencyCloseVerifier()
+	status, avgPrice, execQty, filled, positionZero, _ := verifier.Verify(
+		ctx,
+		func(c context.Context) (string, float64, float64, error) {
+			t.clearCache()
+			statusMap, queryErr := t.GetOrderStatus(symbol, order.OrderId)
+			if queryErr != nil || statusMap == nil {
+				return "", 0, 0, queryErr
+			}
+			s, _ := statusMap["status"].(string)
+			p, _ := statusMap["avgPrice"].(float64)
+			q, _ := statusMap["executedQty"].(float64)
+			return s, p, q, nil
+		},
+		func(c context.Context) (bool, error) {
+			t.clearCache()
+			positions, pErr := t.getPositionsFresh()
+			if pErr != nil {
+				return false, pErr
+			}
+			targetSide := strings.ToLower(positionSide)
+			for _, pos := range positions {
+				if (pos["symbol"] == symbol || pos["symbol"] == bitgetSymbol) && pos["side"] == targetSide {
+					amt, _ := pos["positionAmt"].(float64)
+					if math.Abs(amt) > 1e-8 {
+						return false, nil
+					}
+				}
+			}
+			return true, nil
+		},
+	)
+
+	return &types.EmergencyCloseResult{
+		OrderID:      order.OrderId,
+		Symbol:       symbol,
+		PositionSide: strings.ToUpper(positionSide),
+		Quantity:     quantity,
+		ExecutedQty:  execQty,
+		AvgPrice:     avgPrice,
+		Status:       status,
+		Submitted:    true,
+		Filled:       filled,
+		PositionZero: positionZero,
+	}, nil
 }

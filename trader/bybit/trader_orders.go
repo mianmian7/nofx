@@ -771,3 +771,91 @@ func (t *BybitTrader) GetOrderBook(symbol string, depth int) (bids, asks [][]flo
 
 	return bids, asks, nil
 }
+
+// EmergencyClosePosition implements types.EmergencyCloser for Bybit.
+// It executes a reduce-only market order with explicit quantity, does NOT touch stop orders
+// before verified exit, polls for order fill status, and confirms remaining position is zero.
+func (t *BybitTrader) EmergencyClosePosition(ctx context.Context, symbol, positionSide string, quantity float64) (*types.EmergencyCloseResult, error) {
+	if quantity <= 0 {
+		return nil, fmt.Errorf("emergency close requires positive quantity, got %.8f", quantity)
+	}
+
+	qtyStr, err := t.FormatQuantity(symbol, quantity)
+	if err != nil {
+		return nil, fmt.Errorf("format quantity failed: %w", err)
+	}
+
+	side := "Sell"
+	if strings.EqualFold(positionSide, "SHORT") {
+		side = "Buy"
+	}
+
+	params := map[string]interface{}{
+		"category":    "linear",
+		"symbol":      symbol,
+		"side":        side,
+		"orderType":   "Market",
+		"qty":         qtyStr,
+		"positionIdx": 0,
+		"reduceOnly":  true,
+	}
+
+	rawResult, err := t.client.NewUtaBybitServiceWithParams(params).PlaceOrder(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("Bybit emergency close failed: %w", err)
+	}
+
+	parsed, parseErr := t.parseOrderResult(rawResult)
+	if parseErr != nil {
+		return nil, fmt.Errorf("parse emergency close result failed: %w", parseErr)
+	}
+
+	orderID, _ := parsed["orderId"].(string)
+	t.clearCache()
+	verifier := types.DefaultEmergencyCloseVerifier()
+	status, avgPrice, execQty, filled, positionZero, _ := verifier.Verify(
+		ctx,
+		func(c context.Context) (string, float64, float64, error) {
+			t.clearCache()
+			statusMap, queryErr := t.GetOrderStatus(symbol, orderID)
+			if queryErr != nil || statusMap == nil {
+				return "", 0, 0, queryErr
+			}
+			s, _ := statusMap["status"].(string)
+			p, _ := statusMap["avgPrice"].(float64)
+			q, _ := statusMap["executedQty"].(float64)
+			return s, p, q, nil
+		},
+		func(c context.Context) (bool, error) {
+			t.clearCache()
+			positions, pErr := t.GetPositions()
+			if pErr != nil {
+				return false, pErr
+			}
+			targetSide := strings.ToLower(positionSide)
+			for _, pos := range positions {
+				sideStr, _ := pos["side"].(string)
+				if pos["symbol"] == symbol && strings.ToLower(sideStr) == targetSide {
+					amt, _ := pos["positionAmt"].(float64)
+					if math.Abs(amt) > 1e-8 {
+						return false, nil
+					}
+				}
+			}
+			return true, nil
+		},
+	)
+
+	return &types.EmergencyCloseResult{
+		OrderID:      orderID,
+		Symbol:       symbol,
+		PositionSide: strings.ToUpper(positionSide),
+		Quantity:     quantity,
+		ExecutedQty:  execQty,
+		AvgPrice:     avgPrice,
+		Status:       status,
+		Submitted:    true,
+		Filled:       filled,
+		PositionZero: positionZero,
+	}, nil
+}

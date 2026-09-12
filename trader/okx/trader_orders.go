@@ -1,6 +1,7 @@
 package okx
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -1003,4 +1004,134 @@ func (t *OKXTrader) GetOrderBook(symbol string, depth int) (bids, asks [][]float
 	}
 
 	return bids, asks, nil
+}
+
+// EmergencyClosePosition implements types.EmergencyCloser for OKX.
+// It executes a market close with explicit quantity converted to contracts,
+// does NOT cancel stop orders before verified exit, polls for order fill status,
+// and confirms remaining position is zero.
+func (t *OKXTrader) EmergencyClosePosition(ctx context.Context, symbol, positionSide string, quantity float64) (*types.EmergencyCloseResult, error) {
+	if quantity <= 0 {
+		return nil, fmt.Errorf("emergency close requires positive quantity, got %.8f", quantity)
+	}
+
+	instId := t.convertSymbol(symbol)
+	inst, err := t.getInstrument(symbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get instrument info: %w", err)
+	}
+
+	// Invalidate cache and determine margin mode from fresh positions
+	t.InvalidatePositionCache()
+	posMgnMode := "cross"
+	if positions, pErr := t.getPositionsFresh(); pErr == nil {
+		targetSide := strings.ToLower(positionSide)
+		for _, pos := range positions {
+			if pos["symbol"] == symbol && pos["side"] == targetSide {
+				if m, ok := pos["mgnMode"].(string); ok && m != "" {
+					posMgnMode = m
+				}
+				break
+			}
+		}
+	}
+
+	contracts := quantity / inst.CtVal
+	szStr := t.formatSize(contracts, inst)
+	if szStr == "0" || szStr == "" {
+		return nil, fmt.Errorf("formatted emergency close contract size is 0 for qty %.8f", quantity)
+	}
+
+	side := "sell"
+	if strings.EqualFold(positionSide, "SHORT") {
+		side = "buy"
+	}
+
+	body := map[string]interface{}{
+		"instId":  instId,
+		"tdMode":  posMgnMode,
+		"side":    side,
+		"ordType": "market",
+		"sz":      szStr,
+		"clOrdId": genOkxClOrdID(),
+		"tag":     okxTag,
+	}
+
+	if t.positionMode == "long_short_mode" {
+		if strings.EqualFold(positionSide, "SHORT") {
+			body["posSide"] = "short"
+		} else {
+			body["posSide"] = "long"
+		}
+	}
+
+	data, err := t.doRequest("POST", okxOrderPath, body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to submit OKX emergency close order: %w", err)
+	}
+
+	var orders []struct {
+		OrdId string `json:"ordId"`
+		SCode string `json:"sCode"`
+		SMsg  string `json:"sMsg"`
+	}
+	if err := json.Unmarshal(data, &orders); err != nil {
+		return nil, fmt.Errorf("failed to parse OKX emergency close response: %w", err)
+	}
+	if len(orders) == 0 || orders[0].SCode != "0" {
+		msg := "unknown error"
+		if len(orders) > 0 {
+			msg = orders[0].SMsg
+		}
+		return nil, fmt.Errorf("emergency close order rejected by OKX: %s", msg)
+	}
+
+	orderID := orders[0].OrdId
+	t.InvalidatePositionCache()
+
+	verifier := types.DefaultEmergencyCloseVerifier()
+	status, avgPrice, execQty, filled, positionZero, _ := verifier.Verify(
+		ctx,
+		func(c context.Context) (string, float64, float64, error) {
+			t.InvalidatePositionCache()
+			statusMap, queryErr := t.GetOrderStatus(symbol, orderID)
+			if queryErr != nil || statusMap == nil {
+				return "", 0, 0, queryErr
+			}
+			s, _ := statusMap["status"].(string)
+			p, _ := statusMap["avgPrice"].(float64)
+			q, _ := statusMap["executedQty"].(float64)
+			return s, p, q, nil
+		},
+		func(c context.Context) (bool, error) {
+			t.InvalidatePositionCache()
+			positions, pErr := t.getPositionsFresh()
+			if pErr != nil {
+				return false, pErr
+			}
+			targetSide := strings.ToLower(positionSide)
+			for _, pos := range positions {
+				if pos["symbol"] == symbol && pos["side"] == targetSide {
+					amt, _ := pos["positionAmt"].(float64)
+					if math.Abs(amt) > 1e-8 {
+						return false, nil
+					}
+				}
+			}
+			return true, nil
+		},
+	)
+
+	return &types.EmergencyCloseResult{
+		OrderID:      orderID,
+		Symbol:       symbol,
+		PositionSide: strings.ToUpper(positionSide),
+		Quantity:     quantity,
+		ExecutedQty:  execQty,
+		AvgPrice:     avgPrice,
+		Status:       status,
+		Submitted:    true,
+		Filled:       filled,
+		PositionZero: positionZero,
+	}, nil
 }

@@ -3,6 +3,7 @@ package binance
 import (
 	"context"
 	"fmt"
+	"math"
 	"nofx/logger"
 	"nofx/trader/types"
 	"strconv"
@@ -810,4 +811,90 @@ func (t *FuturesTrader) GetOrderStatus(symbol string, orderID string) (map[strin
 	result["commission"] = 0.0
 
 	return result, nil
+}
+
+// EmergencyClosePosition implements types.EmergencyCloser for Binance.
+// It executes a market close with explicit positionSide (Hedge Mode), does NOT touch stop orders
+// before verified exit, polls for order fill status, and confirms remaining position is zero.
+func (t *FuturesTrader) EmergencyClosePosition(ctx context.Context, symbol, positionSide string, quantity float64) (*types.EmergencyCloseResult, error) {
+	if quantity <= 0 {
+		return nil, fmt.Errorf("emergency close requires positive quantity, got %.8f", quantity)
+	}
+
+	quantityStr, err := t.FormatQuantity(symbol, quantity)
+	if err != nil {
+		return nil, fmt.Errorf("format quantity failed: %w", err)
+	}
+
+	side := futures.SideTypeSell
+	binancePosSide := futures.PositionSideTypeLong
+	if strings.EqualFold(positionSide, "SHORT") {
+		side = futures.SideTypeBuy
+		binancePosSide = futures.PositionSideTypeShort
+	}
+
+	// Submit market order without cancelling any stop-loss orders
+	order, err := t.client.NewCreateOrderService().
+		Symbol(symbol).
+		Side(side).
+		PositionSide(binancePosSide).
+		Type(futures.OrderTypeMarket).
+		Quantity(quantityStr).
+		NewClientOrderID(getBrOrderID()).
+		Do(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("emergency close order submission failed: %w", err)
+	}
+
+	orderIDStr := fmt.Sprintf("%d", order.OrderID)
+	initialFilled := (order.Status == futures.OrderStatusTypeFilled)
+	initialAvgPrice, _ := strconv.ParseFloat(order.AvgPrice, 64)
+	initialExecQty, _ := strconv.ParseFloat(order.ExecutedQuantity, 64)
+
+	verifier := types.DefaultEmergencyCloseVerifier()
+	status, avgPrice, execQty, filled, positionZero, _ := verifier.Verify(
+		ctx,
+		func(c context.Context) (string, float64, float64, error) {
+			if initialFilled {
+				return "FILLED", initialAvgPrice, initialExecQty, nil
+			}
+			statusMap, queryErr := t.GetOrderStatus(symbol, orderIDStr)
+			if queryErr != nil || statusMap == nil {
+				return "", 0, 0, queryErr
+			}
+			s, _ := statusMap["status"].(string)
+			p, _ := statusMap["avgPrice"].(float64)
+			q, _ := statusMap["executedQty"].(float64)
+			return s, p, q, nil
+		},
+		func(c context.Context) (bool, error) {
+			positions, pErr := t.getPositionsFresh()
+			if pErr != nil {
+				return false, pErr
+			}
+			targetSide := strings.ToLower(positionSide)
+			for _, pos := range positions {
+				if pos["symbol"] == symbol && pos["side"] == targetSide {
+					amt, _ := pos["positionAmt"].(float64)
+					if math.Abs(amt) > 1e-8 {
+						return false, nil
+					}
+				}
+			}
+			return true, nil
+		},
+	)
+
+	return &types.EmergencyCloseResult{
+		OrderID:      orderIDStr,
+		Symbol:       symbol,
+		PositionSide: strings.ToUpper(positionSide),
+		Quantity:     quantity,
+		ExecutedQty:  execQty,
+		AvgPrice:     avgPrice,
+		Status:       status,
+		Submitted:    true,
+		Filled:       filled,
+		PositionZero: positionZero,
+	}, nil
 }

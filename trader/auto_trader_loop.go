@@ -202,7 +202,7 @@ func (at *AutoTrader) runCycleContext(requestCtx context.Context) error {
 
 		// Activate safe mode after 3 consecutive failures
 		if at.consecutiveAIFailures >= 3 && !at.isSafeMode() {
-			at.setSafeMode(true, fmt.Sprintf("AI failed %d consecutive times: %v", at.consecutiveAIFailures, err))
+			at.setSafeModeWithCause(true, SafeModeCauseAI, fmt.Sprintf("AI failed %d consecutive times: %v", at.consecutiveAIFailures, err))
 			at.logErrorf("🛡️ SAFE MODE ACTIVATED — AI failed %d times in a row. No new positions will be opened. Existing positions are protected with current stop-loss settings.", at.consecutiveAIFailures)
 			at.logErrorf("🛡️ Reason: %v", err)
 			at.logErrorf("🛡️ Action: Will keep trying AI each cycle. Safe mode auto-deactivates when AI recovers.")
@@ -234,10 +234,7 @@ func (at *AutoTrader) runCycleContext(requestCtx context.Context) error {
 		at.logInfof("✅ AI recovered after %d consecutive failures", at.consecutiveAIFailures)
 	}
 	at.consecutiveAIFailures = 0
-	if at.isSafeMode() {
-		at.logInfof("🛡️ SAFE MODE DEACTIVATED — AI is working again. Resuming normal trading.")
-		at.setSafeMode(false, "")
-	}
+	at.tryDeactivateSafeModeOnAIRecovery()
 
 	// // 5. Print system prompt
 	// logger.Infof("\n" + strings.Repeat("=", 70))
@@ -311,11 +308,27 @@ func (at *AutoTrader) runCycleContext(requestCtx context.Context) error {
 
 	// Execute decisions and record results. Trade throttle is applied here,
 	// immediately before order placement, so AI churn cannot become live orders.
+	at.executeDecisionBatchContext(requestCtx, sortedDecisions, ctx, record)
+
+	// 9. Save decision record
+	if err := at.saveDecision(record); err != nil {
+		at.logWarnf("⚠ Failed to save decision record: %v", err)
+	}
+
+	return requestCtx.Err()
+}
+
+// executeDecisionBatch processes a batch of decisions, checking running state, safe mode, and trade throttles.
+func (at *AutoTrader) executeDecisionBatch(decisions []kernel.Decision, ctx *kernel.Context, record *store.DecisionRecord) {
+	at.executeDecisionBatchContext(context.Background(), decisions, ctx, record)
+}
+
+func (at *AutoTrader) executeDecisionBatchContext(requestCtx context.Context, decisions []kernel.Decision, ctx *kernel.Context, record *store.DecisionRecord) {
 	opensAllowedThisCycle := 0
-	for _, d := range sortedDecisions {
+	for _, d := range decisions {
 		// Check if trader is stopped before each decision (allow immediate stop during execution)
 		at.isRunningMutex.RLock()
-		running = at.isRunning
+		running := at.isRunning
 		at.isRunningMutex.RUnlock()
 		if !running {
 			at.logInfof("⏹ Trader stopped during decision execution, aborting remaining decisions")
@@ -336,6 +349,23 @@ func (at *AutoTrader) runCycleContext(requestCtx context.Context) error {
 			Success:    false,
 		}
 
+		if err := requestCtx.Err(); err != nil {
+			actionRecord.Error = fmt.Sprintf("decision cycle ended before execution: %v", err)
+			record.Decisions = append(record.Decisions, actionRecord)
+			record.ExecutionLog = append(record.ExecutionLog, actionRecord.Error)
+			break
+		}
+
+		if at.isSafeMode() && isOpenAction(d.Action) {
+			_, safeReason := at.safeModeState()
+			blockReason := fmt.Sprintf("blocked by safe mode (%s)", safeReason)
+			at.logWarnf("🛡️ %s %s blocked: %s", d.Symbol, d.Action, blockReason)
+			actionRecord.Error = blockReason
+			record.ExecutionLog = append(record.ExecutionLog, fmt.Sprintf("🛡️ %s %s blocked: %s", d.Symbol, d.Action, blockReason))
+			record.Decisions = append(record.Decisions, actionRecord)
+			continue
+		}
+
 		if reason := at.tradeThrottleReason(d, ctx, opensAllowedThisCycle); reason != "" {
 			at.logWarnf("🧊 %s %s blocked: %s", d.Symbol, d.Action, reason)
 			actionRecord.Error = reason
@@ -347,9 +377,23 @@ func (at *AutoTrader) runCycleContext(requestCtx context.Context) error {
 			opensAllowedThisCycle++
 		}
 
-		if err := at.executeDecisionWithRecord(&d, &actionRecord); err != nil {
+		if err := at.executeDecisionWithRecordContext(requestCtx, &d, &actionRecord); err != nil {
 			actionRecord.Error = err.Error()
-			if isProtectionUpdateRejected(err) {
+			var opErr *OpeningProtectionError
+			if errors.As(err, &opErr) {
+				if opErr.CompensationErr != nil {
+					critMsg := fmt.Sprintf("🚨 CRITICAL: %s %s protection setup failed and compensation close failed: %v", d.Symbol, d.Action, err)
+					at.logErrorf("%s", critMsg)
+					record.ExecutionLog = append(record.ExecutionLog, critMsg)
+				} else if opErr.Compensated {
+					compMsg := fmt.Sprintf("🛡️ %s %s fail-closed compensated: position closed after %d stop-loss attempts: %v", d.Symbol, d.Action, opErr.Attempts, opErr.Err)
+					at.logWarnf("%s", compMsg)
+					record.ExecutionLog = append(record.ExecutionLog, compMsg)
+				} else {
+					at.logErrorf("❌ Failed to set opening protection for %s %s: %v", d.Symbol, d.Action, err)
+					record.ExecutionLog = append(record.ExecutionLog, fmt.Sprintf("❌ %s %s failed: %v", d.Symbol, d.Action, err))
+				}
+			} else if isProtectionUpdateRejected(err) {
 				at.logWarnf("⚠️ %s %s rejected by protection policy: %v", d.Symbol, d.Action, err)
 				record.ExecutionLog = append(record.ExecutionLog, fmt.Sprintf("⚠️ %s %s rejected by protection policy: %v", d.Symbol, d.Action, err))
 			} else {
@@ -366,18 +410,27 @@ func (at *AutoTrader) runCycleContext(requestCtx context.Context) error {
 				record.ExecutionLog = append(record.ExecutionLog, formatDecisionSuccessLog(d, at.entryConfidenceThreshold()))
 			}
 			// Brief delay after successful execution
-			time.Sleep(1 * time.Second)
+			at.waitDecisionInterval(requestCtx, time.Second)
 		}
 
 		record.Decisions = append(record.Decisions, actionRecord)
 	}
+}
 
-	// 9. Save decision record
-	if err := at.saveDecision(record); err != nil {
-		at.logWarnf("⚠ Failed to save decision record: %v", err)
+func (at *AutoTrader) waitDecisionInterval(ctx context.Context, interval time.Duration) {
+	if ctx.Err() != nil {
+		return
 	}
-
-	return nil
+	if at.sleeper != nil {
+		at.sleeper(interval)
+		return
+	}
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+	}
 }
 
 func (at *AutoTrader) entryConfidenceThreshold() int {

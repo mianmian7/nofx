@@ -1,6 +1,7 @@
 package types
 
 import (
+	"context"
 	"fmt"
 	"nofx/logger"
 	"time"
@@ -273,4 +274,67 @@ func (a *GridTraderAdapter) CancelOrder(symbol, orderID string) error {
 func (a *GridTraderAdapter) GetOrderBook(symbol string, depth int) (bids, asks [][]float64, err error) {
 	// Not supported, return empty
 	return nil, nil, nil
+}
+
+// OpeningProtectionError records the full context when setting protection orders
+// fails after an opening fill, including retry attempts and fail-closed compensation outcome.
+type OpeningProtectionError struct {
+	Symbol           string                `json:"symbol"`
+	PositionSide     string                `json:"position_side"`
+	Attempts         int                   `json:"attempts"`
+	StopLossStatus   ProtectionLevelStatus `json:"stop_loss_status"`
+	TakeProfitStatus ProtectionLevelStatus `json:"take_profit_status"`
+	Compensated      bool                  `json:"compensated"`
+	CompensationErr  error                 `json:"compensation_err,omitempty"`
+	Err              error                 `json:"err"`
+}
+
+func (e *OpeningProtectionError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.CompensationErr != nil {
+		return fmt.Sprintf("opening protection critical failure for %s %s (attempts: %d, SL: %s, TP: %s): stop loss failed: %v; compensation close failed: %v",
+			e.Symbol, e.PositionSide, e.Attempts, e.StopLossStatus, e.TakeProfitStatus, e.Err, e.CompensationErr)
+	}
+	if e.Compensated {
+		return fmt.Sprintf("opening protection failed for %s %s (attempts: %d, SL: %s, TP: %s): stop loss failed: %v; fail-closed compensation close executed successfully",
+			e.Symbol, e.PositionSide, e.Attempts, e.StopLossStatus, e.TakeProfitStatus, e.Err)
+	}
+	return fmt.Sprintf("opening protection failed for %s %s (attempts: %d, SL: %s, TP: %s): %v",
+		e.Symbol, e.PositionSide, e.Attempts, e.StopLossStatus, e.TakeProfitStatus, e.Err)
+}
+
+func (e *OpeningProtectionError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+// EmergencyCloseResult represents the structured outcome of an emergency fail-closed market close.
+type EmergencyCloseResult struct {
+	OrderID      string  `json:"order_id"`
+	Symbol       string  `json:"symbol"`
+	PositionSide string  `json:"position_side"` // LONG/SHORT
+	Quantity     float64 `json:"quantity"`
+	ExecutedQty  float64 `json:"executed_qty"`
+	AvgPrice     float64 `json:"avg_price"`
+	Status       string  `json:"status"`
+	Submitted    bool    `json:"submitted"`
+	Filled       bool    `json:"filled"`
+	PositionZero bool    `json:"position_zero"` // Confirmed position has reached zero
+}
+
+// EmergencyCloser is implemented by exchange traders that support dedicated,
+// fail-closed emergency market exit without pre-order cancellation side effects.
+type EmergencyCloser interface {
+	EmergencyClosePosition(ctx context.Context, symbol, positionSide string, quantity float64) (*EmergencyCloseResult, error)
+}
+
+// PartialPositionCloser is an optional interface for exchange adapters or brokers
+// that support deterministic partial position reduction with protection order scaling.
+type PartialPositionCloser interface {
+	CloseLongPartial(symbol string, ratio float64) (map[string]interface{}, error)
+	CloseShortPartial(symbol string, ratio float64) (map[string]interface{}, error)
 }

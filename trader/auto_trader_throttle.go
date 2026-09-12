@@ -78,6 +78,9 @@ func (at *AutoTrader) openThrottleReason(decision kernel.Decision, ctx *kernel.C
 	}
 
 	reentryCooldown := time.Duration(throttle.ReentryCooldownMinutes) * time.Minute
+	if at.executionMode == ExecutionModePaper {
+		return at.paperReentryReason(symbol, reentryCooldown)
+	}
 	if order := at.findRecentCloseOrder(symbol, time.Now().Add(-reentryCooldown)); order != nil {
 		age := time.Since(time.UnixMilli(order.CreatedAt))
 		remaining := reentryCooldown - age

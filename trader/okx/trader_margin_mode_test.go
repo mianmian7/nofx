@@ -2,6 +2,7 @@ package okx
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"math"
@@ -50,7 +51,11 @@ func (rt *recordingTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	case okxInstrumentsPath:
 		response = `{"code":"0","msg":"","data":[{"instId":"BTC-USDT-SWAP","ctVal":"0.01","ctMult":"1","lotSz":"1","minSz":"1","maxMktSz":"100000","tickSz":"0.1","ctType":"linear"}]}`
 	case okxOrderPath:
-		response = `{"code":"0","msg":"","data":[{"ordId":"123","clOrdId":"abc","sCode":"0","sMsg":""}]}`
+		if req.Method == "GET" {
+			response = `{"code":"0","msg":"","data":[{"ordId":"123","clOrdId":"abc","state":"filled","avgPx":"65000.0","accFillSz":"5","sCode":"0","sMsg":""}]}`
+		} else {
+			response = `{"code":"0","msg":"","data":[{"ordId":"123","clOrdId":"abc","sCode":"0","sMsg":""}]}`
+		}
 	case okxAlgoPendingPath:
 		if rt.algoPendingResponse != "" {
 			response = rt.algoPendingResponse
@@ -345,5 +350,73 @@ func TestOKXProtectionCancellationDoesNotDeleteOppositeAlgoOrder(t *testing.T) {
 	}
 	if len(canceled) != 2 || canceled[0] != "sl-1" || canceled[1] != "tp-1" {
 		t.Fatalf("canceled algo IDs = %v, want [sl-1 tp-1]", canceled)
+	}
+}
+
+func TestOKX_EmergencyClosePosition_RequestCapture(t *testing.T) {
+	rt := &recordingTransport{}
+	trader := newTestOKXTrader(rt, true)
+
+	closer, ok := any(trader).(types.EmergencyCloser)
+	if !ok {
+		t.Fatalf("OKXTrader does not implement types.EmergencyCloser")
+	}
+
+	// 1. Test LONG emergency close
+	res, err := closer.EmergencyClosePosition(context.Background(), "BTCUSDT", "LONG", 0.05)
+	if err != nil {
+		t.Fatalf("EmergencyClosePosition LONG failed: %v", err)
+	}
+	if !res.Submitted {
+		t.Errorf("expected Submitted = true")
+	}
+	if !res.PositionZero {
+		t.Errorf("expected PositionZero = true")
+	}
+
+	var postOrderReqs []capturedRequest
+	for _, r := range rt.requestsForPath(okxOrderPath) {
+		if r.Method == "POST" {
+			postOrderReqs = append(postOrderReqs, r)
+		}
+	}
+	if len(postOrderReqs) == 0 {
+		t.Fatalf("no POST order request captured")
+	}
+	lastReq := postOrderReqs[0]
+	if lastReq.Body["side"] != "sell" {
+		t.Errorf("captured side = %v, want sell", lastReq.Body["side"])
+	}
+	if lastReq.Body["posSide"] != "long" {
+		t.Errorf("captured posSide = %v, want long", lastReq.Body["posSide"])
+	}
+	if lastReq.Body["ordType"] != "market" {
+		t.Errorf("captured ordType = %v, want market", lastReq.Body["ordType"])
+	}
+
+	// 2. Test SHORT emergency close
+	resShort, err := closer.EmergencyClosePosition(context.Background(), "BTCUSDT", "SHORT", 0.05)
+	if err != nil {
+		t.Fatalf("EmergencyClosePosition SHORT failed: %v", err)
+	}
+	if !resShort.Submitted || !resShort.PositionZero {
+		t.Errorf("expected SHORT emergency close to succeed and confirm zero")
+	}
+
+	postOrderReqs = nil
+	for _, r := range rt.requestsForPath(okxOrderPath) {
+		if r.Method == "POST" {
+			postOrderReqs = append(postOrderReqs, r)
+		}
+	}
+	if len(postOrderReqs) < 2 {
+		t.Fatalf("expected at least 2 POST order requests, got %d", len(postOrderReqs))
+	}
+	shortReq := postOrderReqs[len(postOrderReqs)-1]
+	if shortReq.Body["side"] != "buy" {
+		t.Errorf("captured side = %v, want buy", shortReq.Body["side"])
+	}
+	if shortReq.Body["posSide"] != "short" {
+		t.Errorf("captured posSide = %v, want short", shortReq.Body["posSide"])
 	}
 }

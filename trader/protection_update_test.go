@@ -469,36 +469,6 @@ func (t *protectionUpdateTrader) SetTakeProfit(_ string, _ string, _ float64, pr
 	return nil
 }
 
-func TestSetOpeningProtectionReturnsStopLossFailureWithoutClosing(t *testing.T) {
-	exchangeTrader := &protectionUpdateTrader{stopLossErr: fmt.Errorf("injected stop-loss failure")}
-	at := &AutoTrader{trader: exchangeTrader}
-
-	err := at.setOpeningProtection(&kernel.Decision{
-		Symbol: "SKHYUSDT", StopLoss: 90, TakeProfit: 110,
-	}, "LONG", 1)
-	if err == nil || !strings.Contains(err.Error(), "stop loss") {
-		t.Fatalf("error = %v, want stop-loss failure", err)
-	}
-	if len(exchangeTrader.takeProfitPrices) != 1 {
-		t.Fatalf("take-profit calls = %v, want protection attempt without close", exchangeTrader.takeProfitPrices)
-	}
-}
-
-func TestSetOpeningProtectionReturnsTakeProfitFailureWithoutClosing(t *testing.T) {
-	exchangeTrader := &protectionUpdateTrader{takeProfitErr: fmt.Errorf("injected take-profit failure")}
-	at := &AutoTrader{trader: exchangeTrader}
-
-	err := at.setOpeningProtection(&kernel.Decision{
-		Symbol: "SKHYUSDT", StopLoss: 90, TakeProfit: 110,
-	}, "SHORT", 1)
-	if err == nil || !strings.Contains(err.Error(), "take profit") {
-		t.Fatalf("error = %v, want take-profit failure", err)
-	}
-	if len(exchangeTrader.stopLossPrices) != 1 {
-		t.Fatalf("stop-loss calls = %v, want protection attempt without close", exchangeTrader.stopLossPrices)
-	}
-}
-
 func TestValidateProtectionUpdateAllowsProtectedRunawayExtension(t *testing.T) {
 	position := managedPosition{
 		symbol: "SKHYUSDT", side: "long", quantity: 1,

@@ -1,6 +1,7 @@
 package gate
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"nofx/logger"
@@ -676,4 +677,91 @@ func (t *GateTrader) GetOpenOrders(symbol string) ([]types.OpenOrder, error) {
 	}
 
 	return result, nil
+}
+
+// EmergencyClosePosition implements types.EmergencyCloser for Gate.
+// It executes a reduce-only IOC market order with explicit quantity, does NOT touch stop orders
+// before verified exit, and checks that remaining position is confirmed zero.
+func (t *GateTrader) EmergencyClosePosition(ctx context.Context, symbol, positionSide string, quantity float64) (*types.EmergencyCloseResult, error) {
+	if quantity <= 0 {
+		return nil, fmt.Errorf("emergency close requires positive quantity, got %.8f", quantity)
+	}
+
+	gateSymbol := t.convertSymbol(symbol)
+	contract, err := t.getContract(gateSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get contract info: %w", err)
+	}
+
+	quantoMultiplier, _ := strconv.ParseFloat(contract.QuantoMultiplier, 64)
+	if quantoMultiplier <= 0 {
+		quantoMultiplier = 1.0
+	}
+	size := int64(quantity / quantoMultiplier)
+	if size <= 0 {
+		size = 1
+	}
+
+	// For Gate: long close is negative size, short close is positive size
+	orderSize := -size
+	if strings.EqualFold(positionSide, "SHORT") {
+		orderSize = size
+	}
+
+	order := gateapi.FuturesOrder{
+		Contract:   gateSymbol,
+		Size:       orderSize,
+		Price:      "0",
+		Tif:        "ioc",
+		ReduceOnly: true,
+		Text:       "t-nofx-emg",
+	}
+
+	result, _, err := t.client.FuturesApi.CreateFuturesOrder(ctx, "usdt", order, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to submit Gate emergency close order: %w", err)
+	}
+
+	t.clearCache()
+	orderIDStr := fmt.Sprintf("%d", result.Id)
+	fillPrice, _ := strconv.ParseFloat(result.FillPrice, 64)
+	status := result.Status
+
+	// Verify position is zero
+	t.clearCache()
+	positionZero := false
+	if positions, pErr := t.GetPositions(); pErr == nil {
+		targetSide := strings.ToLower(positionSide)
+		posFound := false
+		for _, pos := range positions {
+			posSym := t.convertSymbol(pos["symbol"].(string))
+			if posSym == gateSymbol && pos["side"] == targetSide {
+				amt, _ := pos["positionAmt"].(float64)
+				if math.Abs(amt) > 1e-8 {
+					posFound = true
+					break
+				}
+			}
+		}
+		positionZero = !posFound
+	}
+
+	isFilled := (status == "finished" && result.FinishAs == "filled")
+	executedQty := quantity
+	if result.Left != 0 && quantoMultiplier > 0 {
+		executedQty = math.Abs(float64(result.Size-result.Left)) * quantoMultiplier
+	}
+
+	return &types.EmergencyCloseResult{
+		OrderID:      orderIDStr,
+		Symbol:       symbol,
+		PositionSide: strings.ToUpper(positionSide),
+		Quantity:     quantity,
+		ExecutedQty:  executedQty,
+		AvgPrice:     fillPrice,
+		Status:       status,
+		Submitted:    true,
+		Filled:       isFilled,
+		PositionZero: positionZero,
+	}, nil
 }

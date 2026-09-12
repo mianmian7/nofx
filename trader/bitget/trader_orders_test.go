@@ -2,6 +2,7 @@ package bitget
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -658,5 +659,63 @@ func TestBitgetPendingPlanQueryUsesProfitLossFilter(t *testing.T) {
 	}
 	if !strings.Contains(requests[0].Query, "planType=profit_loss") {
 		t.Fatalf("pending plan query = %q, want planType=profit_loss filter", requests[0].Query)
+	}
+}
+
+func TestBitget_EmergencyClosePosition_RequestCapture(t *testing.T) {
+	rt := &bitgetRecordingTransport{responseBody: func(r *http.Request) string {
+		if strings.Contains(r.URL.Path, "order/place-order") {
+			return `{"code":"00000","msg":"success","data":{"orderId":"bitget_emg_123"}}`
+		}
+		if strings.Contains(r.URL.Path, "order/detail") {
+			return `{"code":"00000","msg":"success","data":{"orderId":"bitget_emg_123","state":"filled","priceAvg":"65000.0","baseVolume":"0.05"}}`
+		}
+		if strings.Contains(r.URL.Path, "all-position") {
+			return `{"code":"00000","msg":"success","data":[]}`
+		}
+		return `{"code":"00000","msg":"success","data":{}}`
+	}}
+	trader := newTestBitgetTrader(rt)
+
+	closer, ok := any(trader).(types.EmergencyCloser)
+	if !ok {
+		t.Fatalf("BitgetTrader does not implement types.EmergencyCloser")
+	}
+
+	// 1. Test LONG emergency close
+	res, err := closer.EmergencyClosePosition(context.Background(), "BTCUSDT", "LONG", 0.05)
+	if err != nil {
+		t.Fatalf("EmergencyClosePosition LONG failed: %v", err)
+	}
+	if !res.Submitted || !res.Filled || !res.PositionZero {
+		t.Errorf("expected LONG emergency close to succeed with PositionZero=true")
+	}
+
+	requests := rt.requestsForPath(bitgetOrderPath)
+	if len(requests) == 0 {
+		t.Fatalf("no order request captured")
+	}
+	lastOrder := requests[len(requests)-1]
+	if lastOrder.Body["side"] != "buy" || lastOrder.Body["tradeSide"] != "close" {
+		t.Errorf("captured body = %#v, want buy/close", lastOrder.Body)
+	}
+	if _, ok := lastOrder.Body["reduceOnly"]; ok {
+		t.Errorf("hedge-mode close order must NOT include reduceOnly: %#v", lastOrder.Body)
+	}
+
+	// 2. Test SHORT emergency close
+	resShort, err := closer.EmergencyClosePosition(context.Background(), "BTCUSDT", "SHORT", 0.05)
+	if err != nil {
+		t.Fatalf("EmergencyClosePosition SHORT failed: %v", err)
+	}
+	if !resShort.Submitted || !resShort.Filled || !resShort.PositionZero {
+		t.Errorf("expected SHORT emergency close to succeed with PositionZero=true")
+	}
+	shortOrder := rt.requestsForPath(bitgetOrderPath)[len(rt.requestsForPath(bitgetOrderPath))-1]
+	if shortOrder.Body["side"] != "sell" || shortOrder.Body["tradeSide"] != "close" {
+		t.Errorf("captured body for short = %#v, want sell/close", shortOrder.Body)
+	}
+	if _, ok := shortOrder.Body["reduceOnly"]; ok {
+		t.Errorf("hedge-mode close order must NOT include reduceOnly for short")
 	}
 }

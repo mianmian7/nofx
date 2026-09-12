@@ -2,9 +2,11 @@ package hyperliquid
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"nofx/logger"
 	"nofx/trader/types"
@@ -24,11 +26,16 @@ const (
 )
 
 func (t *HyperliquidTrader) placeOrderWithBuilderFee(order hyperliquid.CreateOrderRequest) error {
-	_, err := t.exchange.Order(t.ctx, order, defaultBuilder)
+	_, err := t.placeOrderWithBuilderFeeStatus(order)
+	return err
+}
+
+func (t *HyperliquidTrader) placeOrderWithBuilderFeeStatus(order hyperliquid.CreateOrderRequest) (hyperliquid.OrderStatus, error) {
+	status, err := t.exchange.Order(t.ctx, order, defaultBuilder)
 	if err == nil {
-		return nil
+		return status, nil
 	}
-	return wrapBuilderFeeNotApproved(err)
+	return status, wrapBuilderFeeNotApproved(err)
 }
 
 func isBuilderFeeNotApprovedError(err error) bool {
@@ -1110,4 +1117,121 @@ func (t *HyperliquidTrader) CancelOrder(symbol, orderID string) error {
 
 	logger.Infof("✓ [Hyperliquid] Order cancelled: %s %s", symbol, orderID)
 	return nil
+}
+
+// EmergencyClosePosition implements types.EmergencyCloser for Hyperliquid.
+// It executes a reduce-only aggressive IOC order without touching stop orders
+// before verified exit, and checks that remaining position is confirmed zero.
+func (t *HyperliquidTrader) EmergencyClosePosition(ctx context.Context, symbol, positionSide string, quantity float64) (*types.EmergencyCloseResult, error) {
+	if quantity <= 0 {
+		return nil, fmt.Errorf("emergency close requires positive quantity, got %.8f", quantity)
+	}
+
+	coin := convertSymbolToHyperliquid(symbol)
+	isXyz := strings.HasPrefix(coin, "xyz:")
+
+	price, err := t.GetMarketPrice(symbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get market price: %w", err)
+	}
+
+	isBuy := strings.EqualFold(positionSide, "SHORT")
+	var aggressivePrice float64
+	if isBuy {
+		aggressivePrice = t.roundPriceToSigfigs(price * aggressiveBuyPriceFactor)
+	} else {
+		aggressivePrice = t.roundPriceToSigfigs(price * aggressiveSellPriceFactor)
+	}
+
+	var realOrderID string
+	var execQty float64
+	var avgPx float64
+	var isFilled bool
+
+	if isXyz {
+		return nil, fmt.Errorf("emergency closer contract is not supported for xyz dex assets: %s", symbol)
+	}
+
+	roundedQuantity := t.roundToSzDecimals(coin, quantity)
+	order := hyperliquid.CreateOrderRequest{
+		Coin:  coin,
+		IsBuy: isBuy,
+		Size:  roundedQuantity,
+		Price: aggressivePrice,
+		OrderType: hyperliquid.OrderType{
+			Limit: &hyperliquid.LimitOrderType{
+				Tif: hyperliquid.TifIoc,
+			},
+		},
+		ReduceOnly: true,
+	}
+	orderStatus, orderErr := t.placeOrderWithBuilderFeeStatus(order)
+	if orderErr != nil {
+		return nil, fmt.Errorf("failed to submit emergency close order: %w", orderErr)
+	}
+
+	if orderStatus.Error != nil {
+		return nil, fmt.Errorf("hyperliquid IOC order rejected: %s", *orderStatus.Error)
+	}
+
+	if orderStatus.Filled != nil {
+		realOrderID = fmt.Sprintf("%d", orderStatus.Filled.Oid)
+		avgPx, _ = strconv.ParseFloat(orderStatus.Filled.AvgPx, 64)
+		execQty, _ = strconv.ParseFloat(orderStatus.Filled.TotalSz, 64)
+		isFilled = true
+	} else if orderStatus.Resting != nil {
+		realOrderID = fmt.Sprintf("%d", orderStatus.Resting.Oid)
+	}
+
+	if realOrderID == "" {
+		return nil, fmt.Errorf("hyperliquid IOC order returned without valid filled/resting order ID")
+	}
+
+	// Verify remaining position is zero with polling
+	positionZero := false
+	for retry := 0; retry < 4; retry++ {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(150 * time.Millisecond):
+		}
+
+		positions, err := t.GetPositions()
+		if err == nil {
+			targetSide := strings.ToLower(positionSide)
+			posFound := false
+			for _, pos := range positions {
+				posSymbol := pos["symbol"].(string)
+				if (posSymbol == symbol || posSymbol == coin) && pos["side"] == targetSide {
+					amt, _ := pos["positionAmt"].(float64)
+					if math.Abs(amt) > 1e-8 {
+						posFound = true
+						break
+					}
+				}
+			}
+			if !posFound {
+				positionZero = true
+				break
+			}
+		}
+	}
+
+	status := "SUBMITTED"
+	if isFilled && positionZero {
+		status = "FILLED"
+	}
+
+	return &types.EmergencyCloseResult{
+		OrderID:      realOrderID,
+		Symbol:       symbol,
+		PositionSide: strings.ToUpper(positionSide),
+		Quantity:     quantity,
+		ExecutedQty:  execQty,
+		AvgPrice:     avgPx,
+		Status:       status,
+		Submitted:    true,
+		Filled:       isFilled,
+		PositionZero: positionZero,
+	}, nil
 }

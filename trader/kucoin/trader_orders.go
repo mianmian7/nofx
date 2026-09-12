@@ -1,6 +1,7 @@
 package kucoin
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -631,7 +632,7 @@ func (t *KuCoinTrader) GetOrderStatus(symbol string, orderID string) (map[string
 		"symbol":      t.convertSymbolBack(order.Symbol),
 		"status":      status,
 		"avgPrice":    order.DealAvgPrice,
-		"executedQty": order.DealSize,
+		"executedQty": float64(order.DealSize),
 		"commission":  order.Fee,
 	}, nil
 }
@@ -817,4 +818,119 @@ func (t *KuCoinTrader) GetOpenOrders(symbol string) ([]types.OpenOrder, error) {
 	}
 
 	return orders, nil
+}
+
+// EmergencyClosePosition implements types.EmergencyCloser for KuCoin.
+// It executes a reduce-only market order with explicit quantity, does NOT touch stop orders
+// before verified exit, polls for order fill status, and confirms remaining position is zero.
+func (t *KuCoinTrader) EmergencyClosePosition(ctx context.Context, symbol, positionSide string, quantity float64) (*types.EmergencyCloseResult, error) {
+	if quantity <= 0 {
+		return nil, fmt.Errorf("emergency close requires positive quantity, got %.8f", quantity)
+	}
+
+	t.InvalidatePositionCache()
+	marginMode := "CROSS"
+	if positions, err := t.GetPositions(); err == nil {
+		targetSide := strings.ToLower(positionSide)
+		for _, pos := range positions {
+			if pos["symbol"] == symbol && pos["side"] == targetSide {
+				if m, ok := pos["mgnMode"].(string); ok && m != "" {
+					marginMode = strings.ToUpper(m)
+				}
+				break
+			}
+		}
+	}
+
+	kcSymbol := t.convertSymbol(symbol)
+	lots, err := t.quantityToLots(symbol, quantity)
+	if err != nil {
+		return nil, fmt.Errorf("failed to calculate lots for emergency close: %w", err)
+	}
+
+	side := "sell"
+	if strings.EqualFold(positionSide, "SHORT") {
+		side = "buy"
+	}
+
+	body := map[string]interface{}{
+		"clientOid":  fmt.Sprintf("nfx_emg%d", time.Now().UnixNano()),
+		"symbol":     kcSymbol,
+		"side":       side,
+		"type":       "market",
+		"size":       lots,
+		"reduceOnly": true,
+		"closeOrder": true,
+		"marginMode": marginMode,
+	}
+
+	data, err := t.doRequest("POST", kucoinOrderPath, body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to submit KuCoin emergency close order: %w", err)
+	}
+
+	var result struct {
+		OrderId string `json:"orderId"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse KuCoin emergency close response: %w", err)
+	}
+	if result.OrderId == "" {
+		return nil, fmt.Errorf("empty order ID in KuCoin emergency close response")
+	}
+
+	t.InvalidatePositionCache()
+	verifier := types.DefaultEmergencyCloseVerifier()
+	status, avgPrice, execQty, filled, positionZero, _ := verifier.Verify(
+		ctx,
+		func(c context.Context) (string, float64, float64, error) {
+			t.InvalidatePositionCache()
+			statusMap, queryErr := t.GetOrderStatus(symbol, result.OrderId)
+			if queryErr != nil || statusMap == nil {
+				return "", 0, 0, queryErr
+			}
+			s, _ := statusMap["status"].(string)
+			p, _ := statusMap["avgPrice"].(float64)
+			var q float64
+			switch v := statusMap["executedQty"].(type) {
+			case float64:
+				q = v
+			case int64:
+				q = float64(v)
+			case int:
+				q = float64(v)
+			}
+			return s, p, q, nil
+		},
+		func(c context.Context) (bool, error) {
+			t.InvalidatePositionCache()
+			positions, pErr := t.GetPositions()
+			if pErr != nil {
+				return false, pErr
+			}
+			targetSide := strings.ToLower(positionSide)
+			for _, pos := range positions {
+				if pos["symbol"] == symbol && pos["side"] == targetSide {
+					amt, _ := pos["positionAmt"].(float64)
+					if math.Abs(amt) > 1e-8 {
+						return false, nil
+					}
+				}
+			}
+			return true, nil
+		},
+	)
+
+	return &types.EmergencyCloseResult{
+		OrderID:      result.OrderId,
+		Symbol:       symbol,
+		PositionSide: strings.ToUpper(positionSide),
+		Quantity:     quantity,
+		ExecutedQty:  execQty,
+		AvgPrice:     avgPrice,
+		Status:       status,
+		Submitted:    true,
+		Filled:       filled,
+		PositionZero: positionZero,
+	}, nil
 }

@@ -1,6 +1,7 @@
 package trader
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -41,6 +42,13 @@ const (
 )
 
 func (at *AutoTrader) executeDecisionWithRecord(decision *kernel.Decision, actionRecord *store.DecisionAction) error {
+	return at.executeDecisionWithRecordContext(context.Background(), decision, actionRecord)
+}
+
+func (at *AutoTrader) executeDecisionWithRecordContext(ctx context.Context, decision *kernel.Decision, actionRecord *store.DecisionAction) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if decision.Action == "open_long" || decision.Action == "open_short" {
 		if provider, ok := at.trader.(leverageLimitProvider); ok {
 			if err := clampDecisionToExchangeLeverageLimit(decision, provider); err != nil {
@@ -77,6 +85,9 @@ func (at *AutoTrader) executeDecisionWithRecord(decision *kernel.Decision, actio
 			return err
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if decision.Action == "update_position" {
 		return at.executeUpdatePositionWithRecord(decision, actionRecord)
 	}
@@ -84,7 +95,7 @@ func (at *AutoTrader) executeDecisionWithRecord(decision *kernel.Decision, actio
 		if at.paperBroker == nil {
 			return fmt.Errorf("paper broker is not configured")
 		}
-		fill, err := at.paperBroker.ExecuteDecision(decision)
+		fill, err := at.paperBroker.ExecuteDecisionContext(ctx, decision)
 		if err != nil {
 			return err
 		}
@@ -107,9 +118,9 @@ func (at *AutoTrader) executeDecisionWithRecord(decision *kernel.Decision, actio
 	}
 	switch decision.Action {
 	case "open_long":
-		return at.executeOpenLongWithRecord(decision, actionRecord)
+		return at.executeOpenLongWithRecordContext(ctx, decision, actionRecord)
 	case "open_short":
-		return at.executeOpenShortWithRecord(decision, actionRecord)
+		return at.executeOpenShortWithRecordContext(ctx, decision, actionRecord)
 	case "close_long":
 		return at.executeCloseLongWithRecord(decision, actionRecord)
 	case "close_short":
@@ -1343,6 +1354,13 @@ func (at *AutoTrader) requireFreshExecutionPrice(symbol string) (float64, error)
 
 // executeOpenLongWithRecord executes open long position and records detailed information
 func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actionRecord *store.DecisionAction) error {
+	return at.executeOpenLongWithRecordContext(context.Background(), decision, actionRecord)
+}
+
+func (at *AutoTrader) executeOpenLongWithRecordContext(ctx context.Context, decision *kernel.Decision, actionRecord *store.DecisionAction) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	logger.Infof("  📈 Open long: %s", decision.Symbol)
 
 	// ⚠️ Get current positions for multiple checks
@@ -1441,12 +1459,21 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 	actionRecord.Quantity = quantity
 	actionRecord.Price = currentPrice
 
+	// Preparation may outlive the cycle while waiting on exchange reads.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// Set margin mode
 	if err := at.trader.SetMarginMode(decision.Symbol, at.config.IsCrossMargin); err != nil {
 		logger.Infof("  ⚠️ Failed to set margin mode: %v", err)
 		// Continue execution, doesn't affect trading
 	}
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Once submitted, confirmation and opening protection must finish even if
+	// the cycle expires. An expired decision cannot leave an entry unprotected.
 	// Open position
 	order, err := at.trader.OpenLong(decision.Symbol, quantity, decision.Leverage)
 	if err != nil {
@@ -1467,13 +1494,19 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 	posKey := decision.Symbol + "_long"
 	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
 
-	// Set stop loss and take profit. Return exchange errors to the decision
-	// loop; protection failures are not an instruction to place another trade.
-	return at.setOpeningProtection(decision, "LONG", quantity)
+	// Set stop loss and take profit with retry and fail-closed compensation.
+	return at.setOpeningProtection(decision, "LONG", quantity, currentPrice, actionRecord)
 }
 
 // executeOpenShortWithRecord executes open short position and records detailed information
 func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, actionRecord *store.DecisionAction) error {
+	return at.executeOpenShortWithRecordContext(context.Background(), decision, actionRecord)
+}
+
+func (at *AutoTrader) executeOpenShortWithRecordContext(ctx context.Context, decision *kernel.Decision, actionRecord *store.DecisionAction) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	logger.Infof("  📉 Open short: %s", decision.Symbol)
 
 	// ⚠️ Get current positions for multiple checks
@@ -1572,12 +1605,20 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 	actionRecord.Quantity = quantity
 	actionRecord.Price = currentPrice
 
+	// Preparation may outlive the cycle while waiting on exchange reads.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// Set margin mode
 	if err := at.trader.SetMarginMode(decision.Symbol, at.config.IsCrossMargin); err != nil {
 		logger.Infof("  ⚠️ Failed to set margin mode: %v", err)
 		// Continue execution, doesn't affect trading
 	}
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Confirmation and protection deliberately survive cancellation after entry.
 	// Open position
 	order, err := at.trader.OpenShort(decision.Symbol, quantity, decision.Leverage)
 	if err != nil {
@@ -1598,32 +1639,317 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 	posKey := decision.Symbol + "_short"
 	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
 
-	// Set stop loss and take profit. Return exchange errors to the decision
-	// loop; protection failures are not an instruction to place another trade.
-	return at.setOpeningProtection(decision, "SHORT", quantity)
+	// Set stop loss and take profit with retry and fail-closed compensation.
+	return at.setOpeningProtection(decision, "SHORT", quantity, currentPrice, actionRecord)
 }
 
-// setOpeningProtection applies both protection orders after a market open and
-// reports any exchange rejection without issuing an unrelated close order.
-func (at *AutoTrader) setOpeningProtection(decision *kernel.Decision, positionSide string, quantity float64) error {
-	var protectionErrs []error
-	if err := at.trader.SetStopLoss(decision.Symbol, positionSide, quantity, decision.StopLoss); err != nil {
-		logger.Errorf("  ❌ Failed to set stop loss: %v", err)
-		protectionErrs = append(protectionErrs, fmt.Errorf("stop loss: %w", err))
+// verifyStopLossActive checks if a stop-loss order is already present on the exchange,
+// which can happen if SetStopLoss timed out over the network but was accepted upstream.
+func (at *AutoTrader) verifyStopLossActive(symbol, positionSide string, expectedPrice float64) (ProtectionLevelStatus, error) {
+	if at == nil || at.trader == nil {
+		return ProtectionUnavailable, fmt.Errorf("trader not initialized")
 	}
-	if err := at.trader.SetTakeProfit(decision.Symbol, positionSide, quantity, decision.TakeProfit); err != nil {
-		logger.Errorf("  ❌ Failed to set take-profit protection order: %v", err)
-		protectionErrs = append(protectionErrs, fmt.Errorf("take profit: %w", err))
+
+	// 1. Prefer dedicated protection snapshot provider if implemented
+	if provider, ok := at.trader.(ProtectionSnapshotProvider); ok {
+		snapshot, err := provider.GetProtectionSnapshot(symbol, positionSide)
+		if err == nil {
+			switch snapshot.StopLoss.Status {
+			case ProtectionPresent:
+				if snapshot.StopLoss.Price > 0 {
+					if expectedPrice <= 0 || math.Abs(snapshot.StopLoss.Price-expectedPrice)/expectedPrice < 0.005 {
+						return ProtectionPresent, nil
+					}
+					// Price mismatch is ambiguous/unreliable, NOT confirmed absent!
+					return ProtectionAmbiguous, fmt.Errorf("snapshot reported SL price %.4f mismatched expected %.4f", snapshot.StopLoss.Price, expectedPrice)
+				}
+				return ProtectionAmbiguous, fmt.Errorf("snapshot reported Present but non-positive price %.4f", snapshot.StopLoss.Price)
+			case ProtectionConfirmedAbsent:
+				// Fall through to GetOpenOrders for double confirmation
+			case ProtectionUnavailable:
+				// Fall through to GetOpenOrders fallback
+			case ProtectionAmbiguous:
+				// Fall through to GetOpenOrders fallback
+			}
+		} else {
+			logger.Warnf("  ⚠️ Protection snapshot check failed for %s %s: %v", symbol, positionSide, err)
+		}
 	}
-	if len(protectionErrs) > 0 {
-		return fmt.Errorf("opening protection failed for %s: %w", decision.Symbol, errors.Join(protectionErrs...))
+
+	// 2. Fallback to querying general open orders
+	orders, err := at.trader.GetOpenOrders(symbol)
+	if err != nil {
+		return ProtectionUnavailable, fmt.Errorf("failed to query open orders: %w", err)
 	}
+
+	// Expected order side: LONG stop-loss is SELL, SHORT stop-loss is BUY
+	expectedSide := "SELL"
+	if strings.EqualFold(positionSide, "SHORT") {
+		expectedSide = "BUY"
+	}
+
+	var hasAmbiguousStop bool
+	var ambiguousReason string
+
+	for _, o := range orders {
+		// Allow matching positionSide OR empty OR "BOTH" / "NET" (for one-way mode)
+		if o.PositionSide != "" &&
+			!strings.EqualFold(o.PositionSide, positionSide) &&
+			!strings.EqualFold(o.PositionSide, "BOTH") &&
+			!strings.EqualFold(o.PositionSide, "NET") {
+			continue
+		}
+
+		orderType := strings.ToUpper(o.Type)
+		planType := strings.ToUpper(o.PlanType)
+		isStop := strings.Contains(orderType, "STOP") || strings.Contains(planType, "STOP") || strings.Contains(planType, "LOSS")
+		isTP := strings.Contains(orderType, "TAKE_PROFIT") || strings.Contains(planType, "PROFIT")
+		if isStop && !isTP {
+			trigger := o.StopPrice
+			if trigger <= 0 {
+				trigger = o.Price
+			}
+			if trigger > 0 && (expectedPrice <= 0 || math.Abs(trigger-expectedPrice)/expectedPrice < 0.005) {
+				// Price matches: now strictly check direction
+				if o.Side == "" {
+					hasAmbiguousStop = true
+					ambiguousReason = fmt.Sprintf("found price-matching stop order %s but side is empty/unspecified", o.OrderID)
+					continue
+				}
+				if strings.EqualFold(o.Side, expectedSide) {
+					return ProtectionPresent, nil
+				}
+				// Direction explicitly mismatched (e.g. BUY for LONG)
+				hasAmbiguousStop = true
+				ambiguousReason = fmt.Sprintf("found price-matching stop order %s but side %s mismatches expected %s", o.OrderID, o.Side, expectedSide)
+			}
+		}
+	}
+
+	if hasAmbiguousStop {
+		return ProtectionAmbiguous, fmt.Errorf("%s", ambiguousReason)
+	}
+
+	return ProtectionConfirmedAbsent, nil
+}
+
+// compensateUnprotectedPosition executes an emergency market close when stop loss cannot be established.
+// It requires an EmergencyCloser capable of verifying position zero, and only clears tracking
+// and stop orders AFTER confirmed exit.
+func (at *AutoTrader) compensateUnprotectedPosition(symbol, positionSide string, quantity, currentPrice float64) (*EmergencyCloseResult, error) {
+	logger.Warnf("  🛡️ Initiating fail-closed emergency market close for unprotected %s %s position (qty: %.4f)...", positionSide, symbol, quantity)
+
+	closer, ok := at.trader.(EmergencyCloser)
+	if !ok {
+		closeErr := fmt.Errorf("exchange trader does not support EmergencyCloser contract for safe fail-closed exit of %s %s", symbol, positionSide)
+		logger.Errorf("  ❌ %v; retaining position tracking and stop orders for safety", closeErr)
+		return nil, closeErr
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	result, closeErr := closer.EmergencyClosePosition(ctx, symbol, positionSide, quantity)
+	if closeErr != nil {
+		logger.Errorf("  ❌ Compensation close failed for %s %s: %v; retaining position tracking and stop orders for safety", positionSide, symbol, closeErr)
+		return nil, closeErr
+	}
+
+	if result == nil || !result.Submitted || !result.Filled || !result.PositionZero || result.ExecutedQty <= 0 {
+		status := "unknown"
+		orderID := "none"
+		var execQty float64
+		if result != nil {
+			status = result.Status
+			orderID = result.OrderID
+			execQty = result.ExecutedQty
+		}
+		closeErr = fmt.Errorf("compensation close incomplete (order: %s, submitted: %t, filled: %t, position_zero: %t, executed_qty: %.4f, status: %s)",
+			orderID, result != nil && result.Submitted, result != nil && result.Filled, result != nil && result.PositionZero, execQty, status)
+		logger.Errorf("  ❌ %v; retaining position tracking and stop orders for safety", closeErr)
+		return result, closeErr
+	}
+
+	// Compensation close confirmed: persist order audit and clean up residual state
+	actionName := "close_long"
+	if strings.EqualFold(positionSide, "SHORT") {
+		actionName = "close_short"
+	}
+	orderMap := map[string]interface{}{
+		"orderId": result.OrderID,
+		"status":  result.Status,
+	}
+	at.recordAndConfirmOrder(orderMap, symbol, actionName, quantity, currentPrice, 0, 0)
+
+	if cancelErr := at.trader.CancelStopOrders(symbol); cancelErr != nil {
+		logger.Warnf("  ⚠️ Failed to cancel residual stop orders after compensation close for %s: %v", symbol, cancelErr)
+	}
+
+	posKey := symbol + "_" + strings.ToLower(positionSide)
+	delete(at.positionFirstSeenTime, posKey)
+
+	logger.Infof("  ✓ Unprotected position %s %s successfully closed and confirmed zero (order ID: %s)", positionSide, symbol, result.OrderID)
+	return result, nil
+}
+
+// setOpeningProtection applies both protection orders after a market open with bounded retries.
+// If stop loss cannot be established or is invalid, it triggers fail-closed compensation (emergency close).
+func (at *AutoTrader) setOpeningProtection(decision *kernel.Decision, positionSide string, quantity float64, currentPrice float64, actionRecordOpt ...*store.DecisionAction) error {
+	var actionRecord *store.DecisionAction
+	if len(actionRecordOpt) > 0 && actionRecordOpt[0] != nil {
+		actionRecord = actionRecordOpt[0]
+	}
+
+	delays := at.getStopLossRetryDelays()
+	maxAttempts := 1 + len(delays)
+
+	var lastSLErr error
+	slEstablished := false
+	lastSLStatus := ProtectionConfirmedAbsent
+	attemptsRun := 0
+
+	// CRITICAL: A non-positive or non-finite stop loss is an invalid protection state.
+	// It MUST NOT be considered established; it must trigger immediate fail-closed compensation.
+	if !isFinitePositive(decision.StopLoss) {
+		logger.Errorf("  ❌ Opening position %s %s has invalid/non-positive stop loss (%.4f); fail-closed compensation required",
+			decision.Symbol, positionSide, decision.StopLoss)
+		lastSLErr = fmt.Errorf("decision has invalid non-positive stop loss (%.4f)", decision.StopLoss)
+		lastSLStatus = ProtectionConfirmedAbsent
+	} else {
+		for attempt := 1; attempt <= maxAttempts && !slEstablished; attempt++ {
+			attemptsRun = attempt
+			if attempt > 1 {
+				delay := delays[attempt-2]
+				if at.executionMode != ExecutionModePaper {
+					logger.Warnf("  ⏳ Retrying stop loss placement for %s %s (attempt %d/%d) after %v...",
+						decision.Symbol, positionSide, attempt, maxAttempts, delay)
+					at.sleep(delay)
+				} else {
+					logger.Warnf("  ⏳ Retrying stop loss placement for %s %s in paper mode (attempt %d/%d)...",
+						decision.Symbol, positionSide, attempt, maxAttempts)
+				}
+			}
+
+			err := at.trader.SetStopLoss(decision.Symbol, positionSide, quantity, decision.StopLoss)
+			if err == nil {
+				logger.Infof("  ✓ Stop loss placed successfully for %s %s at %.4f", decision.Symbol, positionSide, decision.StopLoss)
+				slEstablished = true
+				lastSLStatus = ProtectionPresent
+				break
+			}
+
+			lastSLErr = err
+			logger.Warnf("  ❌ SetStopLoss attempt %d/%d failed for %s: %v", attempt, maxAttempts, decision.Symbol, err)
+
+			// Check if the order was actually accepted by the exchange despite network/timeout error
+			status, verifyErr := at.verifyStopLossActive(decision.Symbol, positionSide, decision.StopLoss)
+			if verifyErr == nil && status == ProtectionPresent {
+				logger.Infof("  ✓ Verified stop loss is already active on exchange for %s %s despite API error",
+					decision.Symbol, positionSide)
+				slEstablished = true
+				lastSLStatus = ProtectionPresent
+				break
+			}
+			if status != ProtectionPresent {
+				lastSLStatus = status
+			}
+		}
+	}
+
+	// If stop loss failed to establish, execute fail-closed compensation
+	if !slEstablished {
+		_, closeErr := at.compensateUnprotectedPosition(decision.Symbol, positionSide, quantity, currentPrice)
+		if closeErr != nil {
+			criticalReason := fmt.Sprintf("CRITICAL: Failed to place stop loss (%v) AND compensation close failed (%v) for %s %s",
+				lastSLErr, closeErr, decision.Symbol, positionSide)
+			logger.Errorf("  🚨 %s", criticalReason)
+			if persistErr := at.setSafeModeWithCause(true, SafeModeCauseProtectionFailure, criticalReason); persistErr != nil {
+				criticalReason = fmt.Sprintf("%s (persistent latch failed: %v; in-memory lock active)", criticalReason, persistErr)
+				logger.Errorf("  🚨 SafeMode latch persistence failed: %v", persistErr)
+			}
+			if actionRecord != nil {
+				actionRecord.Success = false
+				actionRecord.Error = criticalReason
+			}
+			return &OpeningProtectionError{
+				Symbol:           decision.Symbol,
+				PositionSide:     positionSide,
+				Attempts:         attemptsRun,
+				StopLossStatus:   lastSLStatus,
+				TakeProfitStatus: ProtectionConfirmedAbsent,
+				Compensated:      false,
+				CompensationErr:  closeErr,
+				Err:              lastSLErr,
+			}
+		}
+
+		failClosedReason := fmt.Sprintf("stop loss placement failed after %d attempts (%v); fail-closed compensation close executed",
+			attemptsRun, lastSLErr)
+		logger.Warnf("  🛡️ %s", failClosedReason)
+		if actionRecord != nil {
+			actionRecord.Success = false
+			actionRecord.Error = failClosedReason
+		}
+		return &OpeningProtectionError{
+			Symbol:           decision.Symbol,
+			PositionSide:     positionSide,
+			Attempts:         attemptsRun,
+			StopLossStatus:   lastSLStatus,
+			TakeProfitStatus: ProtectionConfirmedAbsent,
+			Compensated:      true,
+			CompensationErr:  nil,
+			Err:              lastSLErr,
+		}
+	}
+
+	// Stop loss established successfully; proceed with take profit.
+	// Take profit failure is degraded only, NEVER triggers compensation close.
+	if decision.TakeProfit > 0 {
+		if err := at.trader.SetTakeProfit(decision.Symbol, positionSide, quantity, decision.TakeProfit); err != nil {
+			logger.Errorf("  ❌ Failed to set take-profit protection order for %s: %v", decision.Symbol, err)
+			if actionRecord != nil {
+				actionRecord.Degraded = true
+				actionRecord.DegradedReason = fmt.Sprintf("take profit placement failed: %v", err)
+			}
+		} else {
+			logger.Infof("  ✓ Take profit placed successfully for %s %s at %.4f", decision.Symbol, positionSide, decision.TakeProfit)
+		}
+	}
+
 	return nil
+}
+
+// resolveCloseRatio validates and resolves a CloseRatio pointer.
+// If ratioPtr == nil, it returns 1.0 (default full close) and isPartial = false.
+// If ratioPtr != nil, it requires 0.0 < *ratioPtr <= 1.0, finite, and returns *ratioPtr.
+// Any non-finite value (NaN, Inf), <= 0.0, or > 1.0 returns an error immediately.
+func resolveCloseRatio(ratioPtr *float64) (float64, bool, error) {
+	if ratioPtr == nil {
+		return 1.0, false, nil
+	}
+	r := *ratioPtr
+	if math.IsNaN(r) || math.IsInf(r, 0) || r <= 0.0 || r > 1.0 {
+		return 0, false, fmt.Errorf("invalid close_ratio %v: must be a finite number between 0.0 (exclusive) and 1.0 (inclusive)", r)
+	}
+	if r >= 1.0 {
+		return 1.0, false, nil
+	}
+	return r, true, nil
 }
 
 // executeCloseLongWithRecord executes close long position and records detailed information
 func (at *AutoTrader) executeCloseLongWithRecord(decision *kernel.Decision, actionRecord *store.DecisionAction) error {
 	logger.Infof("  🔄 Close long: %s", decision.Symbol)
+
+	ratio, isPartialClose, err := resolveCloseRatio(decision.CloseRatio)
+	if err != nil {
+		return err
+	}
+	if isPartialClose {
+		if _, ok := at.trader.(PartialPositionCloser); !ok {
+			return fmt.Errorf("partial close (close_ratio=%.2f) rejected: exchange adapter %s does not implement PartialPositionCloser capability", ratio, at.exchange)
+		}
+	}
 
 	currentPrice, err := at.requireFreshExecutionPrice(decision.Symbol)
 	if err != nil {
@@ -1667,9 +1993,22 @@ func (at *AutoTrader) executeCloseLongWithRecord(decision *kernel.Decision, acti
 	}
 
 	// Close position
-	order, err := at.trader.CloseLong(decision.Symbol, 0) // 0 = close all
-	if err != nil {
-		return fmt.Errorf("failed to close long position for %s: %w", decision.Symbol, err)
+	var order map[string]interface{}
+	if isPartialClose {
+		closer, ok := at.trader.(PartialPositionCloser)
+		if !ok {
+			return fmt.Errorf("partial close (close_ratio=%.2f) rejected: exchange adapter %s does not implement PartialPositionCloser capability", ratio, at.exchange)
+		}
+		logger.Infof("  ✂️ Partial close requested: ratio=%.2f on %s", ratio, decision.Symbol)
+		order, err = closer.CloseLongPartial(decision.Symbol, ratio)
+		if err != nil {
+			return fmt.Errorf("failed to partially close long position for %s: %w", decision.Symbol, err)
+		}
+	} else {
+		order, err = at.trader.CloseLong(decision.Symbol, 0) // 0 = close all
+		if err != nil {
+			return fmt.Errorf("failed to close long position for %s: %w", decision.Symbol, err)
+		}
 	}
 
 	// Record order ID
@@ -1677,8 +2016,15 @@ func (at *AutoTrader) executeCloseLongWithRecord(decision *kernel.Decision, acti
 		actionRecord.OrderID = orderID
 	}
 
+	executedCloseQty := quantity
+	if eq, ok := order["executedQty"].(float64); ok && eq > 0 {
+		executedCloseQty = eq
+	} else if isPartialClose && quantity > 0 {
+		executedCloseQty = quantity * (*decision.CloseRatio)
+	}
+
 	// Record order to database and poll for confirmation
-	at.recordAndConfirmOrder(order, decision.Symbol, "close_long", quantity, currentPrice, 0, entryPrice)
+	at.recordAndConfirmOrder(order, decision.Symbol, "close_long", executedCloseQty, currentPrice, 0, entryPrice)
 
 	logger.Infof("  ✓ Position closed successfully")
 	return nil
@@ -1687,6 +2033,16 @@ func (at *AutoTrader) executeCloseLongWithRecord(decision *kernel.Decision, acti
 // executeCloseShortWithRecord executes close short position and records detailed information
 func (at *AutoTrader) executeCloseShortWithRecord(decision *kernel.Decision, actionRecord *store.DecisionAction) error {
 	logger.Infof("  🔄 Close short: %s", decision.Symbol)
+
+	ratio, isPartialClose, err := resolveCloseRatio(decision.CloseRatio)
+	if err != nil {
+		return err
+	}
+	if isPartialClose {
+		if _, ok := at.trader.(PartialPositionCloser); !ok {
+			return fmt.Errorf("partial close (close_ratio=%.2f) rejected: exchange adapter %s does not implement PartialPositionCloser capability", ratio, at.exchange)
+		}
+	}
 
 	currentPrice, err := at.requireFreshExecutionPrice(decision.Symbol)
 	if err != nil {
@@ -1730,9 +2086,22 @@ func (at *AutoTrader) executeCloseShortWithRecord(decision *kernel.Decision, act
 	}
 
 	// Close position
-	order, err := at.trader.CloseShort(decision.Symbol, 0) // 0 = close all
-	if err != nil {
-		return fmt.Errorf("failed to close short position for %s: %w", decision.Symbol, err)
+	var order map[string]interface{}
+	if isPartialClose {
+		closer, ok := at.trader.(PartialPositionCloser)
+		if !ok {
+			return fmt.Errorf("partial close (close_ratio=%.2f) rejected: exchange adapter %s does not implement PartialPositionCloser capability", ratio, at.exchange)
+		}
+		logger.Infof("  ✂️ Partial close requested: ratio=%.2f on %s", ratio, decision.Symbol)
+		order, err = closer.CloseShortPartial(decision.Symbol, ratio)
+		if err != nil {
+			return fmt.Errorf("failed to partially close short position for %s: %w", decision.Symbol, err)
+		}
+	} else {
+		order, err = at.trader.CloseShort(decision.Symbol, 0) // 0 = close all
+		if err != nil {
+			return fmt.Errorf("failed to close short position for %s: %w", decision.Symbol, err)
+		}
 	}
 
 	// Record order ID
@@ -1740,8 +2109,15 @@ func (at *AutoTrader) executeCloseShortWithRecord(decision *kernel.Decision, act
 		actionRecord.OrderID = orderID
 	}
 
+	executedCloseQty := quantity
+	if eq, ok := order["executedQty"].(float64); ok && eq > 0 {
+		executedCloseQty = eq
+	} else if isPartialClose && quantity > 0 {
+		executedCloseQty = quantity * (*decision.CloseRatio)
+	}
+
 	// Record order to database and poll for confirmation
-	at.recordAndConfirmOrder(order, decision.Symbol, "close_short", quantity, currentPrice, 0, entryPrice)
+	at.recordAndConfirmOrder(order, decision.Symbol, "close_short", executedCloseQty, currentPrice, 0, entryPrice)
 
 	logger.Infof("  ✓ Position closed successfully")
 	return nil
