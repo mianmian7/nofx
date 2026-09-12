@@ -1,6 +1,7 @@
 package trader
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,6 +37,10 @@ type PaperDepthSource interface {
 
 type PaperBrokerConfig struct {
 	InitialBalance                 float64
+	MaxTradeRiskRatio              float64 // optional Paper equity risk cap, including costs
+	MaxPortfolioRiskRatio          float64 // includes positions and unfilled entry orders
+	MinEntryNotional               float64 // minimum accepted notional after risk sizing
+	MinRiskRewardRatio             float64 // zero preserves optional protections for unconfigured brokers
 	MakerFirst                     bool
 	MakerFeeBPS                    float64
 	TakerFeeBPS                    float64
@@ -118,6 +123,7 @@ type PaperPendingOrder struct {
 	FilledQuantity    float64   `json:"filled_quantity"`
 	RemainingQuantity float64   `json:"remaining_quantity"`
 	PositionSizeUSD   float64   `json:"position_size_usd"`
+	RiskUSD           float64   `json:"risk_usd,omitempty"`
 	Leverage          int       `json:"leverage"`
 	StopLoss          float64   `json:"stop_loss,omitempty"`
 	TakeProfit        float64   `json:"take_profit,omitempty"`
@@ -317,6 +323,12 @@ func NewPaperBroker(config PaperBrokerConfig, prices PaperPriceSource) (*PaperBr
 	if prices == nil {
 		return nil, fmt.Errorf("paper price source is required")
 	}
+	if !isFinitePaperNumber(config.MinRiskRewardRatio) || config.MinRiskRewardRatio < 0 {
+		return nil, fmt.Errorf("paper minimum risk/reward must be finite and nonnegative")
+	}
+	if err := validatePaperAccountRiskPolicy(config.MaxTradeRiskRatio, config.MaxPortfolioRiskRatio, config.MinEntryNotional); err != nil {
+		return nil, err
+	}
 	if config.MakerFeeBPS < 0 || config.TakerFeeBPS < 0 || config.SlippageBPS < 0 {
 		return nil, fmt.Errorf("paper fee and slippage must not be negative")
 	}
@@ -355,6 +367,67 @@ func NewPaperBroker(config PaperBrokerConfig, prices PaperPriceSource) (*PaperBr
 	}, nil
 }
 
+type paperStateSnapshot struct {
+	balance             float64
+	totalFees           float64
+	closedTrades        int
+	wins                int
+	nextID              int64
+	peakEquity          float64
+	maxDrawdown         float64
+	positions           map[string]PaperPosition
+	pendingOrders       map[int64]PaperPendingOrder
+	fillsCount          int
+	pendingRecordsCount int
+	orderEventsCount    int
+}
+
+func (b *PaperBroker) captureStateLocked() paperStateSnapshot {
+	posCopy := make(map[string]PaperPosition, len(b.positions))
+	for k, v := range b.positions {
+		posCopy[k] = v
+	}
+	ordersCopy := make(map[int64]PaperPendingOrder, len(b.pendingOrders))
+	for k, v := range b.pendingOrders {
+		ordersCopy[k] = v
+	}
+	return paperStateSnapshot{
+		balance:             b.balance,
+		totalFees:           b.totalFees,
+		closedTrades:        b.closedTrades,
+		wins:                b.wins,
+		nextID:              b.nextID,
+		peakEquity:          b.peakEquity,
+		maxDrawdown:         b.maxDrawdown,
+		positions:           posCopy,
+		pendingOrders:       ordersCopy,
+		fillsCount:          len(b.fills),
+		pendingRecordsCount: len(b.pendingCloseRecords),
+		orderEventsCount:    len(b.orderEvents),
+	}
+}
+
+func (b *PaperBroker) restoreStateLocked(s paperStateSnapshot) {
+	b.balance = s.balance
+	b.totalFees = s.totalFees
+	b.closedTrades = s.closedTrades
+	b.wins = s.wins
+	b.nextID = s.nextID
+	b.peakEquity = s.peakEquity
+	b.maxDrawdown = s.maxDrawdown
+	b.positions = s.positions
+	b.pendingOrders = s.pendingOrders
+	if len(b.fills) > s.fillsCount {
+		b.fills = b.fills[:s.fillsCount]
+	}
+	if len(b.pendingCloseRecords) > s.pendingRecordsCount {
+		b.pendingCloseRecords = b.pendingCloseRecords[:s.pendingRecordsCount]
+	}
+	if len(b.orderEvents) > s.orderEventsCount {
+		b.orderEvents = b.orderEvents[:s.orderEventsCount]
+	}
+}
+
 func NewPersistentPaperBroker(config PaperBrokerConfig, prices PaperPriceSource, ledger PaperLedger, traderID string, closeRecorder PaperCloseRecorder) (*PaperBroker, error) {
 	if ledger == nil || traderID == "" {
 		return nil, fmt.Errorf("paper ledger and trader ID are required")
@@ -391,6 +464,15 @@ func NewPersistentPaperBroker(config PaperBrokerConfig, prices PaperPriceSource,
 }
 
 func (b *PaperBroker) ExecuteDecision(decision *kernel.Decision) (PaperFill, error) {
+	return b.ExecuteDecisionContext(context.Background(), decision)
+}
+
+// ExecuteDecisionContext rejects expired entries at the ledger commit boundary.
+// Protection and exits already in progress are allowed to finish.
+func (b *PaperBroker) ExecuteDecisionContext(ctx context.Context, decision *kernel.Decision) (PaperFill, error) {
+	if err := ctx.Err(); err != nil {
+		return PaperFill{}, err
+	}
 	if decision == nil {
 		return PaperFill{}, fmt.Errorf("paper decision is required")
 	}
@@ -405,28 +487,18 @@ func (b *PaperBroker) ExecuteDecision(decision *kernel.Decision) (PaperFill, err
 		if decision.Action == "close_short" {
 			side = "short"
 		}
+		ratio := 1.0
+		if decision.CloseRatio != nil {
+			r := *decision.CloseRatio
+			if math.IsNaN(r) || math.IsInf(r, 0) || r <= 0.0 || r > 1.0 {
+				return PaperFill{}, fmt.Errorf("invalid close_ratio %v: must be in (0.0, 1.0]", r)
+			}
+			ratio = r
+		}
 		if b.config.MakerFirst {
-			return b.placeMakerClose(decision.Symbol, decision.Action, side)
+			return b.placeMakerClose(decision.Symbol, decision.Action, side, ratio)
 		}
-		price, err := b.prices.GetMarketPrice(decision.Symbol)
-		if err != nil {
-			return PaperFill{}, err
-		}
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		key := decision.Symbol + ":" + side
-		position, ok := b.positions[key]
-		if !ok {
-			return PaperFill{}, fmt.Errorf("paper %s position not found", side)
-		}
-		fill := b.closePositionLocked(position, decision.Action, price, time.Now().UTC())
-		delete(b.positions, key)
-		b.updateDrawdownLocked()
-		if err := b.persistLocked(); err != nil {
-			return PaperFill{}, err
-		}
-		b.flushPendingCloseRecordsLocked()
-		return fill, nil
+		return b.executeCloseBySideRatio(decision.Symbol, side, decision.Action, ratio)
 	}
 	if decision.Action != "open_long" && decision.Action != "open_short" {
 		return PaperFill{}, fmt.Errorf("paper action %q is not implemented", decision.Action)
@@ -438,7 +510,7 @@ func (b *PaperBroker) ExecuteDecision(decision *kernel.Decision) (PaperFill, err
 		return PaperFill{}, fmt.Errorf("paper leverage must be greater than zero")
 	}
 	if b.config.MakerFirst {
-		return b.placeMakerOpen(decision)
+		return b.placeMakerOpen(ctx, decision)
 	}
 	marketPrice, err := b.prices.GetMarketPrice(decision.Symbol)
 	if err != nil {
@@ -450,6 +522,9 @@ func (b *PaperBroker) ExecuteDecision(decision *kernel.Decision) (PaperFill, err
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return PaperFill{}, err
+	}
 	side := "long"
 	slippage := b.config.SlippageBPS / 10_000
 	fillPrice := marketPrice * (1 + slippage)
@@ -457,12 +532,16 @@ func (b *PaperBroker) ExecuteDecision(decision *kernel.Decision) (PaperFill, err
 		side = "short"
 		fillPrice = marketPrice * (1 - slippage)
 	}
-	if err := validatePaperExitPrices(decision.Action, fillPrice, decision.StopLoss, decision.TakeProfit); err != nil {
+	if err := b.validateEntryRiskRewardLocked(decision.Action, fillPrice, decision.StopLoss, decision.TakeProfit); err != nil {
 		return PaperFill{}, err
 	}
-	quantity := decision.PositionSizeUSD / fillPrice
-	fee := decision.PositionSizeUSD * b.config.TakerFeeBPS / 10_000
-	requiredMargin := decision.PositionSizeUSD / float64(decision.Leverage)
+	notional, err := b.limitEntryNotionalLocked(decision, fillPrice)
+	if err != nil {
+		return PaperFill{}, err
+	}
+	quantity := notional / fillPrice
+	fee := notional * b.config.TakerFeeBPS / 10_000
+	requiredMargin := notional / float64(decision.Leverage)
 	availableBalance := b.availableBalanceLocked()
 	if requiredMargin+fee > availableBalance {
 		return PaperFill{}, fmt.Errorf("paper available balance is insufficient for initial margin and fee")
@@ -570,13 +649,16 @@ func (b *PaperBroker) updateProtection(decision *kernel.Decision) (PaperFill, er
 	return PaperFill{Symbol: position.Symbol, Action: decision.Action, Side: position.Side, Time: now}, nil
 }
 
-func (b *PaperBroker) placeMakerClose(symbol, action, side string) (PaperFill, error) {
+func (b *PaperBroker) placeMakerClose(symbol, action, side string, ratio float64) (PaperFill, error) {
+	if math.IsNaN(ratio) || math.IsInf(ratio, 0) || ratio <= 0 || ratio > 1.0 {
+		return PaperFill{}, fmt.Errorf("invalid close ratio %v: must be in (0.0, 1.0]", ratio)
+	}
 	depths, ok := b.prices.(PaperDepthSource)
 	if !ok {
 		return PaperFill{}, fmt.Errorf("paper maker-first requires a read-only depth source")
 	}
 	b.mu.RLock()
-	position, exists := b.positions[symbol+":"+side]
+	_, exists := b.positions[symbol+":"+side]
 	b.mu.RUnlock()
 	if !exists {
 		return PaperFill{}, fmt.Errorf("paper %s position not found", side)
@@ -593,16 +675,38 @@ func (b *PaperBroker) placeMakerClose(symbol, action, side string) (PaperFill, e
 	now := b.now()
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
+	// Re-read latest position under write lock to avoid stale pre-depth state
+	position, exists := b.positions[symbol+":"+side]
+	if !exists || position.Quantity <= 1e-12 {
+		return PaperFill{}, fmt.Errorf("paper %s position not found under write lock", side)
+	}
+
 	for _, pending := range b.pendingOrders {
-		if pending.ReduceOnly && pending.Symbol == symbol && pending.Side == side && !paperIsTakeProfitAction(pending.Action) {
+		if pending.ReduceOnly && pending.Symbol == symbol && pending.Side == side &&
+			(pending.Action == "close_long" || pending.Action == "close_short") &&
+			pending.LimitPrice > 0 && pending.StopLoss == 0 {
 			return PaperFill{}, fmt.Errorf("paper maker close order already pending for %s %s", symbol, side)
 		}
 	}
-	b.cancelPendingReduceOnlyLocked(symbol, side)
+	b.cancelPendingReduceOnlyMakerCloseLocked(symbol, side)
+
+	closeQty := position.Quantity
+	if ratio > 0 && ratio < 1.0 {
+		closeQty = position.Quantity * ratio
+		if closeQty <= 1e-12 {
+			return PaperFill{}, fmt.Errorf("calculated maker close quantity %.12f for %s is too small", closeQty, symbol)
+		}
+		if position.Quantity-closeQty <= 1e-12 {
+			closeQty = position.Quantity
+		}
+	}
+
+	snap := b.captureStateLocked()
 	order := PaperPendingOrder{
 		OrderID: b.nextID, Symbol: symbol, Action: action, Side: side,
-		LimitPrice: limitPrice, Quantity: position.Quantity,
-		RemainingQuantity: position.Quantity, Leverage: position.Leverage,
+		LimitPrice: limitPrice, Quantity: closeQty,
+		RemainingQuantity: closeQty, Leverage: position.Leverage,
 		ReduceOnly: true, Status: "NEW", CreatedAt: now, UpdatedAt: now,
 		ExpiresAt: now.Add(b.config.MakerTimeout),
 	}
@@ -610,7 +714,8 @@ func (b *PaperBroker) placeMakerClose(symbol, action, side string) (PaperFill, e
 	b.pendingOrders[order.OrderID] = order
 	b.recordOrderEventLocked(order, "NEW", "", 0, 0)
 	if err := b.persistLocked(); err != nil {
-		return PaperFill{}, err
+		b.restoreStateLocked(snap)
+		return PaperFill{}, fmt.Errorf("persistence failed, rolled back maker close: %w", err)
 	}
 	return PaperFill{
 		OrderID: order.OrderID, Symbol: order.Symbol, Action: order.Action,
@@ -619,7 +724,7 @@ func (b *PaperBroker) placeMakerClose(symbol, action, side string) (PaperFill, e
 	}, nil
 }
 
-func (b *PaperBroker) placeMakerOpen(decision *kernel.Decision) (PaperFill, error) {
+func (b *PaperBroker) placeMakerOpen(ctx context.Context, decision *kernel.Decision) (PaperFill, error) {
 	depths, ok := b.prices.(PaperDepthSource)
 	if !ok {
 		return PaperFill{}, fmt.Errorf("paper maker-first requires a read-only depth source")
@@ -644,18 +749,28 @@ func (b *PaperBroker) placeMakerOpen(decision *kernel.Decision) (PaperFill, erro
 	if err := validatePaperExitPrices(decision.Action, limitPrice, decision.StopLoss, decision.TakeProfit); err != nil {
 		return PaperFill{}, err
 	}
-	quantity := decision.PositionSizeUSD / limitPrice
-	requiredMargin := decision.PositionSizeUSD / float64(decision.Leverage)
-	estimatedFee := decision.PositionSizeUSD * b.config.MakerFeeBPS / 10_000
 	now := b.now()
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return PaperFill{}, err
+	}
+	if err := b.validateEntryRiskRewardLocked(decision.Action, limitPrice, decision.StopLoss, decision.TakeProfit); err != nil {
+		return PaperFill{}, err
+	}
 	for _, pending := range b.pendingOrders {
 		if !pending.ReduceOnly && pending.Symbol == decision.Symbol && pending.Side == side &&
 			(pending.Status == "NEW" || pending.Status == "PARTIALLY_FILLED") {
 			return PaperFill{}, fmt.Errorf("paper maker entry order already pending for %s %s", decision.Symbol, side)
 		}
 	}
+	notional, err := b.limitEntryNotionalLocked(decision, limitPrice)
+	if err != nil {
+		return PaperFill{}, err
+	}
+	quantity := notional / limitPrice
+	requiredMargin := notional / float64(decision.Leverage)
+	estimatedFee := notional * b.config.MakerFeeBPS / 10_000
 	availableBalance := b.availableBalanceLocked()
 	if requiredMargin+estimatedFee > availableBalance {
 		return PaperFill{}, fmt.Errorf("paper available balance is insufficient for maker order margin and fee")
@@ -663,7 +778,7 @@ func (b *PaperBroker) placeMakerOpen(decision *kernel.Decision) (PaperFill, erro
 	order := PaperPendingOrder{
 		OrderID: b.nextID, Symbol: decision.Symbol, Action: decision.Action,
 		Side: side, LimitPrice: limitPrice, Quantity: quantity,
-		RemainingQuantity: quantity, PositionSizeUSD: decision.PositionSizeUSD,
+		RemainingQuantity: quantity, PositionSizeUSD: notional, RiskUSD: decision.RiskUSD,
 		Leverage: decision.Leverage, StopLoss: decision.StopLoss,
 		TakeProfit: decision.TakeProfit, Status: "NEW", CreatedAt: now,
 		UpdatedAt: now, ExpiresAt: now.Add(b.config.MakerTimeout),
@@ -1148,6 +1263,16 @@ func (b *PaperBroker) cancelPendingReduceOnlyLocked(symbol, side string) {
 	}
 }
 
+func (b *PaperBroker) cancelPendingReduceOnlyMakerCloseLocked(symbol, side string) {
+	for orderID, order := range b.pendingOrders {
+		if order.ReduceOnly && order.Symbol == symbol && order.Side == side &&
+			(order.Action == "close_long" || order.Action == "close_short") &&
+			order.LimitPrice > 0 && order.StopLoss == 0 {
+			delete(b.pendingOrders, orderID)
+		}
+	}
+}
+
 func (b *PaperBroker) cancelPendingOrdersLocked(symbol, side, reason string, at time.Time) {
 	for orderID, order := range b.pendingOrders {
 		if order.Symbol != symbol || order.Side != side {
@@ -1358,31 +1483,92 @@ func (b *PaperBroker) QuarantinedPositions() map[string]PaperPosition {
 }
 
 func (b *PaperBroker) closePositionLocked(position PaperPosition, action string, marketPrice float64, at time.Time) PaperFill {
+	fill, _, _ := b.closePositionInternalLocked(&position, action, marketPrice, 1.0, at)
+	return fill
+}
+
+// closePositionInternalLocked performs full or partial closure of a position.
+// ratio must be in (0.0, 1.0].
+// If ratio == 1.0, it executes a full close.
+// If 0.0 < ratio < 1.0, it reduces the position proportionally, records closed trade history,
+// and updates the remainder. Returns (fill, isFullClose, error).
+func (b *PaperBroker) closePositionInternalLocked(position *PaperPosition, action string, marketPrice, ratio float64, at time.Time) (PaperFill, bool, error) {
+	if math.IsNaN(ratio) || math.IsInf(ratio, 0) || ratio <= 0 || ratio > 1.0 {
+		return PaperFill{}, false, fmt.Errorf("invalid close ratio %v: must be in (0.0, 1.0]", ratio)
+	}
 	slippage := b.config.SlippageBPS / 10_000
 	fillPrice := marketPrice * (1 - slippage)
-	grossPnL := (fillPrice - position.EntryPrice) * position.Quantity
+	isFullClose := (ratio >= 1.0)
+	closeQty := position.Quantity
+	if !isFullClose {
+		closeQty = position.Quantity * ratio
+		if closeQty <= 1e-12 {
+			return PaperFill{}, false, fmt.Errorf("calculated partial close quantity %.12f for %s is too small", closeQty, position.Symbol)
+		}
+		if position.Quantity-closeQty <= 1e-12 {
+			isFullClose = true
+			closeQty = position.Quantity
+		}
+	}
+
+	actualRatio := closeQty / position.Quantity
+	if actualRatio > 1.0 {
+		actualRatio = 1.0
+	}
+
+	grossPnL := (fillPrice - position.EntryPrice) * closeQty
 	if position.Side == "short" {
 		fillPrice = marketPrice * (1 + slippage)
-		grossPnL = (position.EntryPrice - fillPrice) * position.Quantity
+		grossPnL = (position.EntryPrice - fillPrice) * closeQty
 	}
-	exitFee := fillPrice * position.Quantity * b.config.TakerFeeBPS / 10_000
-	netTradePnL := grossPnL - position.EntryFee - exitFee
+	exitFee := fillPrice * closeQty * b.config.TakerFeeBPS / 10_000
+	entryFeePortion := position.EntryFee * actualRatio
+	initialMarginPortion := position.InitialMargin * actualRatio
+	netTradePnL := grossPnL - entryFeePortion - exitFee
+
 	b.balance += grossPnL - exitFee
 	b.totalFees += exitFee
 	b.closedTrades++
 	if netTradePnL > 0 {
 		b.wins++
 	}
+
 	fill := PaperFill{
 		OrderID: b.nextID, Symbol: position.Symbol, Action: action,
 		Side: position.Side, Leverage: position.Leverage,
-		Price: fillPrice, Quantity: position.Quantity, Fee: exitFee,
+		Price: fillPrice, Quantity: closeQty, Fee: exitFee,
 		RealizedPnL: netTradePnL, Time: at, Status: "FILLED", IsMaker: false,
 	}
 	b.nextID++
 	b.fills = append(b.fills, fill)
-	b.recordCloseLocked(position, fill, at, netTradePnL, exitFee)
-	return fill
+
+	// Record closed trade for history
+	rec := PaperClosedTrade{
+		Symbol:      position.Symbol,
+		Side:        position.Side,
+		Quantity:    closeQty,
+		EntryPrice:  position.EntryPrice,
+		ExitOrderID: fill.OrderID,
+		ExitPrice:   fill.Price,
+		EntryTime:   position.EntryTime,
+		ExitTime:    at,
+		RealizedPnL: netTradePnL,
+		EntryFee:    entryFeePortion,
+		ExitFee:     exitFee,
+		Fee:         entryFeePortion + exitFee,
+		Leverage:    position.Leverage,
+		CloseReason: action,
+	}
+	b.pendingCloseRecords = append(b.pendingCloseRecords, rec)
+
+	if !isFullClose {
+		position.Quantity -= closeQty
+		position.EntryFee -= entryFeePortion
+		position.InitialMargin -= initialMarginPortion
+		return fill, false, nil
+	}
+
+	return fill, true, nil
 }
 
 // recordCloseLocked notifies the close recorder (if any) that a simulated
@@ -1398,9 +1584,11 @@ func (b *PaperBroker) recordCloseLocked(position PaperPosition, fill PaperFill, 
 		EntryTime:   position.EntryTime,
 		ExitTime:    at,
 		RealizedPnL: realizedPnL,
-		Fee:         fee,
+		EntryFee:    position.EntryFee,
+		ExitFee:     fee,
+		Fee:         position.EntryFee + fee,
 		Leverage:    position.Leverage,
-		CloseReason: "paper",
+		CloseReason: fill.Action,
 	}
 	b.pendingCloseRecords = append(b.pendingCloseRecords, rec)
 }
@@ -1421,10 +1609,10 @@ func (b *PaperBroker) flushPendingCloseRecordsLocked() {
 	for len(b.pendingCloseRecords) > 0 {
 		rec := b.pendingCloseRecords[0]
 		if err := b.closeRecorder.RecordPaperClose(rec, b.traderID); err != nil {
-			if !strings.Contains(strings.ToLower(err.Error()), "unique constraint failed") {
-				fmt.Printf("paper close recorder failed for %s %s: %v\n", rec.Symbol, rec.Side, err)
-				return
-			}
+			// A uniqueness error may refer to another trader's legacy row, not
+			// this close. Only the recorder's successful idempotent upsert is an ack.
+			fmt.Printf("paper close recorder failed for %s %s: %v\n", rec.Symbol, rec.Side, err)
+			return
 		}
 		b.pendingCloseRecords = b.pendingCloseRecords[1:]
 		if err := b.persistLocked(); err != nil {
@@ -1442,22 +1630,34 @@ func (b *PaperBroker) syncHistoricalClosedTrades() {
 	if b.closeRecorder == nil {
 		return
 	}
-	b.mu.RLock()
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	fills := append([]PaperFill(nil), b.fills...)
-	initialBalance := b.initialBalance
-	b.mu.RUnlock()
-	for _, closed := range reconstructPaperPerformance(fills, initialBalance).ClosedTrades {
+	for _, closed := range reconstructPaperPerformance(fills, b.initialBalance).ClosedTrades {
 		if closed.ExitOrderID <= 0 {
-			b.mu.Lock()
 			b.restoreWarnings = append(b.restoreWarnings, fmt.Sprintf("paper historical close %s %s skipped: missing exit order ID", closed.Symbol, closed.Side))
-			b.mu.Unlock()
 			continue
 		}
-		if err := b.closeRecorder.RecordPaperClose(closed, b.traderID); err != nil {
-			b.mu.Lock()
-			b.restoreWarnings = append(b.restoreWarnings, fmt.Sprintf("paper historical close %s %s not recorded: %v", closed.Symbol, closed.Side, err))
-			b.mu.Unlock()
+		// Canonicalize any old queued record from the fill ledger (including
+		// entry fees/reason), and make previously missing history retryable.
+		found := false
+		for i := range b.pendingCloseRecords {
+			if b.pendingCloseRecords[i].ExitOrderID == closed.ExitOrderID {
+				b.pendingCloseRecords[i] = closed
+				found = true
+				break
+			}
 		}
+		if !found {
+			b.pendingCloseRecords = append(b.pendingCloseRecords, closed)
+		}
+	}
+	if len(b.pendingCloseRecords) > 0 {
+		if err := b.persistLocked(); err != nil {
+			b.restoreWarnings = append(b.restoreWarnings, fmt.Sprintf("paper historical close queue not persisted: %v", err))
+			return
+		}
+		b.flushPendingCloseRecordsLocked()
 	}
 }
 
@@ -1524,7 +1724,12 @@ func (b *PaperBroker) RefreshMakerOrders(at time.Time) ([]PaperFill, error) {
 	}
 	orders := b.PendingOrders()
 	fills := make([]PaperFill, 0)
+	var entryRejections []error
 	for _, order := range orders {
+		// Only resting limit orders with positive limit prices can match against order book depth
+		if order.LimitPrice <= 0 {
+			continue
+		}
 		depth, err := depths.GetDepth(order.Symbol, 20)
 		if err != nil {
 			return nil, fmt.Errorf("refresh paper maker depth %s: %w", order.Symbol, err)
@@ -1537,6 +1742,11 @@ func (b *PaperBroker) RefreshMakerOrders(at time.Time) ([]PaperFill, error) {
 			if !paperIsTakeProfitAction(order.Action) && !at.Before(order.ExpiresAt) {
 				fallback, err := b.expireOrRepriceMakerOrder(order.OrderID, depth, at.UTC())
 				if err != nil {
+					var rejected *paperEntryRejectedError
+					if errors.As(err, &rejected) {
+						entryRejections = append(entryRejections, err)
+						continue
+					}
 					return nil, err
 				}
 				if fallback != nil {
@@ -1555,11 +1765,16 @@ func (b *PaperBroker) RefreshMakerOrders(at time.Time) ([]PaperFill, error) {
 		}
 		fill, err := b.applyMakerFill(order.OrderID, math.Min(available, order.RemainingQuantity), depth, at.UTC())
 		if err != nil {
+			var rejected *paperEntryRejectedError
+			if errors.As(err, &rejected) {
+				entryRejections = append(entryRejections, err)
+				continue
+			}
 			return nil, err
 		}
 		fills = append(fills, fill)
 	}
-	return fills, nil
+	return fills, errors.Join(entryRejections...)
 }
 
 func (b *PaperBroker) expireOrRepriceMakerOrder(orderID int64, depth *market.BinanceDepthSnapshot, at time.Time) (*PaperPendingOrder, error) {
@@ -1569,8 +1784,8 @@ func (b *PaperBroker) expireOrRepriceMakerOrder(orderID int64, depth *market.Bin
 	if !ok {
 		return nil, nil
 	}
-	delete(b.pendingOrders, orderID)
 	if order.RepriceCount >= b.config.MakerMaxReprices {
+		delete(b.pendingOrders, orderID)
 		order.UpdatedAt = at
 		b.recordOrderEventLocked(order, "CANCELED", "max_reprices", 0, 0)
 		if err := b.persistLocked(); err != nil {
@@ -1583,9 +1798,14 @@ func (b *PaperBroker) expireOrRepriceMakerOrder(orderID int64, depth *market.Bin
 	}
 	price, err := paperMakerRestingPrice(order, depth)
 	if err != nil {
-		b.pendingOrders[orderID] = order
 		return nil, err
 	}
+	if !order.ReduceOnly && !order.TriggerOnMark && b.entryRiskPolicyEnabledLocked() {
+		if err := b.validatePendingEntryRiskLocked(order, price); err != nil {
+			return nil, b.rejectPendingEntryLocked(order, at, err)
+		}
+	}
+	delete(b.pendingOrders, orderID)
 	replacement := order
 	replacement.OrderID = b.nextID
 	replacement.LimitPrice = price
@@ -1620,12 +1840,45 @@ func (b *PaperBroker) applyTakerCloseFallback(order PaperPendingOrder, marketPri
 	if !ok {
 		return PaperFill{}, fmt.Errorf("paper %s position not found for taker fallback", order.Side)
 	}
-	fill := b.closePositionLocked(position, order.Action, marketPrice, at)
-	delete(b.positions, key)
-	b.cancelPendingReduceOnlyLocked(order.Symbol, order.Side)
+
+	ratio := 1.0
+	if order.RemainingQuantity > 0 && order.RemainingQuantity < position.Quantity {
+		ratio = order.RemainingQuantity / position.Quantity
+	}
+
+	snap := b.captureStateLocked()
+	fill, isFullClose, closeErr := b.closePositionInternalLocked(&position, order.Action, marketPrice, ratio, at)
+	if closeErr != nil {
+		b.restoreStateLocked(snap)
+		return PaperFill{}, closeErr
+	}
+
+	if isFullClose {
+		delete(b.positions, key)
+		b.cancelPendingReduceOnlyLocked(order.Symbol, order.Side)
+	} else {
+		b.positions[key] = position
+		// Scale down protection orders (excluding the fallback order itself)
+		for pendingID, pending := range b.pendingOrders {
+			if pendingID == order.OrderID {
+				continue
+			}
+			if pending.ReduceOnly && pending.Symbol == order.Symbol && pending.Side == order.Side {
+				if pending.RemainingQuantity > position.Quantity {
+					pending.RemainingQuantity = position.Quantity
+					pending.Quantity = pending.FilledQuantity + pending.RemainingQuantity
+					pending.UpdatedAt = at
+					b.pendingOrders[pendingID] = pending
+					b.recordOrderEventLocked(pending, "MODIFIED", "partial_close_scale_down", 0, 0)
+				}
+			}
+		}
+	}
+
 	b.updateDrawdownLocked()
 	if err := b.persistLocked(); err != nil {
-		return PaperFill{}, err
+		b.restoreStateLocked(snap)
+		return PaperFill{}, fmt.Errorf("persistence failed, rolled back taker fallback: %w", err)
 	}
 	b.flushPendingCloseRecordsLocked()
 	return fill, nil
@@ -1656,6 +1909,9 @@ func paperMakerAvailableQuantity(order PaperPendingOrder, depth *market.BinanceD
 	if depth == nil {
 		return 0, fmt.Errorf("paper maker depth %s is empty", order.Symbol)
 	}
+	if order.LimitPrice <= 0 {
+		return 0, nil
+	}
 	levels := depth.Bids
 	buy := order.Action == "open_long" || order.Action == "close_short" || order.Action == "take_profit_short"
 	if buy {
@@ -1683,6 +1939,7 @@ func paperMakerAvailableQuantity(order PaperPendingOrder, depth *market.BinanceD
 }
 
 func (b *PaperBroker) applyMakerFill(orderID int64, quantity float64, depth *market.BinanceDepthSnapshot, at time.Time) (PaperFill, error) {
+	defer b.flushPendingCloseRecords()
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	order, ok := b.pendingOrders[orderID]
@@ -1707,6 +1964,11 @@ func (b *PaperBroker) applyMakerFill(orderID int64, quantity float64, depth *mar
 func (b *PaperBroker) applyPendingOpenFillLocked(order PaperPendingOrder, quantity, mark float64, at time.Time) (PaperFill, error) {
 	if order.ReduceOnly || quantity <= 0 {
 		return PaperFill{}, fmt.Errorf("paper pending entry order %d is unavailable", order.OrderID)
+	}
+	if !order.TriggerOnMark && b.entryRiskPolicyEnabledLocked() {
+		if err := b.validatePendingEntryRiskLocked(order, order.LimitPrice); err != nil {
+			return PaperFill{}, b.rejectPendingEntryLocked(order, at, err)
+		}
 	}
 	if quantity > order.RemainingQuantity {
 		quantity = order.RemainingQuantity
@@ -1785,6 +2047,8 @@ func (b *PaperBroker) applyMakerReduceOnlyFillLocked(order PaperPendingOrder, qu
 	if quantity <= 0 {
 		return PaperFill{}, fmt.Errorf("paper maker reduce-only quantity is unavailable")
 	}
+
+	snap := b.captureStateLocked()
 	ratio := quantity / position.Quantity
 	entryFeePortion := position.EntryFee * ratio
 	initialMarginPortion := position.InitialMargin * ratio
@@ -1802,10 +2066,20 @@ func (b *PaperBroker) applyMakerReduceOnlyFillLocked(order PaperPendingOrder, qu
 	order.FilledQuantity += quantity
 	order.RemainingQuantity = math.Max(0, order.Quantity-order.FilledQuantity)
 	order.UpdatedAt = at
-	status := "PARTIALLY_FILLED"
-	if order.RemainingQuantity <= 1e-12 || position.Quantity <= 1e-12 {
+	var status string
+
+	// 1. Order completion check
+	if order.RemainingQuantity <= 1e-12 {
 		status = "FILLED"
 		delete(b.pendingOrders, order.OrderID)
+	} else {
+		status = "PARTIALLY_FILLED"
+		order.Status = status
+		b.pendingOrders[order.OrderID] = order
+	}
+
+	// 2. Position completion check (must be independent from order completion!)
+	if position.Quantity <= 1e-12 {
 		delete(b.positions, key)
 		b.closedTrades++
 		if netTradePnL > 0 {
@@ -1817,10 +2091,24 @@ func (b *PaperBroker) applyMakerReduceOnlyFillLocked(order PaperPendingOrder, qu
 			}
 		}
 	} else {
-		order.Status = status
-		b.pendingOrders[order.OrderID] = order
 		b.positions[key] = position
+		// Scale down remaining protection/reduce-only orders for this position (excluding the filling order itself!)
+		for pendingID, pending := range b.pendingOrders {
+			if pendingID == order.OrderID {
+				continue
+			}
+			if pending.ReduceOnly && pending.Symbol == order.Symbol && pending.Side == order.Side {
+				if pending.RemainingQuantity > position.Quantity {
+					pending.RemainingQuantity = position.Quantity
+					pending.Quantity = pending.FilledQuantity + pending.RemainingQuantity
+					pending.UpdatedAt = at
+					b.pendingOrders[pendingID] = pending
+					b.recordOrderEventLocked(pending, "MODIFIED", "partial_close_scale_down", 0, 0)
+				}
+			}
+		}
 	}
+
 	fill := PaperFill{
 		OrderID: order.OrderID, Symbol: order.Symbol, Action: order.Action,
 		Side: order.Side, Leverage: order.Leverage, Price: order.LimitPrice,
@@ -1828,10 +2116,19 @@ func (b *PaperBroker) applyMakerReduceOnlyFillLocked(order PaperPendingOrder, qu
 		Time: at, Status: status, IsMaker: true,
 	}
 	b.fills = append(b.fills, fill)
+	// Emit the same aggregate used by restart replay, only once this exit
+	// order completes (including all partial fills and allocated entry fees).
+	for _, closed := range reconstructPaperPerformance(append([]PaperFill(nil), b.fills...), b.initialBalance).ClosedTrades {
+		if closed.ExitOrderID == fill.OrderID {
+			b.pendingCloseRecords = append(b.pendingCloseRecords, closed)
+			break
+		}
+	}
 	b.recordOrderEventLocked(order, status, "", 0, quantity)
 	b.updateDrawdownLocked()
 	if err := b.persistLocked(); err != nil {
-		return PaperFill{}, err
+		b.restoreStateLocked(snap)
+		return PaperFill{}, fmt.Errorf("persistence failed, rolled back maker fill: %w", err)
 	}
 	return fill, nil
 }
@@ -2028,30 +2325,121 @@ func (b *PaperBroker) CloseShort(symbol string, _ float64) (map[string]interface
 	return b.closeBySide(symbol, "short", "close_short")
 }
 
-func (b *PaperBroker) closeBySide(symbol, side, action string) (map[string]interface{}, error) {
-	price, err := b.prices.GetMarketPrice(symbol)
+func (b *PaperBroker) CloseLongPartial(symbol string, ratio float64) (map[string]interface{}, error) {
+	if math.IsNaN(ratio) || math.IsInf(ratio, 0) || ratio <= 0 || ratio > 1.0 {
+		return nil, fmt.Errorf("invalid close ratio %v: must be in (0.0, 1.0]", ratio)
+	}
+	fill, err := b.executeCloseBySideRatio(symbol, "long", "close_long", ratio)
 	if err != nil {
 		return nil, err
+	}
+	return map[string]interface{}{"orderId": fill.OrderID, "avgPrice": fill.Price, "executedQty": fill.Quantity, "status": "FILLED"}, nil
+}
+
+func (b *PaperBroker) CloseShortPartial(symbol string, ratio float64) (map[string]interface{}, error) {
+	if math.IsNaN(ratio) || math.IsInf(ratio, 0) || ratio <= 0 || ratio > 1.0 {
+		return nil, fmt.Errorf("invalid close ratio %v: must be in (0.0, 1.0]", ratio)
+	}
+	fill, err := b.executeCloseBySideRatio(symbol, "short", "close_short", ratio)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{"orderId": fill.OrderID, "avgPrice": fill.Price, "executedQty": fill.Quantity, "status": "FILLED"}, nil
+}
+
+func (b *PaperBroker) closeBySide(symbol, side, action string) (map[string]interface{}, error) {
+	fill, err := b.executeCloseBySideRatio(symbol, side, action, 1.0)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{"orderId": fill.OrderID, "avgPrice": fill.Price, "executedQty": fill.Quantity, "status": "FILLED"}, nil
+}
+
+func (b *PaperBroker) executeCloseBySideRatio(symbol, side, action string, ratio float64) (PaperFill, error) {
+	if math.IsNaN(ratio) || math.IsInf(ratio, 0) || ratio <= 0 || ratio > 1.0 {
+		return PaperFill{}, fmt.Errorf("invalid close ratio %v: must be in (0.0, 1.0]", ratio)
+	}
+	price, err := b.prices.GetMarketPrice(symbol)
+	if err != nil {
+		return PaperFill{}, err
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	key := symbol + ":" + side
 	position, ok := b.positions[key]
 	if !ok {
-		return nil, fmt.Errorf("paper %s position not found", side)
+		return PaperFill{}, fmt.Errorf("paper %s position not found", side)
 	}
-	fill := b.closePositionLocked(position, action, price, time.Now().UTC())
-	delete(b.positions, key)
+
+	snap := b.captureStateLocked()
+	at := b.now()
+	fill, isFullClose, closeErr := b.closePositionInternalLocked(&position, action, price, ratio, at)
+	if closeErr != nil {
+		b.restoreStateLocked(snap)
+		return PaperFill{}, closeErr
+	}
+
+	if isFullClose {
+		delete(b.positions, key)
+		b.cancelPendingOrdersLocked(position.Symbol, position.Side, "full_close", at)
+	} else {
+		b.positions[key] = position
+		// Scale down matching pending protection orders so their REMAINING quantity does not exceed remaining position
+		for orderID, order := range b.pendingOrders {
+			if order.ReduceOnly && order.Symbol == position.Symbol && order.Side == position.Side {
+				if order.RemainingQuantity > position.Quantity {
+					order.RemainingQuantity = position.Quantity
+					order.Quantity = order.FilledQuantity + order.RemainingQuantity
+					order.UpdatedAt = at
+					b.pendingOrders[orderID] = order
+					b.recordOrderEventLocked(order, "MODIFIED", "partial_close_scale_down", 0, 0)
+				}
+			}
+		}
+	}
+
 	b.updateDrawdownLocked()
 	if err := b.persistLocked(); err != nil {
-		return nil, err
+		b.restoreStateLocked(snap)
+		return PaperFill{}, fmt.Errorf("persistence failed, rolled back in-memory mutation: %w", err)
 	}
 	b.flushPendingCloseRecordsLocked()
-	return map[string]interface{}{"orderId": fill.OrderID, "avgPrice": fill.Price, "executedQty": fill.Quantity, "status": "FILLED"}, nil
+	return fill, nil
 }
 
 func (b *PaperBroker) SetLeverage(string, int) error    { return nil }
 func (b *PaperBroker) SetMarginMode(string, bool) error { return nil }
+
+// EmergencyClosePosition implements EmergencyCloser for deterministic paper fail-closed exit.
+func (b *PaperBroker) EmergencyClosePosition(ctx context.Context, symbol, positionSide string, quantity float64) (*tradertypes.EmergencyCloseResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	side := strings.ToLower(positionSide)
+	action := "close_long"
+	if side == "short" {
+		action = "close_short"
+	}
+	res, err := b.closeBySide(symbol, side, action)
+	if err != nil {
+		return nil, err
+	}
+	orderID, _ := res["orderId"].(string)
+	avgPrice, _ := res["avgPrice"].(float64)
+	execQty, _ := res["executedQty"].(float64)
+	return &tradertypes.EmergencyCloseResult{
+		OrderID:      orderID,
+		Symbol:       symbol,
+		PositionSide: strings.ToUpper(positionSide),
+		Quantity:     quantity,
+		ExecutedQty:  execQty,
+		AvgPrice:     avgPrice,
+		Status:       "FILLED",
+		Submitted:    true,
+		Filled:       true,
+		PositionZero: true,
+	}, nil
+}
 
 func (b *PaperBroker) PlaceLimitOrder(req *tradertypes.LimitOrderRequest) (*tradertypes.LimitOrderResult, error) {
 	if req == nil {

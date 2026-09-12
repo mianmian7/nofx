@@ -19,6 +19,9 @@ func (at *AutoTrader) startPaperRiskMonitor() {
 		for {
 			select {
 			case <-ticker.C:
+				// History delivery is local and must retry even after the last
+				// position closed and while AI/market-data polling is idle.
+				at.paperBroker.flushPendingCloseRecords()
 				// An idle paper trader has no marks to refresh and no maker
 				// orders to reconcile. Do not issue even a public Binance
 				// request until the broker has active execution state.

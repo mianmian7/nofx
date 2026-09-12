@@ -602,7 +602,7 @@ func TestPaperPerformanceAndFillMetadataSurviveRestart(t *testing.T) {
 	assertPaperFloat(t, "restored fees", got.TotalFees, want.TotalFees)
 }
 
-func TestPaperBrokerFlushPendingCloseRecordsSkipsDuplicate(t *testing.T) {
+func TestPaperBrokerFlushPendingCloseRecordsRetainsUnconfirmedDuplicate(t *testing.T) {
 	broker, err := NewPaperBroker(
 		PaperBrokerConfig{InitialBalance: 1_000},
 		fixedPaperPriceSource{"BTCUSDT": 100, "ETHUSDT": 50},
@@ -620,11 +620,11 @@ func TestPaperBrokerFlushPendingCloseRecordsSkipsDuplicate(t *testing.T) {
 
 	broker.flushPendingCloseRecords()
 
-	if len(broker.pendingCloseRecords) != 0 {
-		t.Fatalf("pending close records = %#v, want empty", broker.pendingCloseRecords)
+	if len(broker.pendingCloseRecords) != 2 {
+		t.Fatalf("pending close records = %#v, want both retained until acknowledged", broker.pendingCloseRecords)
 	}
-	if len(recorder.calls) != 2 || recorder.calls[0] != 1 || recorder.calls[1] != 2 {
-		t.Fatalf("recorder calls = %v, want [1 2]", recorder.calls)
+	if len(recorder.calls) != 1 || recorder.calls[0] != 1 {
+		t.Fatalf("recorder calls = %v, want [1]", recorder.calls)
 	}
 }
 

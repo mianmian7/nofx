@@ -395,9 +395,12 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 			config.InitialBalance = 10_000
 		}
 		priceSource := newMarketPaperPriceSource(marketDataProvider)
+		tradeRisk, portfolioRisk, minimumNotional := paperStrategyAccountRisk(config.StrategyConfig)
 		paperConfig := PaperBrokerConfig{
-			InitialBalance: config.InitialBalance,
-			MakerFirst:     true, MakerFeeBPS: 2, TakerFeeBPS: 5, SlippageBPS: 2,
+			InitialBalance:    config.InitialBalance,
+			MaxTradeRiskRatio: tradeRisk, MaxPortfolioRiskRatio: portfolioRisk, MinEntryNotional: minimumNotional,
+			MinRiskRewardRatio: paperStrategyMinRiskReward(config.StrategyConfig),
+			MakerFirst:         true, MakerFeeBPS: 2, TakerFeeBPS: 5, SlippageBPS: 2,
 			MakerTimeout: 15 * time.Second, MakerMaxReprices: 2,
 			FundingSource: priceSource,
 		}
@@ -568,6 +571,15 @@ func (at *AutoTrader) reloadStrategyConfigIfChanged() error {
 	// ClampLimits above bounds it (ratio 0.5–10, leverage caps), and the
 	// margin auto-reduce at order time keeps the book solvent.
 
+	if at.executionMode == ExecutionModePaper && at.paperBroker != nil {
+		tradeRisk, portfolioRisk, minimumNotional := paperStrategyAccountRisk(strategyConfig)
+		if err := at.paperBroker.setAccountRiskPolicy(tradeRisk, portfolioRisk, minimumNotional); err != nil {
+			return fmt.Errorf("failed to refresh Paper account risk policy: %w", err)
+		}
+		if err := at.paperBroker.setMinRiskRewardRatio(paperStrategyMinRiskReward(strategyConfig)); err != nil {
+			return fmt.Errorf("failed to refresh Paper entry risk policy: %w", err)
+		}
+	}
 	at.config.StrategyConfig = strategyConfig
 	at.config.StrategyConfigRaw = strategy.Config
 	at.strategyEngine = kernel.NewStrategyEngineForExchange(strategyConfig, at.exchange)

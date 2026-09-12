@@ -128,22 +128,49 @@ func reconstructPaperPerformance(fills []PaperFill, initialBalance float64) Pape
 		trade.exitTime = fill.Time
 		trade.realizedPnL += fill.RealizedPnL
 		trade.closeReason = fill.Action
-		complete := fill.Status == "" || fill.Status == "FILLED" || trade.exitQty >= trade.entryQty-1e-12
-		if !complete {
+
+		// An exit event completes either when the exit order has fully executed (FILLED or legacy empty)
+		// or when cumulative exits have depleted the aggregate entry quantity.
+		isOrderFilled := fill.Status == "" || fill.Status == "FILLED"
+		isPositionDepleted := trade.exitQty >= trade.entryQty-1e-12
+		if !isOrderFilled && !isPositionDepleted {
 			continue
 		}
+
+		allocatedRatio := trade.exitQty / trade.entryQty
+		if allocatedRatio > 1.0 {
+			allocatedRatio = 1.0
+		}
+		entryFeePortion := trade.entryFee * allocatedRatio
+		entryValPortion := trade.entryValue * allocatedRatio
+		entryAvgPrice := entryValPortion / trade.exitQty
+
 		closedChronological = append(closedChronological, PaperClosedTrade{
 			EntryOrderID: trade.entryOrderID, ExitOrderID: trade.exitOrderID,
 			Symbol: trade.symbol, Side: trade.side, Quantity: trade.exitQty,
-			EntryPrice: trade.entryValue / trade.entryQty,
-			ExitPrice:  trade.exitValue / trade.exitQty,
-			EntryTime:  trade.entryTime, ExitTime: trade.exitTime,
-			Leverage: trade.leverage,
-			EntryFee: trade.entryFee, ExitFee: trade.exitFee,
-			Fee:         trade.entryFee + trade.exitFee,
+			EntryPrice:  entryAvgPrice,
+			ExitPrice:   trade.exitValue / trade.exitQty,
+			EntryTime:   trade.entryTime, ExitTime: trade.exitTime,
+			Leverage:    trade.leverage,
+			EntryFee:    entryFeePortion, ExitFee: trade.exitFee,
+			Fee:         entryFeePortion + trade.exitFee,
 			RealizedPnL: trade.realizedPnL, CloseReason: trade.closeReason,
 		})
-		delete(pending, key)
+
+		trade.entryQty -= trade.exitQty
+		trade.entryValue -= entryValPortion
+		trade.entryFee -= entryFeePortion
+
+		if trade.entryQty <= 1e-12 {
+			delete(pending, key)
+		} else {
+			// Position still has remainder from a partial scale-out;
+			// reset exit accumulators for subsequent exits against this position.
+			trade.exitQty = 0
+			trade.exitValue = 0
+			trade.exitFee = 0
+			trade.realizedPnL = 0
+		}
 	}
 	populatePaperPerformance(&performance, closedChronological, initialBalance)
 	performance.ClosedTrades = make([]PaperClosedTrade, len(closedChronological))

@@ -5,6 +5,7 @@ import (
 	"math"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -816,7 +817,19 @@ func TestPaperStatusExposesFundingPaymentsAndNextFundingTime(t *testing.T) {
 
 func TestPaperMonitorSettlesFundingBeforeRiskExit(t *testing.T) {
 	entryTime := time.Date(2026, 7, 22, 0, 0, 0, 0, time.UTC)
+	var nowMu sync.RWMutex
 	now := entryTime
+	getNow := func() time.Time {
+		nowMu.RLock()
+		defer nowMu.RUnlock()
+		return now
+	}
+	setNow := func(t time.Time) {
+		nowMu.Lock()
+		defer nowMu.Unlock()
+		now = t
+	}
+
 	funding := &fixedPaperFundingSource{
 		events: map[string][]market.FundingEvent{"MUUSDT": {{
 			Symbol: "MUUSDT", Rate: 0.001, FundingTime: entryTime.Add(time.Hour).UnixMilli(), MarkPrice: 100,
@@ -824,7 +837,7 @@ func TestPaperMonitorSettlesFundingBeforeRiskExit(t *testing.T) {
 	}
 	prices := &mutablePaperPriceSource{price: 100}
 	broker, err := NewPaperBroker(PaperBrokerConfig{
-		InitialBalance: 1_000, FundingSource: funding, Clock: func() time.Time { return now },
+		InitialBalance: 1_000, FundingSource: funding, Clock: getNow,
 	}, prices)
 	if err != nil {
 		t.Fatalf("NewPaperBroker: %v", err)
@@ -838,7 +851,7 @@ func TestPaperMonitorSettlesFundingBeforeRiskExit(t *testing.T) {
 	runDone := make(chan error, 1)
 	go func() { runDone <- at.Run() }()
 	waitForPaperCondition(t, time.Second, func() bool { return at.GetStatus()["call_count"].(int) == 1 })
-	now = entryTime.Add(2 * time.Hour)
+	setNow(entryTime.Add(2 * time.Hour))
 	prices.Set(111)
 	waitForPaperCondition(t, time.Second, func() bool { return broker.Snapshot().OpenPositions == 0 })
 	at.Stop()
