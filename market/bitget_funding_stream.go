@@ -68,6 +68,11 @@ func (registry *fundingStreamRegistry) get(symbol string) *RedundantStream[*Fund
 	runtime := newRedundantStream(connector, connector)
 	runtime.Start(context.Background())
 	registry.streams[normalizedSymbol] = runtime
+	retireIdleStream(&registry.mu, registry.streams, registry.lastRequested, normalizedSymbol, runtime, streamIdleTimeout, func() {
+		delete(registry.restFallbacks, normalizedSymbol)
+		delete(registry.restCounts, normalizedSymbol)
+		delete(registry.lastErrors, normalizedSymbol)
+	})
 	return runtime
 }
 
@@ -75,6 +80,9 @@ func (registry *fundingStreamRegistry) recordREST(symbol string, snapshot *Fundi
 	normalizedSymbol := NormalizeForExchange("bitget", symbol)
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
+	if registry.streams[normalizedSymbol] == nil {
+		return
+	}
 	if err != nil {
 		registry.lastErrors[normalizedSymbol] = err.Error()
 		return

@@ -117,6 +117,8 @@ type RedundantStream[T any] struct {
 	connectors [2]StreamConnector[T]
 	sources    [2]streamSourceState[T]
 	startOnce  sync.Once
+	cancel     context.CancelFunc
+	stopped    bool
 }
 
 func newRedundantStream[T any](primary, standby StreamConnector[T]) *RedundantStream[T] {
@@ -128,6 +130,12 @@ func (runtime *RedundantStream[T]) Start(ctx context.Context) {
 		ctx = context.Background()
 	}
 	runtime.startOnce.Do(func() {
+		runtime.mu.Lock()
+		defer runtime.mu.Unlock()
+		if runtime.stopped {
+			return
+		}
+		ctx, runtime.cancel = context.WithCancel(ctx)
 		for sourceIndex, connector := range runtime.connectors {
 			if connector != nil {
 				go runtime.runSource(ctx, sourceIndex, connector)
@@ -136,11 +144,31 @@ func (runtime *RedundantStream[T]) Start(ctx context.Context) {
 	})
 }
 
+// Stop cancels both sources and immediately withdraws their snapshots. It is
+// idempotent; a retired runtime cannot be restarted or publish late events.
+func (runtime *RedundantStream[T]) Stop() {
+	runtime.mu.Lock()
+	runtime.stopped = true
+	cancel := runtime.cancel
+	for i := range runtime.sources {
+		runtime.sources[i].invalidate(context.Canceled)
+	}
+	runtime.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 func (runtime *RedundantStream[T]) runSource(ctx context.Context, sourceIndex int, connector StreamConnector[T]) {
+	defer runtime.markDisconnected(sourceIndex, context.Canceled)
 	backoff := 100 * time.Millisecond
 	for ctx.Err() == nil {
-		events, streamErrors, err := connector(ctx)
+		// A sequence gap replaces this connection, not just its reader. Retire
+		// the previous producer before reconnecting so its socket cannot leak.
+		connectionCtx, cancelConnection := context.WithCancel(ctx)
+		events, streamErrors, err := connector(connectionCtx)
 		if err != nil {
+			cancelConnection()
 			runtime.markDisconnected(sourceIndex, err)
 			if !waitStreamRetry(ctx, backoff) {
 				return
@@ -153,6 +181,7 @@ func (runtime *RedundantStream[T]) runSource(ctx context.Context, sourceIndex in
 		for !reconnect {
 			select {
 			case <-ctx.Done():
+				cancelConnection()
 				return
 			case err, ok := <-streamErrors:
 				if !ok || err == nil {
@@ -167,6 +196,11 @@ func (runtime *RedundantStream[T]) runSource(ctx context.Context, sourceIndex in
 					continue
 				}
 				runtime.mu.Lock()
+				if runtime.stopped || ctx.Err() != nil {
+					runtime.mu.Unlock()
+					cancelConnection()
+					return
+				}
 				err := runtime.sources[sourceIndex].apply(event, time.Now().UTC())
 				runtime.mu.Unlock()
 				if err != nil {
@@ -177,6 +211,7 @@ func (runtime *RedundantStream[T]) runSource(ctx context.Context, sourceIndex in
 				}
 			}
 		}
+		cancelConnection()
 		if !waitStreamRetry(ctx, backoff) {
 			return
 		}

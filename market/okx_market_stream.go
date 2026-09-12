@@ -97,6 +97,11 @@ func (registry *okxMarketStreamRegistry) getPrice(symbol string) *RedundantStrea
 	runtime := newRedundantStream(connector, connector)
 	runtime.Start(context.Background())
 	registry.prices[symbol] = runtime
+	retireIdleStream(&registry.mu, registry.prices, registry.lastPriceRequested, symbol, runtime, streamIdleTimeout, func() {
+		delete(registry.priceRESTFallbacks, symbol)
+		delete(registry.priceRESTCounts, symbol)
+		delete(registry.priceErrors, symbol)
+	})
 	return runtime
 }
 
@@ -111,12 +116,20 @@ func (registry *okxMarketStreamRegistry) getFunding(symbol string) *RedundantStr
 	runtime := newRedundantStream(connector, connector)
 	runtime.Start(context.Background())
 	registry.fundings[symbol] = runtime
+	retireIdleStream(&registry.mu, registry.fundings, registry.lastFundingRequested, symbol, runtime, streamIdleTimeout, func() {
+		delete(registry.fundingRESTFallbacks, symbol)
+		delete(registry.fundingRESTCounts, symbol)
+		delete(registry.fundingErrors, symbol)
+	})
 	return runtime
 }
 
 func (registry *okxMarketStreamRegistry) recordPriceREST(symbol string, ticker *okxTickerRow, err error) {
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
+	if registry.prices[symbol] == nil {
+		return
+	}
 	if err != nil {
 		registry.priceErrors[symbol] = err.Error()
 		return
@@ -138,6 +151,9 @@ func (registry *okxMarketStreamRegistry) recordPriceREST(symbol string, ticker *
 func (registry *okxMarketStreamRegistry) recordFundingREST(symbol string, snapshot *FundingSnapshot, err error) {
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
+	if registry.fundings[symbol] == nil {
+		return
+	}
 	if err != nil {
 		registry.fundingErrors[symbol] = err.Error()
 		return

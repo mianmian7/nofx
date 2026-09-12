@@ -79,6 +79,9 @@ func (registry *depthStreamRegistry) get(exchange, symbol string) (*RedundantStr
 	runtime := newRedundantStream(connector, connector)
 	runtime.Start(context.Background())
 	registry.streams[key] = runtime
+	retireIdleStream(&registry.mu, registry.streams, registry.lastRequested, key, runtime, streamIdleTimeout, func() {
+		delete(registry.restFallbacks, key)
+	})
 	return runtime, nil
 }
 
@@ -92,12 +95,15 @@ func recordDepthRESTFallback(exchange, symbol string, depth *DepthSnapshot) {
 		sourceTime = time.UnixMilli(depth.EventTime).UTC()
 	}
 	sharedDepthStreams.mu.Lock()
+	defer sharedDepthStreams.mu.Unlock()
+	if sharedDepthStreams.streams[key] == nil {
+		return
+	}
 	sharedDepthStreams.restFallbacks[key] = FreshnessProof{
 		Exchange: exchange, Transport: "rest", SourceTime: sourceTime,
 		ReceivedAt: depth.ReceivedAt, Age: depth.ReceivedAt.Sub(sourceTime),
 		Sequence: depth.LastUpdateID, SequenceOK: true, Reconciled: true,
 	}
-	sharedDepthStreams.mu.Unlock()
 }
 
 func newCoinAnkDepthConnector(exchange, symbol string, coinAnkExchange coinank_enum.Exchange) StreamConnector[*DepthSnapshot] {
@@ -153,9 +159,13 @@ func newCoinAnkDepthConnector(exchange, symbol string, coinAnkExchange coinank_e
 						previousSequence = -1
 					}
 					lastSequence = sequence
-					events <- StreamEvent[*DepthSnapshot]{
+					select {
+					case events <- StreamEvent[*DepthSnapshot]{
 						Value: depth, Snapshot: fullSnapshot, Sequence: sequence, PreviousSequence: previousSequence,
 						SourceTime: time.UnixMilli(sequence).UTC(), Exchange: exchange, Transport: "coinank-websocket",
+					}:
+					case <-ctx.Done():
+						return
 					}
 				}
 			}
