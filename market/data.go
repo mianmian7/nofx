@@ -6,10 +6,13 @@ import (
 	"math"
 	"nofx/logger"
 	"nofx/provider/hyperliquid"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 // FundingRateCache is the funding rate cache structure
@@ -126,7 +129,110 @@ func getFundingSnapshotContext(ctx context.Context, provider MarketDataProvider,
 	return provider.GetFundingSnapshot(symbol)
 }
 
+type cachedMarketDataEntry struct {
+	data      *Data
+	expiresAt time.Time
+}
+
+var (
+	globalMarketDataCacheMu      sync.RWMutex
+	globalMarketDataCache        = make(map[string]cachedMarketDataEntry)
+	globalMarketDataSingleflight singleflight.Group
+	defaultMarketDataCacheTTL    = 3 * time.Minute
+)
+
+func getMarketDataCacheTTL() time.Duration {
+	if raw := strings.TrimSpace(os.Getenv("NOFX_MARKET_DATA_CACHE_TTL")); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil {
+			return d
+		}
+	}
+	return defaultMarketDataCacheTTL
+}
+
+// ResetMarketDataCache clears all cached multi-timeframe market data.
+func ResetMarketDataCache() {
+	globalMarketDataCacheMu.Lock()
+	globalMarketDataCache = make(map[string]cachedMarketDataEntry)
+	globalMarketDataCacheMu.Unlock()
+}
+
+func cloneMarketData(src *Data) *Data {
+	if src == nil {
+		return nil
+	}
+	dst := *src
+	if src.OpenInterest != nil {
+		oi := *src.OpenInterest
+		dst.OpenInterest = &oi
+	}
+	if src.FreshnessProofs != nil {
+		dst.FreshnessProofs = make(map[string]FreshnessProof, len(src.FreshnessProofs))
+		for k, v := range src.FreshnessProofs {
+			dst.FreshnessProofs[k] = v
+		}
+	}
+	if src.TimeframeData != nil {
+		dst.TimeframeData = make(map[string]*TimeframeSeriesData, len(src.TimeframeData))
+		for k, v := range src.TimeframeData {
+			dst.TimeframeData[k] = v
+		}
+	}
+	return &dst
+}
+
 func getWithTimeframesFromProviderContext(requestCtx context.Context, provider MarketDataProvider, symbol string, timeframes []string, primaryTimeframe string, count int) (*Data, error) {
+	if requestCtx == nil {
+		requestCtx = context.Background()
+	}
+	symbol = provider.NormalizeSymbol(symbol)
+
+	cacheTTL := getMarketDataCacheTTL()
+	if cacheTTL > 0 {
+		cacheKey := fmt.Sprintf("%s|%s|%s|%s|%d", provider.Exchange(), symbol, strings.Join(timeframes, ","), primaryTimeframe, count)
+		now := time.Now()
+
+		globalMarketDataCacheMu.RLock()
+		entry, found := globalMarketDataCache[cacheKey]
+		globalMarketDataCacheMu.RUnlock()
+		if found && now.Before(entry.expiresAt) {
+			return cloneMarketData(entry.data), nil
+		}
+
+		res, err, _ := globalMarketDataSingleflight.Do(cacheKey, func() (any, error) {
+			globalMarketDataCacheMu.RLock()
+			entry, found := globalMarketDataCache[cacheKey]
+			globalMarketDataCacheMu.RUnlock()
+			if found && time.Now().Before(entry.expiresAt) {
+				return cloneMarketData(entry.data), nil
+			}
+
+			data, fetchErr := fetchWithTimeframesFromProvider(requestCtx, provider, symbol, timeframes, primaryTimeframe, count)
+			if fetchErr != nil {
+				return nil, fetchErr
+			}
+			globalMarketDataCacheMu.Lock()
+			globalMarketDataCache[cacheKey] = cachedMarketDataEntry{
+				data:      cloneMarketData(data),
+				expiresAt: time.Now().Add(cacheTTL),
+			}
+			globalMarketDataCacheMu.Unlock()
+			return data, nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		data, ok := res.(*Data)
+		if !ok {
+			return nil, fmt.Errorf("unexpected market data cache type %T", res)
+		}
+		return cloneMarketData(data), nil
+	}
+
+	return fetchWithTimeframesFromProvider(requestCtx, provider, symbol, timeframes, primaryTimeframe, count)
+}
+
+func fetchWithTimeframesFromProvider(requestCtx context.Context, provider MarketDataProvider, symbol string, timeframes []string, primaryTimeframe string, count int) (*Data, error) {
 	if requestCtx == nil {
 		requestCtx = context.Background()
 	}

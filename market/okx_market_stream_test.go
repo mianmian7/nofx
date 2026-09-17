@@ -214,3 +214,14 @@ func TestOKXFundingRESTRejectsWrongInstrument(t *testing.T) {
 		t.Fatalf("wrong-instrument funding accepted: %#v", snapshot)
 	}
 }
+
+func TestOKXMarketStreamDisabledByEnv(t *testing.T) {
+	t.Setenv("NOFX_DISABLE_MARKET_STREAM", "true")
+	provider := NewOKXMarketDataProviderWithHTTPClient("https://www.okx.com", nil)
+	if provider.priceStream != nil {
+		t.Fatal("priceStream should be nil when NOFX_DISABLE_MARKET_STREAM=true")
+	}
+	if provider.fundingStream != nil {
+		t.Fatal("fundingStream should be nil when NOFX_DISABLE_MARKET_STREAM=true")
+	}
+}

@@ -29,7 +29,25 @@ type nativePublicCacheEntry struct {
 	fetchedAt time.Time
 }
 
-const nativePublicResponseCacheTTL = time.Second
+const (
+	nativePublicResponseCacheTTL = 5 * time.Second
+	nativePublicKlineCacheTTL   = 3 * time.Minute
+	nativePublicFundingCacheTTL = 3 * time.Minute
+	nativePublicOICacheTTL      = 2 * time.Minute
+)
+
+func nativePublicCacheTTL(path string) time.Duration {
+	switch {
+	case strings.Contains(path, "candles") || strings.Contains(path, "history-candles"):
+		return nativePublicKlineCacheTTL
+	case strings.Contains(path, "funding") || strings.Contains(path, "fund-rate") || strings.Contains(path, "current-fund-rate"):
+		return nativePublicFundingCacheTTL
+	case strings.Contains(path, "open-interest") || strings.Contains(path, "contracts"):
+		return nativePublicOICacheTTL
+	default:
+		return nativePublicResponseCacheTTL
+	}
+}
 
 const (
 	nativePublicMaxAttempts = 2
@@ -74,7 +92,7 @@ func (client nativePublicHTTPClient) getWithCacheContext(ctx context.Context, pa
 	if allowCache && client.cache != nil {
 		client.cache.mu.Lock()
 		entry, found := client.cache.entries[cacheKey]
-		if found && time.Since(entry.fetchedAt) < nativePublicResponseCacheTTL {
+		if found && time.Since(entry.fetchedAt) < nativePublicCacheTTL(path) {
 			body := append([]byte(nil), entry.body...)
 			client.cache.mu.Unlock()
 			return body, nil

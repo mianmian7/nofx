@@ -15,15 +15,14 @@ import (
 )
 
 const (
-	binancePriceCacheTTL = 2 * time.Second
-	binanceDepthCacheTTL = 500 * time.Millisecond
-	binanceKlineCacheTTL = 5 * time.Second
-	// OI and funding are shared only inside a very short successful-response
-	// coalescing window. Expiry forces a new upstream request; errors never fall
-	// back to an older value.
-	binanceOpenInterestCacheTTL = 2 * time.Second
-	binanceFundingCacheTTL      = 2 * time.Second
-	binanceTickerCacheTTL       = 30 * time.Second
+	binancePriceCacheTTL = 5 * time.Second
+	binanceDepthCacheTTL = 2 * time.Second
+	binanceKlineCacheTTL = 3 * time.Minute
+	// OI and funding are shared inside the multi-trader decision cycle window.
+	// Expiry forces a new upstream request; errors never fall back to an older value.
+	binanceOpenInterestCacheTTL = 2 * time.Minute
+	binanceFundingCacheTTL      = 3 * time.Minute
+	binanceTickerCacheTTL       = 1 * time.Minute
 	binanceMetadataCacheTTL     = 15 * time.Minute
 
 	binanceDefaultRateLimitCooldown = 30 * time.Second

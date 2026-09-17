@@ -76,10 +76,10 @@ func (registry *depthStreamRegistry) get(exchange, symbol string) (*RedundantStr
 		return existing, nil
 	}
 	connector := newCoinAnkDepthConnector(normalizedExchange, normalizedSymbol, coinAnkExchange)
-	runtime := newRedundantStream(connector, connector)
+	runtime := newRedundantStream(connector, nil)
 	runtime.Start(context.Background())
 	registry.streams[key] = runtime
-	retireIdleStream(&registry.mu, registry.streams, registry.lastRequested, key, runtime, streamIdleTimeout, func() {
+	retireIdleStream(&registry.mu, registry.streams, registry.lastRequested, key, runtime, streamIdleTimeout(), func() {
 		delete(registry.restFallbacks, key)
 	})
 	return runtime, nil

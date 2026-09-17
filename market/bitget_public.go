@@ -51,7 +51,7 @@ func NewBitgetMarketDataProviderWithHTTPClient(baseURL string, client *http.Clie
 		fundingRESTBudget:         bitgetFundingRESTBudget,
 		fundingRESTAttemptTimeout: bitgetFundingAttemptTimeout,
 	}
-	if strings.Contains(strings.ToLower(baseURL), "bitget.com") {
+	if strings.Contains(strings.ToLower(baseURL), "bitget.com") && !isMarketStreamDisabled() {
 		provider.fundingStream = streamedBitgetFunding
 	}
 	return provider

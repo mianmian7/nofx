@@ -3,6 +3,7 @@ package market
 import (
 	"math"
 	"testing"
+	"time"
 )
 
 // generateTestKlines generates test K-line data
@@ -581,5 +582,114 @@ func TestCalculateBoxData(t *testing.T) {
 	}
 	if box.CurrentPrice != 100.0 {
 		t.Errorf("Expected CurrentPrice = 100.0, got %v", box.CurrentPrice)
+	}
+}
+
+type cacheMockProvider struct {
+	freshKlineCalls int
+}
+
+func (p *cacheMockProvider) Exchange() string               { return "mock" }
+func (p *cacheMockProvider) NormalizeSymbol(s string) string { return s }
+func (p *cacheMockProvider) Capabilities() MarketCapability { return TradingCapabilities }
+func (p *cacheMockProvider) GetCurrentPrice(string) (float64, error) { return 100, nil }
+func (p *cacheMockProvider) GetCurrentPriceFresh(string) (float64, error) { return 100, nil }
+func (p *cacheMockProvider) GetKlines(string, string, int) ([]Kline, error) { return nil, nil }
+func (p *cacheMockProvider) GetKlinesFresh(symbol, interval string, limit int) ([]Kline, error) {
+	p.freshKlineCalls++
+	now := time.Now().UnixMilli()
+	klines := make([]Kline, 20)
+	for i := 0; i < 20; i++ {
+		klines[i] = Kline{
+			OpenTime: now - int64((20-i)*60000),
+			Open:     100 + float64(i)*0.1,
+			High:     101 + float64(i)*0.1,
+			Low:      99 + float64(i)*0.1,
+			Close:    100.5 + float64(i)*0.1,
+			Volume:   1000,
+		}
+	}
+	return klines, nil
+}
+func (p *cacheMockProvider) GetDepth(string, int) (*DepthSnapshot, error) { return nil, nil }
+func (p *cacheMockProvider) GetDepthFresh(string, int) (*DepthSnapshot, error) { return nil, nil }
+func (p *cacheMockProvider) GetFundingSnapshot(string) (*FundingSnapshot, error) {
+	return &FundingSnapshot{Rate: 0.0001, MarkPrice: 100, IndexPrice: 100, Time: time.Now().UnixMilli()}, nil
+}
+func (p *cacheMockProvider) GetFundingHistory(string, int64, int64) ([]FundingEvent, error) { return nil, nil }
+func (p *cacheMockProvider) GetOpenInterest(string) (*OIData, error) {
+	return &OIData{Latest: 1000000, NotionalUSD: 100000000}, nil
+}
+func (p *cacheMockProvider) GetContractSpec(string) (*ContractSpec, error) { return nil, nil }
+func (p *cacheMockProvider) ListPerpetualSymbols(int) ([]string, error) { return nil, nil }
+func (p *cacheMockProvider) ValidateMarketAvailability(string) (*MarketAvailability, error) { return nil, nil }
+
+func TestGlobalMarketDataCacheReusesMultiTimeframeDataAcrossCalls(t *testing.T) {
+	ResetMarketDataCache()
+	defer ResetMarketDataCache()
+
+	provider := &cacheMockProvider{}
+	timeframes := []string{"15m", "1h"}
+
+	// First call - should hit provider
+	data1, err := GetWithTimeframesForProvider(provider, "BTCUSDT", timeframes, "15m", 10)
+	if err != nil {
+		t.Fatalf("first GetWithTimeframesForProvider: %v", err)
+	}
+	if data1 == nil {
+		t.Fatal("first data is nil")
+	}
+	// 2 timeframes = 2 freshKlineCalls
+	if provider.freshKlineCalls != 2 {
+		t.Fatalf("expected 2 freshKlineCalls on first fetch, got %d", provider.freshKlineCalls)
+	}
+
+	// Second call - should hit cache
+	data2, err := GetWithTimeframesForProvider(provider, "BTCUSDT", timeframes, "15m", 10)
+	if err != nil {
+		t.Fatalf("second GetWithTimeframesForProvider: %v", err)
+	}
+	if data2 == nil {
+		t.Fatal("second data is nil")
+	}
+	// freshKlineCalls should still be 2 (no new upstream calls)
+	if provider.freshKlineCalls != 2 {
+		t.Fatalf("expected still 2 freshKlineCalls after cache hit, got %d", provider.freshKlineCalls)
+	}
+	if data2.CurrentPrice != data1.CurrentPrice {
+		t.Fatalf("data mismatch: %v vs %v", data2.CurrentPrice, data1.CurrentPrice)
+	}
+
+	// Modification isolation test
+	data2.CurrentPrice = 99999
+	data3, _ := GetWithTimeframesForProvider(provider, "BTCUSDT", timeframes, "15m", 10)
+	if data3.CurrentPrice == 99999 {
+		t.Fatal("mutation of data2 polluted cached data")
+	}
+}
+
+func TestGlobalMarketDataCacheDisabledWhenTTLZero(t *testing.T) {
+	ResetMarketDataCache()
+	defer ResetMarketDataCache()
+
+	t.Setenv("NOFX_MARKET_DATA_CACHE_TTL", "0s")
+	provider := &cacheMockProvider{}
+	timeframes := []string{"15m"}
+
+	_, err := GetWithTimeframesForProvider(provider, "ETHUSDT", timeframes, "15m", 10)
+	if err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if provider.freshKlineCalls != 1 {
+		t.Fatalf("expected 1 call, got %d", provider.freshKlineCalls)
+	}
+
+	// Second call with TTL=0 should bypass cache and call provider again
+	_, err = GetWithTimeframesForProvider(provider, "ETHUSDT", timeframes, "15m", 10)
+	if err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	if provider.freshKlineCalls != 2 {
+		t.Fatalf("expected 2 calls with disabled cache, got %d", provider.freshKlineCalls)
 	}
 }

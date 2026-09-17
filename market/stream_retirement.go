@@ -1,13 +1,30 @@
 package market
 
 import (
+	"os"
+	"strings"
 	"sync"
 	"time"
 )
 
 // Keep briefly idle feeds warm across decision cycles, but release abandoned
 // symbols without requiring another request or a health poll to trigger cleanup.
-const streamIdleTimeout = 5 * time.Minute
+// Default reduced from 5m to 1m to prevent 7x24 background streaming in low-frequency cycles.
+const defaultStreamIdleTimeout = 1 * time.Minute
+
+func streamIdleTimeout() time.Duration {
+	if raw := strings.TrimSpace(os.Getenv("NOFX_STREAM_IDLE_TIMEOUT")); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			return d
+		}
+	}
+	return defaultStreamIdleTimeout
+}
+
+func isMarketStreamDisabled() bool {
+	val := strings.ToLower(strings.TrimSpace(os.Getenv("NOFX_DISABLE_MARKET_STREAM")))
+	return val == "true" || val == "1" || val == "yes"
+}
 
 // Called while holding mu after registering a new runtime. Demand only updates
 // lastRequested; the timer rechecks it under the same lock before retiring. This

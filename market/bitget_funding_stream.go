@@ -65,10 +65,10 @@ func (registry *fundingStreamRegistry) get(symbol string) *RedundantStream[*Fund
 		return existing
 	}
 	connector := newBitgetFundingConnector(normalizedSymbol, bitgetPublicWebSocketURL)
-	runtime := newRedundantStream(connector, connector)
+	runtime := newRedundantStream(connector, nil)
 	runtime.Start(context.Background())
 	registry.streams[normalizedSymbol] = runtime
-	retireIdleStream(&registry.mu, registry.streams, registry.lastRequested, normalizedSymbol, runtime, streamIdleTimeout, func() {
+	retireIdleStream(&registry.mu, registry.streams, registry.lastRequested, normalizedSymbol, runtime, streamIdleTimeout(), func() {
 		delete(registry.restFallbacks, normalizedSymbol)
 		delete(registry.restCounts, normalizedSymbol)
 		delete(registry.lastErrors, normalizedSymbol)

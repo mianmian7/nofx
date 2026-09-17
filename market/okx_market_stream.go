@@ -94,10 +94,10 @@ func (registry *okxMarketStreamRegistry) getPrice(symbol string) *RedundantStrea
 		return existing
 	}
 	connector := newOKXPriceConnector(symbol, okxStreamInstID(symbol), okxPublicWebSocketURL)
-	runtime := newRedundantStream(connector, connector)
+	runtime := newRedundantStream(connector, nil)
 	runtime.Start(context.Background())
 	registry.prices[symbol] = runtime
-	retireIdleStream(&registry.mu, registry.prices, registry.lastPriceRequested, symbol, runtime, streamIdleTimeout, func() {
+	retireIdleStream(&registry.mu, registry.prices, registry.lastPriceRequested, symbol, runtime, streamIdleTimeout(), func() {
 		delete(registry.priceRESTFallbacks, symbol)
 		delete(registry.priceRESTCounts, symbol)
 		delete(registry.priceErrors, symbol)
@@ -113,10 +113,10 @@ func (registry *okxMarketStreamRegistry) getFunding(symbol string) *RedundantStr
 		return existing
 	}
 	connector := newOKXFundingConnector(symbol, okxStreamInstID(symbol), okxPublicWebSocketURL)
-	runtime := newRedundantStream(connector, connector)
+	runtime := newRedundantStream(connector, nil)
 	runtime.Start(context.Background())
 	registry.fundings[symbol] = runtime
-	retireIdleStream(&registry.mu, registry.fundings, registry.lastFundingRequested, symbol, runtime, streamIdleTimeout, func() {
+	retireIdleStream(&registry.mu, registry.fundings, registry.lastFundingRequested, symbol, runtime, streamIdleTimeout(), func() {
 		delete(registry.fundingRESTFallbacks, symbol)
 		delete(registry.fundingRESTCounts, symbol)
 		delete(registry.fundingErrors, symbol)

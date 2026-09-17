@@ -58,7 +58,7 @@ func NewOKXMarketDataProviderWithHTTPClient(baseURL string, client *http.Client)
 		marketRESTBudget:         okxMarketRESTBudget,
 		marketRESTAttemptTimeout: okxMarketAttemptTimeout,
 	}
-	if strings.Contains(strings.ToLower(baseURL), "okx.com") {
+	if strings.Contains(strings.ToLower(baseURL), "okx.com") && !isMarketStreamDisabled() {
 		provider.priceStream = streamedOKXPrice
 		provider.fundingStream = streamedOKXFunding
 	}

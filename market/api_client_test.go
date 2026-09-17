@@ -145,6 +145,7 @@ func TestSameBinanceRequestIsMergedAcrossClients(t *testing.T) {
 	}
 	close(start)
 	<-requestStarted
+	time.Sleep(10 * time.Millisecond)
 	close(releaseRequest)
 	callers.Wait()
 	close(results)

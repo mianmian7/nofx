@@ -142,3 +142,11 @@ func TestBitgetFundingRESTRejectsFutureSourceTime(t *testing.T) {
 		t.Fatalf("future funding source accepted: %#v", snapshot)
 	}
 }
+
+func TestBitgetMarketStreamDisabledByEnv(t *testing.T) {
+	t.Setenv("NOFX_DISABLE_MARKET_STREAM", "true")
+	provider := NewBitgetMarketDataProviderWithHTTPClient("https://api.bitget.com", nil)
+	if provider.fundingStream != nil {
+		t.Fatal("fundingStream should be nil when NOFX_DISABLE_MARKET_STREAM=true")
+	}
+}
