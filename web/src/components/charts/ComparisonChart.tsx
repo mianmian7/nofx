@@ -7,7 +7,6 @@ import {
   Tooltip,
   ResponsiveContainer,
   ReferenceLine,
-  Legend,
   Area,
   ComposedChart,
 } from 'recharts'
@@ -18,7 +17,7 @@ import { getTraderColor } from '../../utils/traderColors'
 import { useLanguage } from '../../contexts/LanguageContext'
 import { useTheme } from '../../contexts/ThemeContext'
 import { t } from '../../i18n/translations'
-import { BarChart3, TrendingUp, TrendingDown, Zap } from 'lucide-react'
+import { BarChart3, TrendingUp, Zap } from 'lucide-react'
 
 // Time period options: 1D, 3D, 7D, 30D, All
 const TIME_PERIODS = [
@@ -92,10 +91,67 @@ export function buildComparisonDisplayData(
   return rebaseVisibleComparisonData(visibleData, traders, selectedHours)
 }
 
+export function formatComparisonTick(
+  timestamp: string,
+  timeSpanHours: number,
+  includeHours = false
+): string {
+  const date = new Date(timestamp)
+  if (isNaN(date.getTime())) return ''
+
+  if (timeSpanHours <= 26) {
+    return date.toLocaleTimeString('zh-CN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    })
+  }
+
+  if (timeSpanHours <= 96 || includeHours) {
+    const m = date.getMonth() + 1
+    const d = date.getDate()
+    const hh = date.getHours().toString().padStart(2, '0')
+    const mm = date.getMinutes().toString().padStart(2, '0')
+    return `${m}/${d} ${hh}:${mm}`
+  }
+
+  return `${date.getMonth() + 1}/${date.getDate()}`
+}
+
+export function calculateComparisonTicks(
+  data: Array<{ timestamp?: string }>,
+  targetCount = 5
+): string[] {
+  if (!data || data.length === 0) return []
+  const validData = data.filter((d) => Boolean(d.timestamp))
+  if (validData.length <= targetCount) {
+    return validData.map((d) => d.timestamp!)
+  }
+
+  const ticks: string[] = []
+  const step = (validData.length - 1) / (targetCount - 1)
+  for (let i = 0; i < targetCount; i++) {
+    const idx = Math.min(Math.round(i * step), validData.length - 1)
+    const ts = validData[idx]?.timestamp
+    if (ts && !ticks.includes(ts)) {
+      ticks.push(ts)
+    }
+  }
+  return ticks
+}
+
 export function ComparisonChart({ traders }: ComparisonChartProps) {
   const { language } = useLanguage()
   const { isDark } = useTheme()
   const [selectedPeriod, setSelectedPeriod] = useState('7d') // Default to 7 days
+  const [activePoint, setActivePoint] = useState<any | null>(null)
+  const [highlightedTraderId, setHighlightedTraderId] = useState<string | null>(
+    null
+  )
+
+  const handleToggleHighlight = (traderId: string) => {
+    setHighlightedTraderId((prev) => (prev === traderId ? null : traderId))
+  }
 
   // Get hours for selected period
   const selectedHours =
@@ -253,6 +309,35 @@ export function ComparisonChart({ traders }: ComparisonChartProps) {
     return combined
   }, [allTraderHistories, traders, selectedHours, traderHistories])
 
+  const MAX_DISPLAY_POINTS = 500
+  const displayData = useMemo(() => {
+    return buildComparisonDisplayData(
+      combinedData,
+      traders,
+      selectedHours,
+      MAX_DISPLAY_POINTS
+    )
+  }, [combinedData, traders, selectedHours])
+
+  const timeSpanHours = useMemo(() => {
+    if (displayData.length < 2) return 0
+    const start = new Date(displayData[0].timestamp).getTime()
+    const end = new Date(displayData[displayData.length - 1].timestamp).getTime()
+    return Math.max(0, (end - start) / (1000 * 3600))
+  }, [displayData])
+
+  const ticks = useMemo(() => {
+    return calculateComparisonTicks(displayData, 5)
+  }, [displayData])
+
+  const hasDuplicateDates = useMemo(() => {
+    const formattedDates = ticks.map((ts) => {
+      const d = new Date(ts)
+      return `${d.getMonth() + 1}/${d.getDate()}`
+    })
+    return new Set(formattedDates).size < formattedDates.length
+  }, [ticks])
+
   const traderColor = (traderId: string) => getTraderColor(traders, traderId)
 
   if (isLoading) {
@@ -285,11 +370,7 @@ export function ComparisonChart({ traders }: ComparisonChartProps) {
     )
   }
 
-  const MAX_DISPLAY_POINTS = 500
-  const displayData =
-    combinedData.length > MAX_DISPLAY_POINTS
-      ? combinedData.slice(-MAX_DISPLAY_POINTS)
-      : combinedData
+
 
   const calculateYDomain = () => {
     const allValues: number[] = []
@@ -323,53 +404,57 @@ export function ComparisonChart({ traders }: ComparisonChartProps) {
         month: 'short',
         day: 'numeric',
       })
+      const timeStr = date.toLocaleTimeString('zh-CN', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      })
 
       return (
-        <div className="rounded-xl p-4 shadow-2xl backdrop-blur-md bg-nofx-bg-lighter/95 border border-nofx-border min-w-[200px]">
-          <div className="flex items-center gap-2 mb-3 pb-2 border-b border-nofx-border">
-            <Zap className="w-3.5 h-3.5 text-nofx-gold" />
-            <span className="text-xs font-medium text-nofx-gold">
-              {dateStr} {data.time}
+        <div className="hidden md:block rounded-xl p-3.5 shadow-2xl bg-nofx-bg-lighter border border-nofx-border min-w-[390px] max-w-[480px] z-50">
+          <div className="flex items-center justify-between gap-2 mb-2.5 pb-2 border-b border-nofx-border">
+            <div className="flex items-center gap-1.5">
+              <Zap className="w-3.5 h-3.5 text-nofx-gold" />
+              <span className="text-xs font-medium text-nofx-gold">
+                {dateStr} {timeStr}
+              </span>
+            </div>
+            <span className="text-[10px] text-nofx-text-muted">
+              {traders.length} {t('traders', language) || 'traders'}
             </span>
           </div>
-          <div className="space-y-2.5">
+          <div className="grid grid-cols-2 gap-x-4 gap-y-2">
             {traders.map((trader) => {
               const pnlPct = data[`${trader.trader_id}_pnl_pct`]
-              const equity = data[`${trader.trader_id}_equity`]
               if (pnlPct === undefined) return null
               const isPositive = pnlPct >= 0
 
               return (
                 <div
                   key={trader.trader_id}
-                  className="flex items-center justify-between gap-4"
+                  className="flex items-center justify-between gap-2.5 text-xs py-0.5"
                 >
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5 min-w-0">
                     <div
-                      className="w-2.5 h-2.5 rounded-full"
+                      className="w-1.5 h-1.5 rounded-full shrink-0"
                       style={{ background: traderColor(trader.trader_id) }}
                     />
-                    <span className="text-xs font-medium truncate max-w-[100px] text-nofx-text">
+                    <span
+                      className="font-medium text-nofx-text whitespace-nowrap"
+                      title={trader.trader_name}
+                    >
                       {trader.trader_name}
                     </span>
                   </div>
-                  <div className="text-right">
-                    <div
-                      className={`text-sm font-bold mono flex items-center gap-1 ${
+                  <div className="text-right shrink-0">
+                    <span
+                      className={`font-bold mono text-xs ${
                         isPositive ? 'text-nofx-success' : 'text-nofx-danger'
                       }`}
                     >
-                      {isPositive ? (
-                        <TrendingUp className="w-3 h-3" />
-                      ) : (
-                        <TrendingDown className="w-3 h-3" />
-                      )}
                       {isPositive ? '+' : ''}
                       {pnlPct.toFixed(2)}%
-                    </div>
-                    <div className="text-[10px] mono text-nofx-text-muted">
-                      ${equity?.toFixed(2)}
-                    </div>
+                    </span>
                   </div>
                 </div>
               )
@@ -398,12 +483,39 @@ export function ComparisonChart({ traders }: ComparisonChartProps) {
     .sort((a, b) => b.currentPnl - a.currentPnl)
 
   const leader = traderStats[0]
+  const leaderName = leader?.trader_name || '-'
+  const leaderParts = leaderName.split('-')
+  const hasLeaderPrefix = leaderParts.length > 1
+  const leaderPrefix = hasLeaderPrefix
+    ? leaderParts.slice(0, -1).join('-')
+    : ''
+  const leaderCoreName = hasLeaderPrefix
+    ? leaderParts[leaderParts.length - 1]
+    : leaderName
+
   const gap =
     traderStats.length > 1
       ? Math.abs(traderStats[0].currentPnl - traderStats[1].currentPnl).toFixed(
           2
         )
       : '0.00'
+
+  const activeDate = activePoint ? new Date(activePoint.timestamp) : null
+  const activeDateStr = activeDate
+    ? activeDate.toLocaleDateString('zh-CN', {
+        month: 'short',
+        day: 'numeric',
+      })
+    : ''
+  const activeTimeStr = activeDate
+    ? activeDate.toLocaleTimeString('zh-CN', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      })
+    : ''
+  const currentSnapshotPoint =
+    activePoint || displayData[displayData.length - 1]
 
   const gridColor = isDark
     ? 'rgba(255, 255, 255, 0.05)'
@@ -425,7 +537,11 @@ export function ComparisonChart({ traders }: ComparisonChartProps) {
           {TIME_PERIODS.map((period) => (
             <button
               key={period.key}
-              onClick={() => setSelectedPeriod(period.key)}
+              onClick={() => {
+                setSelectedPeriod(period.key)
+                setActivePoint(null)
+                setHighlightedTraderId(null)
+              }}
               className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all border ${
                 selectedPeriod === period.key
                   ? 'bg-nofx-gold/15 text-nofx-gold border-nofx-gold/40 font-bold'
@@ -439,47 +555,68 @@ export function ComparisonChart({ traders }: ComparisonChartProps) {
 
         {/* Mini Stats Bar */}
         <div className="flex items-center gap-2 flex-wrap">
-          {traderStats.slice(0, 3).map((trader, idx) => (
-            <div
-              key={trader.trader_id}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-full transition-all hover:scale-105 border ${
-                idx === 0
-                  ? 'bg-nofx-gold/15 border-nofx-gold/30'
-                  : 'bg-nofx-bg-lighter border-nofx-border'
-              }`}
-            >
-              <div
-                className="w-2 h-2 rounded-full"
-                style={{ background: traderColor(trader.trader_id) }}
-              />
-              <span className="text-xs font-medium truncate max-w-[80px] text-nofx-text">
-                {trader.trader_name}
-              </span>
-              <span
-                className={`text-xs font-bold mono ${
-                  trader.currentPnl >= 0
-                    ? 'text-nofx-success'
-                    : 'text-nofx-danger'
+          {traderStats.slice(0, 3).map((trader, idx) => {
+            const isHighlighted = highlightedTraderId === trader.trader_id
+            const isDimmed =
+              highlightedTraderId !== null && !isHighlighted
+
+            return (
+              <button
+                type="button"
+                key={trader.trader_id}
+                onClick={() => handleToggleHighlight(trader.trader_id)}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-full transition-all cursor-pointer border ${
+                  isHighlighted
+                    ? 'ring-2 ring-nofx-gold bg-nofx-gold/25 border-nofx-gold shadow-md scale-105'
+                    : isDimmed
+                      ? 'opacity-40 hover:opacity-80 bg-nofx-bg-lighter border-nofx-border'
+                      : idx === 0
+                        ? 'bg-nofx-gold/15 border-nofx-gold/30 hover:scale-105'
+                        : 'bg-nofx-bg-lighter border-nofx-border hover:scale-105'
                 }`}
+                title={
+                  isHighlighted
+                    ? language === 'zh'
+                      ? '点击取消高亮'
+                      : 'Click to reset highlight'
+                    : language === 'zh'
+                      ? `点击高亮 ${trader.trader_name}`
+                      : `Highlight ${trader.trader_name}`
+                }
               >
-                {trader.currentPnl >= 0 ? '+' : ''}
-                {trader.currentPnl.toFixed(2)}%
-              </span>
-            </div>
-          ))}
+                <div
+                  className={`w-2 h-2 rounded-full ${isHighlighted ? 'scale-125' : ''}`}
+                  style={{ background: traderColor(trader.trader_id) }}
+                />
+                <span className="text-xs font-medium text-nofx-text whitespace-nowrap">
+                  {trader.trader_name}
+                </span>
+                <span
+                  className={`text-xs font-bold mono ${
+                    trader.currentPnl >= 0
+                      ? 'text-nofx-success'
+                      : 'text-nofx-danger'
+                  }`}
+                >
+                  {trader.currentPnl >= 0 ? '+' : ''}
+                  {trader.currentPnl.toFixed(2)}%
+                </span>
+              </button>
+            )
+          })}
         </div>
       </div>
 
       {/* Chart */}
-      <div className="relative rounded-xl overflow-hidden bg-nofx-bg border border-nofx-border">
+      <div className="relative rounded-xl overflow-hidden bg-nofx-bg border border-nofx-border p-3 sm:p-4">
         {/* Watermark */}
         <div
           style={{
             position: 'absolute',
-            top: '50%',
+            top: '38%',
             left: '50%',
             transform: 'translate(-50%, -50%)',
-            fontSize: '80px',
+            fontSize: '72px',
             fontWeight: 'bold',
             color: 'var(--nofx-gold-dim)',
             zIndex: 1,
@@ -491,184 +628,321 @@ export function ComparisonChart({ traders }: ComparisonChartProps) {
           NOFX
         </div>
 
-        <ResponsiveContainer width="100%" height={420}>
-          <ComposedChart
-            data={displayData}
-            margin={{ top: 20, right: 20, left: 10, bottom: 20 }}
-          >
-            <defs>
-              {traders.map((trader) => (
-                <linearGradient
-                  key={`area-gradient-${trader.trader_id}`}
-                  id={`area-gradient-${trader.trader_id}`}
-                  x1="0"
-                  y1="0"
-                  x2="0"
-                  y2="1"
-                >
-                  <stop
-                    offset="0%"
-                    stopColor={traderColor(trader.trader_id)}
-                    stopOpacity={0.3}
-                  />
-                  <stop
-                    offset="100%"
-                    stopColor={traderColor(trader.trader_id)}
-                    stopOpacity={0}
-                  />
-                </linearGradient>
-              ))}
-              {/* Glow filter */}
-              <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
-                <feGaussianBlur stdDeviation="2" result="coloredBlur" />
-                <feMerge>
-                  <feMergeNode in="coloredBlur" />
-                  <feMergeNode in="SourceGraphic" />
-                </feMerge>
-              </filter>
-            </defs>
-
-            <CartesianGrid
-              strokeDasharray="3 3"
-              stroke={gridColor}
-              vertical={false}
-            />
-
-            <XAxis
-              dataKey="time"
-              stroke={axisTextColor}
-              tick={{ fill: axisTextColor, fontSize: 10 }}
-              tickLine={false}
-              axisLine={{ stroke: axisLineColor }}
-              interval={Math.max(Math.floor(displayData.length / 8), 1)}
-            />
-
-            <YAxis
-              stroke={axisTextColor}
-              tick={{ fill: axisTextColor, fontSize: 10 }}
-              tickLine={false}
-              axisLine={false}
-              domain={calculateYDomain()}
-              tickFormatter={(value) => `${value.toFixed(1)}%`}
-              width={50}
-            />
-
-            <Tooltip content={<CustomTooltip />} />
-
-            {/* Zero reference line */}
-            <ReferenceLine
-              y={0}
-              stroke={refLineColor}
-              strokeDasharray="8 4"
-              strokeWidth={1}
-            />
-
-            {/* Area fills for top 2 traders */}
-            {traders.slice(0, 2).map((trader) => (
-              <Area
-                key={`area-${trader.trader_id}`}
-                type="monotone"
-                dataKey={`${trader.trader_id}_pnl_pct`}
-                fill={`url(#area-gradient-${trader.trader_id})`}
-                stroke="none"
-                connectNulls
-              />
-            ))}
-
-            {/* Lines for all traders */}
-            {traders.map((trader, idx) => (
-              <Line
-                key={trader.trader_id}
-                type="monotone"
-                dataKey={`${trader.trader_id}_pnl_pct`}
-                stroke={traderColor(trader.trader_id)}
-                strokeWidth={idx === 0 ? 3 : 2}
-                dot={false}
-                activeDot={{
-                  r: 6,
-                  fill: traderColor(trader.trader_id),
-                  stroke: 'var(--nofx-bg)',
-                  strokeWidth: 2,
+        <div className="h-[280px] sm:h-[360px] w-full relative z-10">
+          {/* Top HUD badge: Snapshot time or Highlight info */}
+          {(activePoint || highlightedTraderId) && (
+            <div className="absolute top-1 left-1/2 -translate-x-1/2 z-30 px-3 py-1 rounded-full bg-nofx-bg-lighter/95 border border-nofx-gold/40 text-nofx-gold text-xs font-mono font-medium shadow-xl flex items-center gap-2 animate-fade-in pointer-events-auto">
+              <span className="w-2 h-2 rounded-full bg-nofx-gold animate-pulse" />
+              {activePoint && (
+                <span>
+                  {activeDateStr} {activeTimeStr}
+                </span>
+              )}
+              {highlightedTraderId && (
+                <span className="flex items-center gap-1">
+                  {activePoint ? '•' : ''}{' '}
+                  {language === 'zh' ? '聚焦' : 'Focus'}:{' '}
+                  <span className="font-bold text-nofx-text">
+                    {
+                      traders.find(
+                        (t) => t.trader_id === highlightedTraderId
+                      )?.trader_name
+                    }
+                  </span>
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setActivePoint(null)
+                  setHighlightedTraderId(null)
                 }}
-                name={trader.trader_name}
-                connectNulls
-              />
-            ))}
+                className="ml-1 px-1.5 py-0.5 rounded bg-nofx-gold/15 hover:bg-nofx-gold/30 text-[10px] text-nofx-gold transition-colors"
+                title={language === 'zh' ? '恢复默认' : 'Reset'}
+              >
+                {language === 'zh' ? '恢复默认' : 'Reset'}
+              </button>
+            </div>
+          )}
 
-            <Legend
-              wrapperStyle={{ paddingTop: '16px' }}
-              content={({ payload }) => {
-                const filteredPayload =
-                  payload?.filter(
-                    (entry: any) =>
-                      entry.value && !entry.value.includes('_pnl_pct')
-                  ) || []
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart
+              data={displayData}
+              margin={{ top: 12, right: 12, left: -6, bottom: 8 }}
+              onClick={() => {
+                if (highlightedTraderId) setHighlightedTraderId(null)
+              }}
+              onMouseMove={(e: any) => {
+                if (e?.activePayload?.[0]?.payload) {
+                  setActivePoint(e.activePayload[0].payload)
+                }
+              }}
+              onMouseLeave={() => {
+                setActivePoint(null)
+              }}
+            >
+              <defs>
+                {traders.map((trader) => (
+                  <linearGradient
+                    key={`area-gradient-${trader.trader_id}`}
+                    id={`area-gradient-${trader.trader_id}`}
+                    x1="0"
+                    y1="0"
+                    x2="0"
+                    y2="1"
+                  >
+                    <stop
+                      offset="0%"
+                      stopColor={traderColor(trader.trader_id)}
+                      stopOpacity={0.3}
+                    />
+                    <stop
+                      offset="100%"
+                      stopColor={traderColor(trader.trader_id)}
+                      stopOpacity={0}
+                    />
+                  </linearGradient>
+                ))}
+                {/* Glow filter */}
+                <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+                  <feGaussianBlur stdDeviation="2" result="coloredBlur" />
+                  <feMerge>
+                    <feMergeNode in="coloredBlur" />
+                    <feMergeNode in="SourceGraphic" />
+                  </feMerge>
+                </filter>
+              </defs>
+
+              <CartesianGrid
+                strokeDasharray="3 3"
+                stroke={gridColor}
+                vertical={false}
+              />
+
+              <XAxis
+                dataKey="timestamp"
+                ticks={ticks}
+                tickFormatter={(ts) =>
+                  formatComparisonTick(ts, timeSpanHours, hasDuplicateDates)
+                }
+                stroke={axisTextColor}
+                tick={{ fill: axisTextColor, fontSize: 10 }}
+                tickLine={false}
+                axisLine={{ stroke: axisLineColor }}
+                interval={0}
+              />
+
+              <YAxis
+                stroke={axisTextColor}
+                tick={{ fill: axisTextColor, fontSize: 10 }}
+                tickLine={false}
+                axisLine={false}
+                domain={calculateYDomain()}
+                tickFormatter={(value) => `${value.toFixed(1)}%`}
+                width={44}
+              />
+
+              <Tooltip content={<CustomTooltip />} />
+
+              {/* Zero reference line */}
+              <ReferenceLine
+                y={0}
+                stroke={refLineColor}
+                strokeDasharray="8 4"
+                strokeWidth={1}
+              />
+
+              {/* Area fills for highlighted trader or top 2 traders */}
+              {traders
+                .filter((t) =>
+                  highlightedTraderId
+                    ? t.trader_id === highlightedTraderId
+                    : true
+                )
+                .slice(0, highlightedTraderId ? 1 : 2)
+                .map((trader) => (
+                  <Area
+                    key={`area-${trader.trader_id}`}
+                    type="monotone"
+                    dataKey={`${trader.trader_id}_pnl_pct`}
+                    fill={`url(#area-gradient-${trader.trader_id})`}
+                    stroke="none"
+                    connectNulls
+                  />
+                ))}
+
+              {/* Lines for all traders with highlight support */}
+              {traders.map((trader, idx) => {
+                const isHighlighted =
+                  highlightedTraderId === trader.trader_id
+                const isDimmed =
+                  highlightedTraderId !== null && !isHighlighted
+                const color = traderColor(trader.trader_id)
 
                 return (
-                  <div
-                    style={{
-                      display: 'flex',
-                      justifyContent: 'center',
-                      gap: '20px',
-                      flexWrap: 'wrap',
-                    }}
-                  >
-                    {filteredPayload.map((entry: any, index: number) => {
-                      const trader = traders.find(
-                        (t) => t.trader_name === entry.value
-                      )
-                      const traderStat = traderStats.find(
-                        (t) => t.trader_id === trader?.trader_id
-                      )
-                      const pnl = traderStat?.currentPnl || 0
-                      return (
-                        <div
-                          key={`legend-${index}`}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '6px',
-                          }}
-                        >
-                          <div
-                            style={{
-                              width: '8px',
-                              height: '8px',
-                              borderRadius: '50%',
-                              backgroundColor: entry.color,
-                            }}
-                          />
-                          <span className="text-xs font-medium text-nofx-text">
-                            {entry.value}
-                            <span
-                              className={`ml-1.5 font-mono ${pnl >= 0 ? 'text-nofx-success' : 'text-nofx-danger'}`}
-                            >
-                              ({pnl >= 0 ? '+' : ''}
-                              {pnl.toFixed(2)}%)
-                            </span>
-                          </span>
-                        </div>
-                      )
-                    })}
-                  </div>
+                  <Line
+                    key={trader.trader_id}
+                    type="monotone"
+                    dataKey={`${trader.trader_id}_pnl_pct`}
+                    stroke={color}
+                    strokeWidth={
+                      isHighlighted ? 4 : isDimmed ? 1.5 : idx === 0 ? 3 : 2
+                    }
+                    strokeOpacity={isDimmed ? 0.15 : 1}
+                    dot={isHighlighted ? { r: 3, fill: color } : false}
+                    activeDot={
+                      isDimmed
+                        ? false
+                        : {
+                            r: isHighlighted ? 7 : 5,
+                            fill: color,
+                            stroke: 'var(--nofx-bg)',
+                            strokeWidth: 2,
+                          }
+                    }
+                    name={trader.trader_name}
+                    connectNulls
+                  />
                 )
-              }}
-            />
-          </ComposedChart>
-        </ResponsiveContainer>
+              })}
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Legend: Separated from chart plot area to prevent squishing */}
+        <div className="mt-3 pt-3 border-t border-nofx-border/60 relative z-10">
+          <div className="flex items-center justify-between mb-2 px-0.5">
+            <div className="text-[11px] font-medium text-nofx-text-muted flex items-center gap-1.5 flex-wrap">
+              <span>{t('traders', language) || 'Traders'}</span>
+              {activePoint ? (
+                <span className="text-nofx-gold font-mono flex items-center gap-1">
+                  • {activeDateStr} {activeTimeStr} (
+                  {language === 'zh' ? '历史快照' : 'Snapshot'})
+                </span>
+              ) : highlightedTraderId ? (
+                <span className="text-nofx-gold font-mono flex items-center gap-1">
+                  • {language === 'zh' ? '已聚焦高亮' : 'Focused'}
+                </span>
+              ) : (
+                <span className="text-[10px] text-nofx-text-muted/70">
+                  (
+                  {language === 'zh'
+                    ? '点击卡片高亮单条曲线'
+                    : 'Click to highlight'}
+                  )
+                </span>
+              )}
+            </div>
+            {(activePoint || highlightedTraderId) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setActivePoint(null)
+                  setHighlightedTraderId(null)
+                }}
+                className="text-[10px] text-nofx-gold hover:underline cursor-pointer"
+              >
+                {language === 'zh' ? '恢复全部' : 'Reset all'}
+              </button>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 xl:grid-cols-3 gap-2.5">
+            {traders.map((trader) => {
+              const isHighlighted =
+                highlightedTraderId === trader.trader_id
+              const isDimmed =
+                highlightedTraderId !== null && !isHighlighted
+              const color = traderColor(trader.trader_id)
+              const traderStat = traderStats.find(
+                (t) => t.trader_id === trader.trader_id
+              )
+              const pnl =
+                currentSnapshotPoint?.[`${trader.trader_id}_pnl_pct`] ??
+                traderStat?.currentPnl ??
+                0
+
+              return (
+                <button
+                  type="button"
+                  key={trader.trader_id}
+                  onClick={() => handleToggleHighlight(trader.trader_id)}
+                  className={`flex items-center justify-between gap-2 px-3 py-2 rounded-lg border text-left transition-all cursor-pointer ${
+                    isHighlighted
+                      ? 'ring-2 ring-nofx-gold bg-nofx-gold/20 border-nofx-gold shadow-md scale-[1.02]'
+                      : isDimmed
+                        ? 'opacity-40 hover:opacity-80 bg-nofx-bg-lighter/40 border-nofx-border/40'
+                        : activePoint
+                          ? 'bg-nofx-gold/5 border-nofx-gold/35 shadow-sm hover:border-nofx-gold/60'
+                          : 'bg-nofx-bg-lighter/70 border-nofx-border/60 hover:border-nofx-gold/40'
+                  }`}
+                  title={
+                    isHighlighted
+                      ? language === 'zh'
+                        ? '点击取消高亮'
+                        : 'Click to reset highlight'
+                      : language === 'zh'
+                        ? `点击高亮 ${trader.trader_name}`
+                        : `Highlight ${trader.trader_name}`
+                  }
+                >
+                  <div className="flex items-center gap-2 min-w-0 flex-1">
+                    <span
+                      className={`w-2.5 h-2.5 rounded-full shrink-0 transition-transform ${isHighlighted ? 'scale-125' : ''}`}
+                      style={{ backgroundColor: color }}
+                    />
+                    <span
+                      className={`text-xs font-semibold truncate leading-tight ${
+                        isHighlighted ? 'text-nofx-gold' : 'text-nofx-text'
+                      }`}
+                      title={trader.trader_name}
+                    >
+                      {trader.trader_name}
+                    </span>
+                  </div>
+                  <span
+                    className={`text-xs font-mono shrink-0 ml-1.5 ${
+                      pnl >= 0
+                        ? 'text-nofx-success font-semibold'
+                        : 'text-nofx-danger font-semibold'
+                    }`}
+                  >
+                    {pnl >= 0 ? '+' : ''}
+                    {pnl.toFixed(2)}%
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
       </div>
 
       {/* Bottom Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
-        <div className="p-3 rounded-lg text-center bg-nofx-gold/10 border border-nofx-gold/20">
-          <div className="text-[10px] uppercase tracking-wider mb-1 text-nofx-text-muted">
+        <div
+          className="p-2.5 sm:p-3 rounded-lg text-center bg-nofx-gold/10 border border-nofx-gold/20 flex flex-col justify-center min-h-[64px]"
+          title={leaderName}
+        >
+          <div className="text-[10px] uppercase tracking-wider mb-0.5 text-nofx-text-muted">
             {t('leader', language)}
           </div>
-          <div className="text-sm font-bold truncate text-nofx-gold">
-            {leader?.trader_name || '-'}
-          </div>
+          {hasLeaderPrefix ? (
+            <div className="flex flex-col items-center min-w-0">
+              <span className="text-[10px] text-nofx-gold/70 leading-tight truncate max-w-full">
+                {leaderPrefix}
+              </span>
+              <span className="text-xs sm:text-sm font-bold text-nofx-gold leading-tight truncate max-w-full">
+                {leaderCoreName}
+              </span>
+            </div>
+          ) : (
+            <div className="text-xs sm:text-sm font-bold truncate text-nofx-gold">
+              {leaderName}
+            </div>
+          )}
         </div>
-        <div className="p-3 rounded-lg text-center bg-nofx-success/10 border border-nofx-success/20">
+        <div className="p-2.5 sm:p-3 rounded-lg text-center bg-nofx-success/10 border border-nofx-success/20 flex flex-col justify-center min-h-[64px]">
           <div className="text-[10px] uppercase tracking-wider mb-1 text-nofx-text-muted">
             {t('leadPnL', language) || 'Lead PnL'}
           </div>
@@ -683,13 +957,13 @@ export function ComparisonChart({ traders }: ComparisonChartProps) {
             {(leader?.currentPnl || 0).toFixed(2)}%
           </div>
         </div>
-        <div className="p-3 rounded-lg text-center bg-nofx-bg-lighter border border-nofx-border">
+        <div className="p-2.5 sm:p-3 rounded-lg text-center bg-nofx-bg-lighter border border-nofx-border flex flex-col justify-center min-h-[64px]">
           <div className="text-[10px] uppercase tracking-wider mb-1 text-nofx-text-muted">
             {t('currentGap', language)}
           </div>
           <div className="text-sm font-bold mono text-nofx-text">{gap}%</div>
         </div>
-        <div className="p-3 rounded-lg text-center bg-nofx-bg-lighter border border-nofx-border">
+        <div className="p-2.5 sm:p-3 rounded-lg text-center bg-nofx-bg-lighter border border-nofx-border flex flex-col justify-center min-h-[64px]">
           <div className="text-[10px] uppercase tracking-wider mb-1 text-nofx-text-muted">
             {t('dataPoints', language)}
           </div>

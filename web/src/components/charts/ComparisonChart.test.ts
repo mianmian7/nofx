@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import type { CompetitionTraderData } from '../../types'
 import {
   buildComparisonDisplayData,
+  calculateComparisonTicks,
+  formatComparisonTick,
   mapEquityHistoriesByTraderId,
   rebaseVisibleComparisonData,
 } from './ComparisonChart'
@@ -107,5 +109,61 @@ describe('buildComparisonDisplayData', () => {
       { alpha_pnl_pct: 12 },
       { alpha_pnl_pct: 15 },
     ])
+  })
+})
+
+describe('calculateComparisonTicks', () => {
+  it('returns all timestamps when data points are fewer than target count', () => {
+    const data = [
+      { timestamp: '2026-09-13T08:00:00Z' },
+      { timestamp: '2026-09-13T12:00:00Z' },
+    ]
+    expect(calculateComparisonTicks(data, 5)).toEqual([
+      '2026-09-13T08:00:00Z',
+      '2026-09-13T12:00:00Z',
+    ])
+  })
+
+  it('samples evenly including first and last timestamps without duplicates', () => {
+    const data = [
+      { timestamp: '2026-09-13T00:00:00Z' },
+      { timestamp: '2026-09-13T06:00:00Z' },
+      { timestamp: '2026-09-13T12:00:00Z' },
+      { timestamp: '2026-09-13T18:00:00Z' },
+      { timestamp: '2026-09-14T00:00:00Z' },
+    ]
+    const ticks = calculateComparisonTicks(data, 3)
+    expect(ticks).toEqual([
+      '2026-09-13T00:00:00Z',
+      '2026-09-13T12:00:00Z',
+      '2026-09-14T00:00:00Z',
+    ])
+  })
+
+  it('handles empty data gracefully', () => {
+    expect(calculateComparisonTicks([], 5)).toEqual([])
+  })
+})
+
+describe('formatComparisonTick', () => {
+  it('formats as HH:mm for short spans (<= 26 hours)', () => {
+    const ts = '2026-09-13T08:30:00.000Z'
+    const formatted = formatComparisonTick(ts, 24)
+    expect(formatted).toMatch(/^\d{2}:\d{2}$/)
+  })
+
+  it('formats as M/D HH:mm when span <= 96 hours or includeHours is true', () => {
+    const ts = '2026-09-13T08:30:00.000Z'
+    const formatted = formatComparisonTick(ts, 48)
+    expect(formatted).toMatch(/^\d{1,2}\/\d{1,2} \d{2}:\d{2}$/)
+
+    const longWithHours = formatComparisonTick(ts, 120, true)
+    expect(longWithHours).toMatch(/^\d{1,2}\/\d{1,2} \d{2}:\d{2}$/)
+  })
+
+  it('formats as M/D for long spans (> 96 hours) without duplicates', () => {
+    const ts = '2026-09-13T08:30:00.000Z'
+    const formatted = formatComparisonTick(ts, 168, false)
+    expect(formatted).toMatch(/^\d{1,2}\/\d{1,2}$/)
   })
 })

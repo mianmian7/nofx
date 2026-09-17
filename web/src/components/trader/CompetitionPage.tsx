@@ -163,7 +163,7 @@ export function CompetitionPage() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Left: Performance Comparison Chart */}
           <div
-            className="bg-nofx-bg-lighter border border-nofx-gold/20 rounded-xl p-6 animate-slide-in hover:border-nofx-gold/40 transition-colors"
+            className="bg-nofx-bg-lighter border border-nofx-gold/20 rounded-xl p-4 sm:p-6 animate-slide-in hover:border-nofx-gold/40 transition-colors"
             style={{ animationDelay: '0.1s' }}
           >
             <div className="flex items-center justify-between mb-6">
@@ -179,7 +179,7 @@ export function CompetitionPage() {
 
           {/* Right: Leaderboard */}
           <div
-            className="bg-nofx-bg-lighter border border-nofx-gold/20 rounded-xl p-6 animate-slide-in hover:border-nofx-gold/40 transition-colors"
+            className="bg-nofx-bg-lighter border border-nofx-gold/20 rounded-xl p-4 sm:p-6 animate-slide-in hover:border-nofx-gold/40 transition-colors"
             style={{ animationDelay: '0.1s' }}
           >
             <div className="flex items-center justify-between mb-6">
