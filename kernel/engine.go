@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"nofx/logger"
 	"nofx/market"
@@ -12,6 +13,7 @@ import (
 	"nofx/security"
 	"nofx/store"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -95,6 +97,7 @@ type Context struct {
 	CurrentTime    string                             `json:"current_time"`
 	RuntimeMinutes int                                `json:"runtime_minutes"`
 	CallCount      int                                `json:"call_count"`
+	CycleID        string                             `json:"-"`
 	TraderID       string                             `json:"trader_id"`
 	StrategyID     string                             `json:"strategy_id"`
 	Account        AccountInfo                        `json:"account"`
@@ -111,6 +114,9 @@ type Context struct {
 	RequireFreshMarketData bool     `json:"-"`
 	MarketDataFetchedFresh bool     `json:"-"`
 	Timeframes             []string `json:"-"`
+	// OnAICallStarted publishes the actual logical call ID before invoking the
+	// client, so a cycle watchdog can retain it even if the client returns late.
+	OnAICallStarted func(string) `json:"-"`
 }
 
 // Decision AI trading decision
@@ -142,16 +148,53 @@ type Decision struct {
 	Reasoning  string  `json:"reasoning"`
 }
 
+// UnmarshalJSON accepts lossless integer representations such as 3 and 3.0,
+// while rejecting fractional leverage instead of silently rounding it.
+func (d *Decision) UnmarshalJSON(data []byte) error {
+	type decisionAlias Decision
+	aux := struct {
+		Leverage json.RawMessage `json:"leverage"`
+		*decisionAlias
+	}{decisionAlias: (*decisionAlias)(d)}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if len(aux.Leverage) == 0 || string(aux.Leverage) == "null" {
+		return nil
+	}
+	raw := strings.TrimSpace(string(aux.Leverage))
+	value, ok := new(big.Rat).SetString(raw)
+	if !ok || !value.IsInt() {
+		return fmt.Errorf("leverage must be an integer, got %s", raw)
+	}
+	integer, err := strconv.ParseInt(value.Num().String(), 10, 0)
+	if err != nil {
+		return fmt.Errorf("leverage is out of range: %s", raw)
+	}
+	d.Leverage = int(integer)
+	return nil
+}
+
+// RejectedDecision preserves a model action that was not allowed to reach the
+// execution layer, together with its original batch index and reason.
+type RejectedDecision struct {
+	Index    int      `json:"index"`
+	Decision Decision `json:"decision"`
+	Reason   string   `json:"reason"`
+}
+
 // FullDecision AI's complete decision (including chain of thought)
 type FullDecision struct {
-	CallID              string     `json:"call_id,omitempty"`
-	SystemPrompt        string     `json:"system_prompt"`
-	UserPrompt          string     `json:"user_prompt"`
-	CoTTrace            string     `json:"cot_trace"`
-	Decisions           []Decision `json:"decisions"`
-	RawResponse         string     `json:"raw_response"`
-	Timestamp           time.Time  `json:"timestamp"`
-	AIRequestDurationMs int64      `json:"ai_request_duration_ms,omitempty"`
+	CallID              string             `json:"call_id,omitempty"`
+	SystemPrompt        string             `json:"system_prompt"`
+	UserPrompt          string             `json:"user_prompt"`
+	CoTTrace            string             `json:"cot_trace"`
+	Decisions           []Decision         `json:"decisions"`
+	RejectedDecisions   []RejectedDecision `json:"rejected_decisions,omitempty"`
+	Degraded            bool               `json:"degraded,omitempty"`
+	RawResponse         string             `json:"raw_response"`
+	Timestamp           time.Time          `json:"timestamp"`
+	AIRequestDurationMs int64              `json:"ai_request_duration_ms,omitempty"`
 }
 
 // ============================================================================

@@ -1,6 +1,8 @@
 package trader
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"math"
 	"nofx/kernel"
@@ -34,9 +36,19 @@ func (at *AutoTrader) saveEquitySnapshot(ctx *kernel.Context) {
 	}
 }
 
-func (at *AutoTrader) saveCycleTimeoutRecord(timeout time.Duration) {
-	if at.store == nil {
-		return
+func (at *AutoTrader) finalizeDecisionRecord(ctx context.Context, record *store.DecisionRecord) bool {
+	if !claimCycleFinalization(ctx) {
+		return false
+	}
+	if err := at.saveDecision(record); err != nil {
+		at.logWarnf("⚠ Failed to save decision record: %v", err)
+	}
+	return true
+}
+
+func (at *AutoTrader) finalizeCycleTimeout(ctx context.Context, timeout time.Duration, record *store.DecisionRecord, cause error) bool {
+	if !claimCycleFinalization(ctx) {
+		return false
 	}
 	at.cycleStateMu.RLock()
 	phase := at.cyclePhase
@@ -44,14 +56,30 @@ func (at *AutoTrader) saveCycleTimeoutRecord(timeout time.Duration) {
 	if phase == "" || phase == "idle" {
 		phase = "unknown"
 	}
-	record := &store.DecisionRecord{
-		Success:      false,
-		ExecutionLog: []string{fmt.Sprintf("Decision cycle timed out after %s (phase=%s)", timeout, phase)},
-		ErrorMessage: fmt.Sprintf("Decision cycle timed out after %s (phase=%s)", timeout, phase),
+	if record == nil {
+		record = &store.DecisionRecord{ExecutionLog: []string{}}
 	}
+	record.CycleID = cycleIDFromContext(ctx)
+	if record.CallID == "" {
+		if state := cycleFinalizationFromContext(ctx); state != nil {
+			if callID := state.callID.Load(); callID != nil {
+				record.CallID = *callID
+			}
+		}
+	}
+	record.Success = false
+	if record.ErrorMessage == "" {
+		record.ErrorMessage = fmt.Sprintf("Decision cycle timed out after %s (phase=%s)", timeout, phase)
+		if cause != nil && !errors.Is(cause, context.DeadlineExceeded) {
+			record.ErrorMessage += fmt.Sprintf(": %v", cause)
+		}
+	}
+	record.ExecutionLog = append(record.ExecutionLog, fmt.Sprintf("Decision cycle timed out after %s (phase=%s)", timeout, phase))
 	if err := at.saveDecision(record); err != nil {
 		at.logWarnf("⚠ Failed to save decision timeout record: %v", err)
 	}
+	at.handleCycleTimeoutFailure(timeout)
+	return true
 }
 
 // saveDecision saves AI decision log to database (only records AI input/output, for debugging)

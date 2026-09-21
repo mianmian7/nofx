@@ -29,12 +29,19 @@ type modelRequestScheduler struct {
 	groups           map[string]*modelRequestGroup
 	maxConcurrent    int
 	minStartInterval time.Duration
+
+	// Deterministic test hooks; production schedulers leave them nil.
+	beforeSlotWait   func()
+	afterSlotRelease func()
 }
 
 type modelRequestGroup struct {
-	slots     chan struct{}
-	startGate chan struct{}
-	nextStart time.Time
+	slots         chan struct{}
+	startGate     chan struct{}
+	nextStart     time.Time
+	cooldownMu    sync.RWMutex
+	cooldownUntil time.Time
+	cooldownKind  ErrorKind
 }
 
 func newModelRequestScheduler(maxConcurrent int, minStartInterval time.Duration) *modelRequestScheduler {
@@ -56,26 +63,97 @@ func (scheduler *modelRequestScheduler) acquire(ctx context.Context, key string)
 		ctx = context.Background()
 	}
 	group := scheduler.group(key)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, schedulerContextError(ctx, group)
+		}
+		if err := waitForModelCooldown(ctx, group); err != nil {
+			return nil, err
+		}
 
-	select {
-	case group.slots <- struct{}{}:
-	case <-ctx.Done():
-		return nil, ctx.Err()
+		if scheduler.beforeSlotWait != nil {
+			scheduler.beforeSlotWait()
+		}
+		select {
+		case group.slots <- struct{}{}:
+		case <-ctx.Done():
+			return nil, schedulerContextError(ctx, group)
+		}
+
+		releaseSlot := func() {
+			<-group.slots
+			if scheduler.afterSlotRelease != nil {
+				scheduler.afterSlotRelease()
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			releaseSlot()
+			return nil, schedulerContextError(ctx, group)
+		}
+		// A different trader may have installed a shared cooldown while this
+		// caller was queued for the concurrency slot.
+		if remaining, _ := modelCooldownState(group); remaining > 0 {
+			releaseSlot()
+			continue
+		}
+
+		select {
+		case <-group.startGate:
+		case <-ctx.Done():
+			releaseSlot()
+			return nil, schedulerContextError(ctx, group)
+		}
+
+		wait := time.Until(group.nextStart)
+		if wait > 0 {
+			timer := time.NewTimer(wait)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				group.startGate <- struct{}{}
+				releaseSlot()
+				return nil, schedulerContextError(ctx, group)
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			group.startGate <- struct{}{}
+			releaseSlot()
+			return nil, schedulerContextError(ctx, group)
+		}
+		// Recheck after pacing: another in-flight request may have published a
+		// cooldown while this caller waited. Never hold a concurrency slot while
+		// sleeping through that cooldown.
+		if remaining, _ := modelCooldownState(group); remaining > 0 {
+			group.startGate <- struct{}{}
+			releaseSlot()
+			continue
+		}
+		group.nextStart = time.Now().Add(scheduler.minStartInterval)
+		group.startGate <- struct{}{}
+
+		var once sync.Once
+		return func() {
+			once.Do(releaseSlot)
+		}, nil
 	}
+}
 
-	releaseSlot := func() { <-group.slots }
-	select {
-	case <-group.startGate:
-	case <-ctx.Done():
-		releaseSlot()
-		return nil, ctx.Err()
-	}
-
-	wait := time.Until(group.nextStart)
-	if wait > 0 {
+func waitForModelCooldown(ctx context.Context, group *modelRequestGroup) error {
+	for {
+		wait, kind := modelCooldownState(group)
+		if wait <= 0 {
+			return nil
+		}
 		timer := time.NewTimer(wait)
 		select {
 		case <-timer.C:
+			continue
 		case <-ctx.Done():
 			if !timer.Stop() {
 				select {
@@ -83,18 +161,48 @@ func (scheduler *modelRequestScheduler) acquire(ctx context.Context, key string)
 				default:
 				}
 			}
-			group.startGate <- struct{}{}
-			releaseSlot()
-			return nil, ctx.Err()
+			remaining, currentKind := modelCooldownState(group)
+			if remaining > 0 {
+				if currentKind != ErrorKindUnknown {
+					kind = currentKind
+				}
+				return &ModelCooldownError{Kind: kind, Remaining: remaining}
+			}
+			return ctx.Err()
 		}
 	}
-	group.nextStart = time.Now().Add(scheduler.minStartInterval)
-	group.startGate <- struct{}{}
+}
 
-	var once sync.Once
-	return func() {
-		once.Do(releaseSlot)
-	}, nil
+func schedulerContextError(ctx context.Context, group *modelRequestGroup) error {
+	if remaining, kind := modelCooldownState(group); remaining > 0 {
+		return &ModelCooldownError{Kind: kind, Remaining: remaining}
+	}
+	return ctx.Err()
+}
+
+func modelCooldownState(group *modelRequestGroup) (time.Duration, ErrorKind) {
+	group.cooldownMu.RLock()
+	until := group.cooldownUntil
+	kind := group.cooldownKind
+	group.cooldownMu.RUnlock()
+	if remaining := time.Until(until); remaining > 0 {
+		return remaining, kind
+	}
+	return 0, ErrorKindUnknown
+}
+
+func (scheduler *modelRequestScheduler) extendCooldown(key string, until time.Time, kind ErrorKind) {
+	group := scheduler.group(key)
+	group.cooldownMu.Lock()
+	if until.After(group.cooldownUntil) {
+		group.cooldownUntil = until
+		group.cooldownKind = kind
+	}
+	group.cooldownMu.Unlock()
+}
+
+func (scheduler *modelRequestScheduler) cooldownState(key string) (time.Duration, ErrorKind) {
+	return modelCooldownState(scheduler.group(key))
 }
 
 func (scheduler *modelRequestScheduler) group(key string) *modelRequestGroup {
@@ -154,23 +262,22 @@ func normalizeModelRequestURL(rawURL string) string {
 	return parsed.String()
 }
 
+func (client *Client) modelRequestScheduleKey(model string) string {
+	return modelRequestScheduleKey(client.Provider, client.BaseURL, model, client.APIKey)
+}
+
 func (client *Client) acquireModelRequest(metadata CallMetadata, model string, ctx context.Context) (func(), error) {
 	if strings.TrimSpace(metadata.TraderID) == "" {
 		return func() {}, nil
 	}
 	waitStart := time.Now()
-	release, err := defaultModelRequestScheduler.acquire(ctx, modelRequestScheduleKey(
-		client.Provider,
-		client.BaseURL,
-		model,
-		client.APIKey,
-	))
+	release, err := defaultModelRequestScheduler.acquire(ctx, client.modelRequestScheduleKey(model))
 	if err != nil {
 		return nil, err
 	}
 	client.Log.Infof(
-		"ai_request_admitted trader_id=%s provider=%s model=%s wait_ms=%d max_concurrency=%d start_interval_ms=%d",
-		boundedLogValue(metadata.TraderID, 96), boundedLogValue(client.Provider, 96), boundedLogValue(model, 96),
+		"ai_request_admitted call_id=%s cycle_id=%s trader_id=%s provider=%s model=%s wait_ms=%d max_concurrency=%d start_interval_ms=%d",
+		boundedLogValue(metadata.CallID, 96), boundedLogValue(metadata.CycleID, 96), boundedLogValue(metadata.TraderID, 96), boundedLogValue(client.Provider, 96), boundedLogValue(model, 96),
 		time.Since(waitStart).Milliseconds(), defaultModelRequestScheduler.maxConcurrent,
 		defaultModelRequestScheduler.minStartInterval.Milliseconds(),
 	)

@@ -60,6 +60,7 @@ func (at *AutoTrader) runCycleContext(requestCtx context.Context) error {
 
 	// Create decision record
 	record := &store.DecisionRecord{
+		CycleID:      cycleIDFromContext(requestCtx),
 		ExecutionLog: []string{},
 		Success:      true,
 	}
@@ -70,9 +71,7 @@ func (at *AutoTrader) runCycleContext(requestCtx context.Context) error {
 		at.logWarnf("⏸ Risk control: Trading paused, remaining %.0f minutes", remaining.Minutes())
 		record.Success = false
 		record.ErrorMessage = fmt.Sprintf("Risk control paused, remaining %.0f minutes", remaining.Minutes())
-		if err := at.saveDecision(record); err != nil {
-			at.logWarnf("⚠ Failed to save decision record: %v", err)
-		}
+		at.finalizeDecisionRecord(requestCtx, record)
 		return nil
 	}
 
@@ -84,18 +83,31 @@ func (at *AutoTrader) runCycleContext(requestCtx context.Context) error {
 	}
 
 	// 4. Collect trading context
-	ctx, err := at.buildTradingContext()
+	contextBuilder := func(context.Context) (*kernel.Context, error) {
+		return at.buildTradingContext()
+	}
+	if at.tradingContextBuilder != nil {
+		contextBuilder = at.tradingContextBuilder
+	}
+	ctx, err := contextBuilder(requestCtx)
+	if requestErr := requestCtx.Err(); requestErr != nil {
+		if errors.Is(requestErr, context.DeadlineExceeded) {
+			record.Success = false
+			record.ErrorMessage = "Trading context arrived after the decision cycle deadline"
+			at.finalizeCycleTimeout(requestCtx, at.decisionCycleTimeout(), record, err)
+		}
+		return requestErr
+	}
 	if err != nil {
 		at.logErrorf("failed to build trading context: %v", err)
 		record.Success = false
 		record.ErrorMessage = fmt.Sprintf("Failed to build trading context: %v", err)
-		if saveErr := at.saveDecision(record); saveErr != nil {
-			at.logWarnf("⚠ Failed to save decision record: %v", saveErr)
-		}
+		at.finalizeDecisionRecord(requestCtx, record)
 		return fmt.Errorf("failed to build trading context: %w", err)
 	}
-	if err := requestCtx.Err(); err != nil {
-		return err
+	ctx.CycleID = cycleIDFromContext(requestCtx)
+	if state := cycleFinalizationFromContext(requestCtx); state != nil {
+		ctx.OnAICallStarted = func(callID string) { state.callID.Store(&callID) }
 	}
 
 	// Save equity snapshot independently (decoupled from AI decision, used for drawing profit curve)
@@ -117,9 +129,7 @@ func (at *AutoTrader) runCycleContext(requestCtx context.Context) error {
 			PositionCount:         ctx.Account.PositionCount,
 			InitialBalance:        at.initialBalance,
 		}
-		if err := at.saveDecision(record); err != nil {
-			at.logWarnf("⚠ Failed to save decision record: %v", err)
-		}
+		at.finalizeDecisionRecord(requestCtx, record)
 		return nil
 	}
 
@@ -154,6 +164,10 @@ func (at *AutoTrader) runCycleContext(requestCtx context.Context) error {
 			decisionJSON, _ := json.MarshalIndent(aiDecision.Decisions, "", "  ")
 			record.DecisionJSON = string(decisionJSON)
 		}
+		for _, rejected := range aiDecision.RejectedDecisions {
+			record.ExecutionLog = append(record.ExecutionLog,
+				fmt.Sprintf("Rejected model decision #%d (%s %s): %s", rejected.Index+1, rejected.Decision.Symbol, rejected.Decision.Action, rejected.Reason))
+		}
 	}
 
 	// Record AI charge (track cost regardless of decision outcome).
@@ -182,6 +196,19 @@ func (at *AutoTrader) runCycleContext(requestCtx context.Context) error {
 		}
 	}
 
+	// A context-aware upstream should return promptly, but some custom clients
+	// may ignore cancellation and deliver a late success. Treat that response as
+	// belonging to the already-finalized timeout: do not reset failure counters,
+	// execute orders, or persist a second terminal record.
+	if requestErr := requestCtx.Err(); requestErr != nil {
+		if errors.Is(requestErr, context.DeadlineExceeded) {
+			record.Success = false
+			record.ErrorMessage = "AI decision arrived after the decision cycle deadline"
+			at.finalizeCycleTimeout(requestCtx, at.decisionCycleTimeout(), record, requestErr)
+		}
+		return requestErr
+	}
+
 	if err != nil {
 		var marketDataErr *kernel.MarketDataUnavailableError
 		if errors.As(err, &marketDataErr) {
@@ -189,12 +216,13 @@ func (at *AutoTrader) runCycleContext(requestCtx context.Context) error {
 			record.Success = false
 			record.ErrorMessage = fmt.Sprintf("Skipped AI decision because fresh %s market data was unavailable: %v", at.exchange, marketDataErr)
 			record.ExecutionLog = append(record.ExecutionLog, record.ErrorMessage)
-			if saveErr := at.saveDecision(record); saveErr != nil {
-				at.logWarnf("⚠ Failed to save decision record: %v", saveErr)
-			}
+			at.finalizeDecisionRecord(requestCtx, record)
 			// This is an upstream market-data safety stop, not an AI failure;
 			// do not increment consecutive AI failures or enter AI safe mode.
 			return nil
+		}
+		if !claimCycleFinalization(requestCtx) {
+			return fmt.Errorf("failed to get AI decision after cycle finalization: %w", err)
 		}
 		at.consecutiveAIFailures++
 		record.Success = false
@@ -228,13 +256,6 @@ func (at *AutoTrader) runCycleContext(requestCtx context.Context) error {
 		return fmt.Errorf("failed to get AI decision: %w", err)
 	}
 	at.setCyclePhase("execution")
-
-	// AI succeeded — reset failure counter and deactivate safe mode
-	if at.consecutiveAIFailures > 0 {
-		at.logInfof("✅ AI recovered after %d consecutive failures", at.consecutiveAIFailures)
-	}
-	at.consecutiveAIFailures = 0
-	at.tryDeactivateSafeModeOnAIRecovery()
 
 	// // 5. Print system prompt
 	// logger.Infof("\n" + strings.Repeat("=", 70))
@@ -271,9 +292,22 @@ func (at *AutoTrader) runCycleContext(requestCtx context.Context) error {
 	// 8. Sort decisions: ensure close positions first, then open positions (prevent position stacking overflow)
 	sortedDecisions := sortDecisionsByPriority(aiDecision.Decisions)
 	sortedDecisions = at.filterDecisionsToStrategyUniverse(sortedDecisions, ctx)
-	// Per-cycle long/short coverage: if the AI left a direction uncovered, force
-	// the strongest bullish/bearish candidate (account-sized, risk-enforced).
-	sortedDecisions = at.ensureLongShortCoverage(sortedDecisions, ctx, ctx.Account.TotalEquity)
+	if aiDecision.Degraded {
+		// Degraded parser output is an explicit risk-reduction-only mode. Keep a
+		// final execution-boundary filter so later compatibility hooks cannot
+		// reintroduce risk-increasing actions.
+		riskReducing := make([]kernel.Decision, 0, len(sortedDecisions))
+		for _, decision := range sortedDecisions {
+			if isRiskReducingClose(decision) {
+				riskReducing = append(riskReducing, decision)
+			}
+		}
+		sortedDecisions = riskReducing
+	} else {
+		// Per-cycle long/short coverage compatibility hook. Never invoke it for a
+		// degraded response, even if a future implementation starts forcing opens.
+		sortedDecisions = at.ensureLongShortCoverage(sortedDecisions, ctx, ctx.Account.TotalEquity)
+	}
 
 	logger.Info("🔄 Execution order (optimized): Close positions first → Open positions later")
 	for i, d := range sortedDecisions {
@@ -310,12 +344,30 @@ func (at *AutoTrader) runCycleContext(requestCtx context.Context) error {
 	// immediately before order placement, so AI churn cannot become live orders.
 	at.executeDecisionBatchContext(requestCtx, sortedDecisions, ctx, record)
 
-	// 9. Save decision record
+	// 9. Commit one terminal outcome. If execution crossed the deadline, the
+	// timeout terminal owns the record and failure counter; a late worker must
+	// not overwrite it with success.
+	if requestErr := requestCtx.Err(); requestErr != nil {
+		if errors.Is(requestErr, context.DeadlineExceeded) {
+			record.Success = false
+			record.ErrorMessage = "Decision execution exceeded the cycle deadline"
+			at.finalizeCycleTimeout(requestCtx, at.decisionCycleTimeout(), record, requestErr)
+		}
+		return requestErr
+	}
+	if !claimCycleFinalization(requestCtx) {
+		return requestCtx.Err()
+	}
+	if at.consecutiveAIFailures > 0 {
+		at.logInfof("✅ AI recovered after %d consecutive failures", at.consecutiveAIFailures)
+	}
+	at.consecutiveAIFailures = 0
+	at.tryDeactivateSafeModeOnAIRecovery()
 	if err := at.saveDecision(record); err != nil {
 		at.logWarnf("⚠ Failed to save decision record: %v", err)
 	}
 
-	return requestCtx.Err()
+	return nil
 }
 
 // executeDecisionBatch processes a batch of decisions, checking running state, safe mode, and trade throttles.
@@ -485,6 +537,11 @@ func universeBaseKey(symbol string) string {
 func isOpenDecision(action string) bool {
 	a := strings.ToLower(strings.TrimSpace(action))
 	return a == "open_long" || a == "open_short"
+}
+
+func isRiskReducingClose(decision kernel.Decision) bool {
+	a := strings.ToLower(strings.TrimSpace(decision.Action))
+	return a == "close_long" || a == "close_short"
 }
 
 // isWaitDecision reports whether the action is a no-op that never places an

@@ -294,14 +294,14 @@ func (client *Client) maxAttempts() int {
 }
 
 func (client *Client) logAttemptStart(metadata CallMetadata, attempt, maxAttempts int) {
-	client.Log.Infof("ai_call_attempt call_id=%s trader_id=%s strategy_id=%s provider=%s model=%s attempt=%d max_attempts=%d error_kind=none http_status=none retryable=false outcome=started",
-		metadata.CallID, boundedLogValue(metadata.TraderID, 96), boundedLogValue(metadata.StrategyID, 96),
+	client.Log.Infof("ai_call_attempt call_id=%s cycle_id=%s trader_id=%s strategy_id=%s provider=%s model=%s attempt=%d max_attempts=%d error_kind=none http_status=none retryable=false outcome=started",
+		metadata.CallID, boundedLogValue(metadata.CycleID, 96), boundedLogValue(metadata.TraderID, 96), boundedLogValue(metadata.StrategyID, 96),
 		boundedLogValue(metadata.Provider, 96), boundedLogValue(metadata.Model, 96), attempt, maxAttempts)
 }
 
 func (client *Client) logAttemptSuccess(metadata CallMetadata, attempt, maxAttempts int, attemptDuration, totalDuration time.Duration) {
-	client.Log.Infof("ai_call_success call_id=%s trader_id=%s strategy_id=%s provider=%s model=%s attempt=%d max_attempts=%d retries=%d attempt_duration_ms=%d total_duration_ms=%d error_kind=none http_status=none retryable=false outcome=success",
-		metadata.CallID, boundedLogValue(metadata.TraderID, 96), boundedLogValue(metadata.StrategyID, 96),
+	client.Log.Infof("ai_call_success call_id=%s cycle_id=%s trader_id=%s strategy_id=%s provider=%s model=%s attempt=%d max_attempts=%d retries=%d attempt_duration_ms=%d total_duration_ms=%d error_kind=none http_status=none retryable=false outcome=success",
+		metadata.CallID, boundedLogValue(metadata.CycleID, 96), boundedLogValue(metadata.TraderID, 96), boundedLogValue(metadata.StrategyID, 96),
 		boundedLogValue(metadata.Provider, 96), boundedLogValue(metadata.Model, 96), attempt, maxAttempts, attempt-1,
 		attemptDuration.Milliseconds(), totalDuration.Milliseconds())
 }
@@ -313,8 +313,8 @@ func (client *Client) logAttemptFailure(metadata CallMetadata, attempt, maxAttem
 		outcome = "retrying"
 		level = client.Log.Warnf
 	}
-	level("ai_call_failure call_id=%s trader_id=%s strategy_id=%s provider=%s model=%s attempt=%d max_attempts=%d retries=%d attempt_duration_ms=%d total_duration_ms=%d error_kind=%s http_status=%s retryable=%t outcome=%s error=%q",
-		metadata.CallID, boundedLogValue(metadata.TraderID, 96), boundedLogValue(metadata.StrategyID, 96),
+	level("ai_call_failure call_id=%s cycle_id=%s trader_id=%s strategy_id=%s provider=%s model=%s attempt=%d max_attempts=%d retries=%d attempt_duration_ms=%d total_duration_ms=%d error_kind=%s http_status=%s retryable=%t outcome=%s error=%q",
+		metadata.CallID, boundedLogValue(metadata.CycleID, 96), boundedLogValue(metadata.TraderID, 96), boundedLogValue(metadata.StrategyID, 96),
 		boundedLogValue(metadata.Provider, 96), boundedLogValue(metadata.Model, 96), attempt, maxAttempts, attempt-1,
 		attemptDuration.Milliseconds(), totalDuration.Milliseconds(), ErrorKindOf(err), formatHTTPStatus(APIStatusCodeOf(err)), retryable, outcome, safeErrorSummary(err))
 }
@@ -552,7 +552,7 @@ func (client *Client) Call(systemPrompt, userPrompt string) (string, error) {
 
 	// Step 7: Check HTTP status code (fixed logic)
 	if resp.StatusCode != http.StatusOK {
-		return "", NewAPIError(resp.StatusCode, string(body))
+		return "", NewAPIErrorWithHeaders(resp.StatusCode, string(body), resp.Header, time.Now())
 	}
 
 	// Step 8: Parse response (via hooks for dynamic dispatch)
@@ -575,6 +575,11 @@ func (c *Client) BaseClient() *Client { return c }
 // IsRetryableError determines if error is retryable (network errors, timeouts, etc.)
 func (client *Client) IsRetryableError(err error) bool {
 	if err == nil {
+		return false
+	}
+	// Usage/quota exhaustion needs a long shared cooldown, not an immediate
+	// retry loop against the same exhausted upstream identity.
+	if ErrorKindOf(err) == ErrorKindUsageLimit {
 		return false
 	}
 	// A provider HTTP error is authoritative. Never let arbitrary response
@@ -625,6 +630,16 @@ func (client *Client) IsRetryableError(err error) bool {
 // failures. Ordinary transient errors retain the configured deterministic
 // delay so existing callers and tests remain predictable.
 func retryWaitDuration(base time.Duration, attempt int, err error) time.Duration {
+	if retryAfter := RetryAfterOf(err); retryAfter > 0 {
+		return retryAfter
+	}
+	if ErrorKindOf(err) == ErrorKindRateLimited {
+		maxWait := base * time.Duration(1<<max(0, attempt-1))
+		if maxWait <= 0 {
+			return 0
+		}
+		return time.Duration(rand.Int63n(int64(maxWait) + 1))
+	}
 	if ErrorKindOf(err) != ErrorKindAuthUnavailable {
 		return base * time.Duration(attempt)
 	}
@@ -636,6 +651,104 @@ func retryWaitDuration(base time.Duration, attempt int, err error) time.Duration
 		return waitTime
 	}
 	return waitTime + time.Duration(rand.Int63n(int64(jitterLimit)+1))
+}
+
+var (
+	ErrRequestAdmissionExpired   = errors.New("AI request admission wait expired")
+	ErrInsufficientRequestBudget = errors.New("insufficient AI request budget")
+)
+
+func (client *Client) completionReserve() time.Duration {
+	if client.Cfg != nil && client.Cfg.CompletionReserve > 0 {
+		return client.Cfg.CompletionReserve
+	}
+	return 30 * time.Second
+}
+
+func (client *Client) minAttemptBudget() time.Duration {
+	if client.Cfg != nil && client.Cfg.MinAttemptBudget > 0 {
+		return client.Cfg.MinAttemptBudget
+	}
+	return 10 * time.Second
+}
+
+func remainingBeforeReserve(ctx context.Context, reserve time.Duration) (time.Duration, bool) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return 0, false
+	}
+	return time.Until(deadline) - reserve, true
+}
+
+func (client *Client) admissionContext(parent context.Context) (context.Context, context.CancelFunc, error) {
+	limit := 60 * time.Second
+	if client.Cfg != nil && client.Cfg.AdmissionTimeout > 0 {
+		limit = client.Cfg.AdmissionTimeout
+	}
+	if remaining, ok := remainingBeforeReserve(parent, client.completionReserve()+client.minAttemptBudget()); ok {
+		if remaining <= 0 {
+			return nil, nil, ErrInsufficientRequestBudget
+		}
+		if remaining < limit {
+			limit = remaining
+		}
+	}
+	ctx, cancel := context.WithTimeout(parent, limit)
+	return ctx, cancel, nil
+}
+
+func (client *Client) attemptContext(parent context.Context, attemptsLeft int) (context.Context, context.CancelFunc, error) {
+	if attemptsLeft <= 0 {
+		attemptsLeft = 1
+	}
+	limit := DefaultTimeout
+	if client.Cfg != nil && client.Cfg.Timeout > 0 {
+		limit = client.Cfg.Timeout
+	}
+	if remaining, ok := remainingBeforeReserve(parent, client.completionReserve()); ok {
+		if remaining < client.minAttemptBudget() {
+			return nil, nil, ErrInsufficientRequestBudget
+		}
+		share := remaining / time.Duration(attemptsLeft)
+		if share < limit {
+			limit = share
+		}
+	}
+	if limit < client.minAttemptBudget() {
+		return nil, nil, ErrInsufficientRequestBudget
+	}
+	ctx, cancel := context.WithTimeout(parent, limit)
+	return ctx, cancel, nil
+}
+
+func (client *Client) cooldownForError(attempt int, err error) time.Duration {
+	switch ErrorKindOf(err) {
+	case ErrorKindUsageLimit:
+		cooldown := 15 * time.Minute
+		if client.Cfg != nil && client.Cfg.UsageLimitCooldown > 0 {
+			cooldown = client.Cfg.UsageLimitCooldown
+		}
+		if retryAfter := RetryAfterOf(err); retryAfter > cooldown {
+			cooldown = retryAfter
+		}
+		return cooldown
+	case ErrorKindRateLimited:
+		base := 30 * time.Second
+		if client.Cfg != nil && client.Cfg.RateLimitCooldown > 0 {
+			base = client.Cfg.RateLimitCooldown
+		}
+		return retryWaitDuration(base, attempt, err)
+	default:
+		return 0
+	}
+}
+
+func waitFitsBudget(ctx context.Context, wait, reserve time.Duration) bool {
+	if wait <= 0 {
+		return true
+	}
+	deadline, ok := ctx.Deadline()
+	return !ok || time.Now().Add(wait+reserve).Before(deadline)
 }
 
 // ============================================================
@@ -650,8 +763,6 @@ func (client *Client) CallWithRequest(req *Request) (string, error) {
 	if req == nil {
 		return "", fmt.Errorf("AI API request is nil")
 	}
-
-	// If Model is not set in Request, use Client's Model
 	if req.Model == "" {
 		req.Model = client.Model
 	}
@@ -664,41 +775,94 @@ func (client *Client) CallWithRequest(req *Request) (string, error) {
 		metadata.Model = req.Model
 	}
 	req.Metadata = metadata
-	releaseAdmission, err := client.acquireModelRequest(metadata, req.Model, contextFromRequest(req))
-	if err != nil {
-		return "", fmt.Errorf("AI request admission failed: %w", err)
-	}
-	defer releaseAdmission()
+	parentCtx := contextFromRequest(req)
 	maxAttempts := client.maxAttempts()
 	totalStart := time.Now()
 	var lastErr error
+
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := parentCtx.Err(); err != nil {
+			return "", client.wrapFinalCallError(max(1, attempt-1), time.Since(totalStart), err)
+		}
+		if cooldown, kind := defaultModelRequestScheduler.cooldownState(client.modelRequestScheduleKey(req.Model)); cooldown > 0 && !waitFitsBudget(parentCtx, cooldown, client.completionReserve()+client.minAttemptBudget()) {
+			return "", &ModelCooldownError{Kind: kind, Remaining: cooldown}
+		}
+		admissionCtx, cancelAdmission, err := client.admissionContext(parentCtx)
+		if err != nil {
+			return "", fmt.Errorf("%w: %w", ErrRequestAdmissionExpired, err)
+		}
+		releaseAdmission, err := client.acquireModelRequest(metadata, req.Model, admissionCtx)
+		cancelAdmission()
+		if err != nil {
+			if parentCtx.Err() != nil {
+				return "", client.wrapFinalCallError(max(1, attempt-1), time.Since(totalStart), parentCtx.Err())
+			}
+			client.Log.Warnf("ai_request_admission_failed call_id=%s cycle_id=%s trader_id=%s provider=%s model=%s error=%q",
+				metadata.CallID, boundedLogValue(metadata.CycleID, 96), boundedLogValue(metadata.TraderID, 96),
+				boundedLogValue(metadata.Provider, 96), boundedLogValue(metadata.Model, 96), safeErrorSummary(err))
+			return "", fmt.Errorf("%w: %w", ErrRequestAdmissionExpired, err)
+		}
+
+		attemptCtx, cancelAttempt, err := client.attemptContext(parentCtx, maxAttempts-attempt+1)
+		if err != nil {
+			releaseAdmission()
+			return "", fmt.Errorf("%w before attempt %d: %v", ErrInsufficientRequestBudget, attempt, err)
+		}
+		attemptReq := *req
+		attemptReq.Ctx = attemptCtx
 		attemptStart := time.Now()
 		if attempt > 1 {
 			client.Log.Warnf("⚠️  AI API call failed, retrying (%d/%d)...", attempt, maxAttempts)
 		}
 		client.logAttemptStart(metadata, attempt, maxAttempts)
-		result, err := client.callWithRequest(req)
+		result, callErr := client.callWithRequest(&attemptReq)
 		attemptDuration := time.Since(attemptStart)
+		cancelAttempt()
+		cooldown := time.Duration(0)
+		if callErr != nil {
+			// Publish shared upstream backpressure before releasing the admission
+			// slot, so already-queued traders cannot slip through the handoff.
+			cooldown = client.cooldownForError(attempt, callErr)
+			if cooldown > 0 {
+				defaultModelRequestScheduler.extendCooldown(client.modelRequestScheduleKey(req.Model), time.Now().Add(cooldown), ErrorKindOf(callErr))
+			}
+		}
+		releaseAdmission()
 		totalDuration := time.Since(totalStart)
-		if err == nil {
+		if callErr == nil {
 			client.logAttemptSuccess(metadata, attempt, maxAttempts, attemptDuration, totalDuration)
 			return result, nil
 		}
-		lastErr = err
-		retryable := client.Hooks.IsRetryableError(err)
+
+		lastErr = callErr
+		retryable := parentCtx.Err() == nil && client.Hooks.IsRetryableError(callErr)
 		willRetry := retryable && attempt < maxAttempts
-		client.logAttemptFailure(metadata, attempt, maxAttempts, attemptDuration, totalDuration, err, retryable, willRetry)
-		if !willRetry {
-			return "", client.wrapFinalCallError(attempt, totalDuration, err)
+		if cooldown > 0 && !waitFitsBudget(parentCtx, cooldown, client.completionReserve()+client.minAttemptBudget()) {
+			willRetry = false
 		}
-		waitTime := retryWaitDuration(client.Cfg.RetryWaitBase, attempt, err)
-		client.Log.Infof("ai_call_retry_wait call_id=%s provider=%s model=%s attempt=%d max_attempts=%d wait_ms=%d",
-			metadata.CallID, boundedLogValue(metadata.Provider, 96), boundedLogValue(metadata.Model, 96), attempt, maxAttempts, waitTime.Milliseconds())
-		if err := sleepWithContext(contextFromRequest(req), waitTime); err != nil {
-			totalDuration = time.Since(totalStart)
-			client.logAttemptFailure(metadata, attempt, maxAttempts, attemptDuration, totalDuration, err, false, false)
-			return "", client.wrapFinalCallError(attempt, totalDuration, err)
+		client.logAttemptFailure(metadata, attempt, maxAttempts, attemptDuration, totalDuration, callErr, retryable, willRetry)
+		if !willRetry {
+			return "", client.wrapFinalCallError(attempt, totalDuration, callErr)
+		}
+
+		waitTime := cooldown
+		if waitTime <= 0 {
+			base := 2 * time.Second
+			if client.Cfg != nil && client.Cfg.RetryWaitBase > 0 {
+				base = client.Cfg.RetryWaitBase
+			}
+			waitTime = retryWaitDuration(base, attempt, callErr)
+			client.Log.Infof("ai_call_retry_wait call_id=%s cycle_id=%s provider=%s model=%s attempt=%d max_attempts=%d wait_ms=%d",
+				metadata.CallID, boundedLogValue(metadata.CycleID, 96), boundedLogValue(metadata.Provider, 96), boundedLogValue(metadata.Model, 96), attempt, maxAttempts, waitTime.Milliseconds())
+			if err := sleepWithContext(parentCtx, waitTime); err != nil {
+				totalDuration = time.Since(totalStart)
+				return "", client.wrapFinalCallError(attempt, totalDuration, err)
+			}
+		} else {
+			client.Log.Infof("ai_call_retry_wait call_id=%s cycle_id=%s provider=%s model=%s attempt=%d max_attempts=%d wait_ms=%d shared_cooldown=true",
+				metadata.CallID, boundedLogValue(metadata.CycleID, 96), boundedLogValue(metadata.Provider, 96), boundedLogValue(metadata.Model, 96), attempt, maxAttempts, waitTime.Milliseconds())
+			// The next admission waits on the shared upstream cooldown without
+			// occupying a model concurrency slot.
 		}
 	}
 	return "", client.wrapFinalCallError(maxAttempts, time.Since(totalStart), lastErr)
@@ -724,41 +888,74 @@ func (client *Client) CallWithRequestFull(req *Request) (*LLMResponse, error) {
 		metadata.Model = req.Model
 	}
 	req.Metadata = metadata
-	releaseAdmission, err := client.acquireModelRequest(metadata, req.Model, contextFromRequest(req))
-	if err != nil {
-		return nil, fmt.Errorf("AI request admission failed: %w", err)
-	}
-	defer releaseAdmission()
+	parentCtx := contextFromRequest(req)
 	maxAttempts := client.maxAttempts()
 	totalStart := time.Now()
 	var lastErr error
+
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := parentCtx.Err(); err != nil {
+			return nil, client.wrapFinalCallError(max(1, attempt-1), time.Since(totalStart), err)
+		}
+		if cooldown, kind := defaultModelRequestScheduler.cooldownState(client.modelRequestScheduleKey(req.Model)); cooldown > 0 && !waitFitsBudget(parentCtx, cooldown, client.completionReserve()+client.minAttemptBudget()) {
+			return nil, &ModelCooldownError{Kind: kind, Remaining: cooldown}
+		}
+		admissionCtx, cancelAdmission, err := client.admissionContext(parentCtx)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrRequestAdmissionExpired, err)
+		}
+		releaseAdmission, err := client.acquireModelRequest(metadata, req.Model, admissionCtx)
+		cancelAdmission()
+		if err != nil {
+			if parentCtx.Err() != nil {
+				return nil, client.wrapFinalCallError(max(1, attempt-1), time.Since(totalStart), parentCtx.Err())
+			}
+			return nil, fmt.Errorf("%w: %w", ErrRequestAdmissionExpired, err)
+		}
+		attemptCtx, cancelAttempt, err := client.attemptContext(parentCtx, maxAttempts-attempt+1)
+		if err != nil {
+			releaseAdmission()
+			return nil, fmt.Errorf("%w before attempt %d: %v", ErrInsufficientRequestBudget, attempt, err)
+		}
+		attemptReq := *req
+		attemptReq.Ctx = attemptCtx
 		attemptStart := time.Now()
 		if attempt > 1 {
 			client.Log.Warnf("⚠️  AI API call failed, retrying (%d/%d)...", attempt, maxAttempts)
 		}
 		client.logAttemptStart(metadata, attempt, maxAttempts)
-		result, err := client.callWithRequestFull(req)
+		result, callErr := client.callWithRequestFull(&attemptReq)
 		attemptDuration := time.Since(attemptStart)
+		cancelAttempt()
+		cooldown := time.Duration(0)
+		if callErr != nil {
+			cooldown = client.cooldownForError(attempt, callErr)
+			if cooldown > 0 {
+				defaultModelRequestScheduler.extendCooldown(client.modelRequestScheduleKey(req.Model), time.Now().Add(cooldown), ErrorKindOf(callErr))
+			}
+		}
+		releaseAdmission()
 		totalDuration := time.Since(totalStart)
-		if err == nil {
+		if callErr == nil {
 			client.logAttemptSuccess(metadata, attempt, maxAttempts, attemptDuration, totalDuration)
 			return result, nil
 		}
-		lastErr = err
-		retryable := client.Hooks.IsRetryableError(err)
-		willRetry := retryable && attempt < maxAttempts
-		client.logAttemptFailure(metadata, attempt, maxAttempts, attemptDuration, totalDuration, err, retryable, willRetry)
+		lastErr = callErr
+		retryable := parentCtx.Err() == nil && client.Hooks.IsRetryableError(callErr)
+		willRetry := retryable && attempt < maxAttempts && (cooldown <= 0 || waitFitsBudget(parentCtx, cooldown, client.completionReserve()+client.minAttemptBudget()))
+		client.logAttemptFailure(metadata, attempt, maxAttempts, attemptDuration, totalDuration, callErr, retryable, willRetry)
 		if !willRetry {
-			return nil, client.wrapFinalCallError(attempt, totalDuration, err)
+			return nil, client.wrapFinalCallError(attempt, totalDuration, callErr)
 		}
-		waitTime := retryWaitDuration(client.Cfg.RetryWaitBase, attempt, err)
-		client.Log.Infof("ai_call_retry_wait call_id=%s provider=%s model=%s attempt=%d max_attempts=%d wait_ms=%d",
-			metadata.CallID, boundedLogValue(metadata.Provider, 96), boundedLogValue(metadata.Model, 96), attempt, maxAttempts, waitTime.Milliseconds())
-		if err := sleepWithContext(contextFromRequest(req), waitTime); err != nil {
-			totalDuration = time.Since(totalStart)
-			client.logAttemptFailure(metadata, attempt, maxAttempts, attemptDuration, totalDuration, err, false, false)
-			return nil, client.wrapFinalCallError(attempt, totalDuration, err)
+		if cooldown <= 0 {
+			base := 2 * time.Second
+			if client.Cfg != nil && client.Cfg.RetryWaitBase > 0 {
+				base = client.Cfg.RetryWaitBase
+			}
+			waitTime := retryWaitDuration(base, attempt, callErr)
+			if err := sleepWithContext(parentCtx, waitTime); err != nil {
+				return nil, client.wrapFinalCallError(attempt, time.Since(totalStart), err)
+			}
 		}
 	}
 	return nil, client.wrapFinalCallError(maxAttempts, time.Since(totalStart), lastErr)
@@ -791,7 +988,7 @@ func (client *Client) callWithRequestFull(req *Request) (*LLMResponse, error) {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, NewAPIError(resp.StatusCode, string(body))
+		return nil, NewAPIErrorWithHeaders(resp.StatusCode, string(body), resp.Header, time.Now())
 	}
 
 	return client.Hooks.ParseMCPResponseFull(body)
@@ -835,7 +1032,7 @@ func (client *Client) callWithRequest(req *Request) (string, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", NewAPIError(resp.StatusCode, string(body))
+		return "", NewAPIErrorWithHeaders(resp.StatusCode, string(body), resp.Header, time.Now())
 	}
 
 	result, err := client.Hooks.ParseMCPResponse(body)
@@ -904,7 +1101,7 @@ func (client *Client) callWithRequestStreaming(req *Request, onChunk func(string
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", NewAPIError(resp.StatusCode, string(body))
+		return "", NewAPIErrorWithHeaders(resp.StatusCode, string(body), resp.Header, time.Now())
 	}
 
 	text, usage, err := ParseSSEStream(resp.Body, onChunk, func() {

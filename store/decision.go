@@ -17,6 +17,8 @@ type DecisionStore struct {
 type DecisionRecordDB struct {
 	ID                  int64     `gorm:"primaryKey;autoIncrement"`
 	TraderID            string    `gorm:"column:trader_id;not null;index:idx_decision_records_trader_time"`
+	CallID              string    `gorm:"column:call_id;default:'';index:idx_decision_records_call_id"`
+	CycleID             string    `gorm:"column:cycle_id;default:'';index:idx_decision_records_cycle_id"`
 	CycleNumber         int       `gorm:"column:cycle_number;not null"`
 	Timestamp           time.Time `gorm:"not null;index:idx_decision_records_trader_time,sort:desc;index:idx_decision_records_timestamp,sort:desc"`
 	SystemPrompt        string    `gorm:"column:system_prompt;default:''"`
@@ -37,10 +39,10 @@ func (DecisionRecordDB) TableName() string { return "decision_records" }
 
 // DecisionRecord decision record (external API struct)
 type DecisionRecord struct {
-	// CallID correlates this API record with the MCP retry/diagnostic logs. It is
-	// intentionally not added to DecisionRecordDB: existing deployments must
-	// keep their decision_records schema unchanged and older rows remain valid.
+	// CallID correlates this record with MCP retries. CycleID identifies the
+	// owning trader cycle. Historical records may leave either field empty.
 	CallID              string             `json:"call_id,omitempty"`
+	CycleID             string             `json:"cycle_id,omitempty"`
 	ID                  int64              `json:"id"`
 	TraderID            string             `json:"trader_id"`
 	CycleNumber         int                `json:"cycle_number"`
@@ -122,10 +124,31 @@ func (s *DecisionStore) initTables() error {
 		var tableExists int64
 		s.db.Raw(`SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'decision_records'`).Scan(&tableExists)
 		if tableExists > 0 {
-			return nil
+			for _, field := range []string{"CallID", "CycleID"} {
+				if !s.db.Migrator().HasColumn(&DecisionRecordDB{}, field) {
+					if err := s.db.Migrator().AddColumn(&DecisionRecordDB{}, field); err != nil {
+						return fmt.Errorf("failed to add decision_records %s column: %w", field, err)
+					}
+				}
+			}
+			return s.ensureCorrelationIndexes()
 		}
 	}
-	return s.db.AutoMigrate(&DecisionRecordDB{})
+	if err := s.db.AutoMigrate(&DecisionRecordDB{}); err != nil {
+		return err
+	}
+	return s.ensureCorrelationIndexes()
+}
+
+func (s *DecisionStore) ensureCorrelationIndexes() error {
+	for _, field := range []string{"CallID", "CycleID"} {
+		if !s.db.Migrator().HasIndex(&DecisionRecordDB{}, field) {
+			if err := s.db.Migrator().CreateIndex(&DecisionRecordDB{}, field); err != nil {
+				return fmt.Errorf("failed to create decision_records %s index: %w", field, err)
+			}
+		}
+	}
+	return nil
 }
 
 // toRecord converts DB model to API struct
@@ -133,6 +156,8 @@ func (db *DecisionRecordDB) toRecord() *DecisionRecord {
 	record := &DecisionRecord{
 		ID:                  db.ID,
 		TraderID:            db.TraderID,
+		CallID:              db.CallID,
+		CycleID:             db.CycleID,
 		CycleNumber:         db.CycleNumber,
 		Timestamp:           db.Timestamp,
 		SystemPrompt:        db.SystemPrompt,
@@ -165,6 +190,8 @@ func (s *DecisionStore) LogDecision(record *DecisionRecord) error {
 
 	dbRecord := &DecisionRecordDB{
 		TraderID:            record.TraderID,
+		CallID:              record.CallID,
+		CycleID:             record.CycleID,
 		CycleNumber:         record.CycleNumber,
 		Timestamp:           record.Timestamp,
 		SystemPrompt:        record.SystemPrompt,

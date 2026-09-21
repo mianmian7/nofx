@@ -10,6 +10,7 @@ CLAUDE.md
 # 个人部署脚本（含服务器别名与部署习惯，不入库）
 deploy-*.sh
 deploy-*.py
+/.private/
 
 # 编译产物
 nofx-auto

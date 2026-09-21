@@ -1,6 +1,7 @@
 package trader
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -46,6 +47,36 @@ func TestPaperOpenStopsBeforeLedgerMutationWhenBinanceMarketIsUnavailable(t *tes
 	after := broker.Snapshot()
 	if after.Balance != before.Balance || after.OpenPositions != 0 || after.PendingOrders != 0 {
 		t.Fatalf("paper ledger changed after rejected preflight: before=%#v after=%#v", before, after)
+	}
+}
+
+func TestCanceledCycleCannotExecuteLatePaperOrder(t *testing.T) {
+	broker, err := NewPaperBroker(
+		PaperBrokerConfig{InitialBalance: 1_000},
+		fixedPaperPriceSource{"MUUSDT": 100},
+	)
+	if err != nil {
+		t.Fatalf("NewPaperBroker: %v", err)
+	}
+	before := broker.Snapshot()
+	autoTrader := &AutoTrader{
+		executionMode: ExecutionModePaper,
+		exchange:      "binance",
+		trader:        broker,
+		paperBroker:   broker,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = autoTrader.executeDecisionWithRecordContext(ctx, &kernel.Decision{
+		Symbol: "MUUSDT", Action: "open_long", Leverage: 3,
+		PositionSizeUSD: 300, StopLoss: 90, TakeProfit: 120,
+	}, &store.DecisionAction{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("late order error = %v, want canceled", err)
+	}
+	after := broker.Snapshot()
+	if after.Balance != before.Balance || after.OpenPositions != 0 || after.PendingOrders != 0 {
+		t.Fatalf("paper ledger changed after cycle cancellation: before=%#v after=%#v", before, after)
 	}
 }
 

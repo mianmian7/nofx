@@ -170,13 +170,20 @@ func GetFullDecisionWithStrategyContext(requestCtx context.Context, ctx *Context
 
 	// 4. Call AI API. Generate one ID at the logical call boundary and pass it
 	// through MCP retries; do not generate a second ID after the response.
+	if err := requestCtx.Err(); err != nil {
+		return nil, err
+	}
 	callID := newLogicalCallID()
 	metadata := mcp.CallMetadata{
 		CallID:     callID,
+		CycleID:    ctx.CycleID,
 		TraderID:   ctx.TraderID,
 		StrategyID: ctx.StrategyID,
 	}
 	aiCallStart := time.Now()
+	if ctx.OnAICallStarted != nil {
+		ctx.OnAICallStarted(callID)
+	}
 	aiResponse, err := callAIWithMetadataContext(requestCtx, mcpClient, metadata, systemPrompt, userPrompt)
 	aiCallDuration := time.Since(aiCallStart)
 	if err != nil {
@@ -404,7 +411,7 @@ func pruneCandidateCoinsWithoutMarketData(ctx *Context) {
 func parseFullDecisionResponse(aiResponse string, accountEquity float64, riskConfig store.RiskControlConfig) (*FullDecision, error) {
 	cotTrace := extractCoTTrace(aiResponse)
 
-	decisions, err := extractDecisions(aiResponse)
+	rawDecisions, err := extractRawDecisionItems(aiResponse)
 	if err != nil {
 		return &FullDecision{
 			CoTTrace:  cotTrace,
@@ -412,17 +419,122 @@ func parseFullDecisionResponse(aiResponse string, accountEquity float64, riskCon
 		}, fmt.Errorf("failed to extract decisions: %w", err)
 	}
 
-	if err := validateDecisionsWithRisk(decisions, accountEquity, riskConfig); err != nil {
-		return &FullDecision{
-			CoTTrace:  cotTrace,
-			Decisions: decisions,
-		}, fmt.Errorf("decision validation failed: %w", err)
+	decisions := make([]Decision, 0, len(rawDecisions))
+	originalIndexes := make([]int, 0, len(rawDecisions))
+	rejected := make([]RejectedDecision, 0)
+	for index, rawDecision := range rawDecisions {
+		var decision Decision
+		if err := json.Unmarshal(rawDecision, &decision); err != nil {
+			var identity struct {
+				Symbol string `json:"symbol"`
+				Action string `json:"action"`
+			}
+			_ = json.Unmarshal(rawDecision, &identity)
+			rejected = append(rejected, RejectedDecision{
+				Index:    index,
+				Decision: Decision{Symbol: identity.Symbol, Action: identity.Action},
+				Reason:   err.Error(),
+			})
+			continue
+		}
+		decisions = append(decisions, decision)
+		originalIndexes = append(originalIndexes, index)
+	}
+
+	validated, validationRejected := validateDecisionBatchSafely(decisions, accountEquity, riskConfig)
+	for index := range validationRejected {
+		localIndex := validationRejected[index].Index
+		if localIndex >= 0 && localIndex < len(originalIndexes) {
+			validationRejected[index].Index = originalIndexes[localIndex]
+		}
+	}
+	rejected = append(rejected, validationRejected...)
+
+	// A per-item parse failure degrades the batch just like a validation
+	// failure. Keep only independently validated closes; never execute an open
+	// or update action beside a rejected sibling.
+	if len(rejected) > 0 && len(validationRejected) == 0 {
+		safeCloses := make([]Decision, 0, len(validated))
+		for index, decision := range validated {
+			if isRiskReducingClose(decision) {
+				safeCloses = append(safeCloses, decision)
+				continue
+			}
+			rejected = append(rejected, RejectedDecision{
+				Index:    originalIndexes[index],
+				Decision: decision,
+				Reason:   "batch degraded after another action failed parsing; only validated close actions are retained",
+			})
+		}
+		validated = safeCloses
+	}
+
+	if len(rejected) > 0 {
+		decision := &FullDecision{
+			CoTTrace:          cotTrace,
+			Decisions:         validated,
+			RejectedDecisions: rejected,
+			Degraded:          true,
+		}
+		if len(validated) == 0 {
+			return decision, fmt.Errorf("decision validation failed: %s", rejected[0].Reason)
+		}
+		return decision, nil
 	}
 
 	return &FullDecision{
 		CoTTrace:  cotTrace,
-		Decisions: decisions,
+		Decisions: validated,
 	}, nil
+}
+
+func isRiskReducingClose(decision Decision) bool {
+	return decision.Action == "close_long" || decision.Action == "close_short"
+}
+
+func validateDecisionBatchSafely(decisions []Decision, accountEquity float64, riskConfig store.RiskControlConfig) ([]Decision, []RejectedDecision) {
+	validated := make([]Decision, 0, len(decisions))
+	rejected := make([]RejectedDecision, 0)
+	validClose := make([]Decision, 0, len(decisions))
+
+	for index := range decisions {
+		decision := decisions[index]
+		if err := validateDecisionWithRisk(&decision, accountEquity, riskConfig); err != nil {
+			rejected = append(rejected, RejectedDecision{Index: index, Decision: decisions[index], Reason: err.Error()})
+			continue
+		}
+		validated = append(validated, decision)
+		if isRiskReducingClose(decision) {
+			validClose = append(validClose, decision)
+		}
+	}
+	if len(rejected) == 0 {
+		return validated, nil
+	}
+
+	// A partially invalid batch is degraded. Only independently validated close
+	// actions may continue; opening and update_position actions are dropped so a
+	// malformed sibling cannot bypass portfolio-level risk intent.
+	for index, decision := range decisions {
+		if isRiskReducingClose(decision) {
+			continue
+		}
+		alreadyRejected := false
+		for _, item := range rejected {
+			if item.Index == index {
+				alreadyRejected = true
+				break
+			}
+		}
+		if !alreadyRejected {
+			rejected = append(rejected, RejectedDecision{
+				Index:    index,
+				Decision: decision,
+				Reason:   "batch degraded after another action failed validation; only validated close actions are retained",
+			})
+		}
+	}
+	return validClose, rejected
 }
 
 func extractCoTTrace(response string) string {
@@ -446,6 +558,22 @@ func extractCoTTrace(response string) string {
 }
 
 func extractDecisions(response string) ([]Decision, error) {
+	rawDecisions, err := extractRawDecisionItems(response)
+	if err != nil {
+		return nil, err
+	}
+	decisions := make([]Decision, 0, len(rawDecisions))
+	for _, rawDecision := range rawDecisions {
+		var decision Decision
+		if err := json.Unmarshal(rawDecision, &decision); err != nil {
+			return nil, fmt.Errorf("JSON decision parsing failed: %w\nJSON item: %s", err, rawDecision)
+		}
+		decisions = append(decisions, decision)
+	}
+	return decisions, nil
+}
+
+func extractRawDecisionItems(response string) ([]json.RawMessage, error) {
 	s := removeInvisibleRunes(response)
 	s = strings.TrimSpace(s)
 	s = fixEnglishNumberWords(s)
@@ -463,53 +591,42 @@ func extractDecisions(response string) ([]Decision, error) {
 	jsonPart = fixEnglishNumberWords(jsonPart)
 	jsonPart = fixMissingQuotes(jsonPart)
 
+	jsonContent := ""
 	if m := reJSONFence.FindStringSubmatch(jsonPart); m != nil && len(m) > 1 {
-		jsonContent := strings.TrimSpace(m[1])
-		jsonContent = compactArrayOpen(jsonContent)
-		jsonContent = fixEnglishNumberWords(jsonContent)
-		jsonContent = fixMissingQuotes(jsonContent)
-		if err := validateJSONFormat(jsonContent); err != nil {
-			return nil, fmt.Errorf("JSON format validation failed: %w\nJSON content: %s\nFull response:\n%s", err, jsonContent, response)
-		}
-		var decisions []Decision
-		if err := json.Unmarshal([]byte(jsonContent), &decisions); err != nil {
-			return nil, fmt.Errorf("JSON parsing failed: %w\nJSON content: %s", err, jsonContent)
-		}
-		return decisions, nil
+		jsonContent = strings.TrimSpace(m[1])
+	} else {
+		jsonContent = strings.TrimSpace(reJSONArray.FindString(jsonPart))
 	}
 
-	jsonContent := strings.TrimSpace(reJSONArray.FindString(jsonPart))
 	if jsonContent == "" {
 		logger.Infof("⚠️  [SafeFallback] AI didn't output JSON decision, entering safe wait mode")
-
 		cotSummary := jsonPart
 		if len(cotSummary) > 240 {
 			cotSummary = cotSummary[:240] + "..."
 		}
-
-		fallbackDecision := Decision{
+		fallbackJSON, err := json.Marshal([]Decision{{
 			Symbol:    "ALL",
 			Action:    "wait",
 			Reasoning: fmt.Sprintf("Model didn't output structured JSON decision, entering safe wait; summary: %s", cotSummary),
+		}})
+		if err != nil {
+			return nil, fmt.Errorf("failed to build safe fallback decision: %w", err)
 		}
-
-		return []Decision{fallbackDecision}, nil
+		jsonContent = string(fallbackJSON)
 	}
 
 	jsonContent = compactArrayOpen(jsonContent)
 	jsonContent = fixEnglishNumberWords(jsonContent)
 	jsonContent = fixMissingQuotes(jsonContent)
-
 	if err := validateJSONFormat(jsonContent); err != nil {
 		return nil, fmt.Errorf("JSON format validation failed: %w\nJSON content: %s\nFull response:\n%s", err, jsonContent, response)
 	}
 
-	var decisions []Decision
-	if err := json.Unmarshal([]byte(jsonContent), &decisions); err != nil {
+	var rawDecisions []json.RawMessage
+	if err := json.Unmarshal([]byte(jsonContent), &rawDecisions); err != nil {
 		return nil, fmt.Errorf("JSON parsing failed: %w\nJSON content: %s", err, jsonContent)
 	}
-
-	return decisions, nil
+	return rawDecisions, nil
 }
 
 var englishNumberWords = map[string]int{

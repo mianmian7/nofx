@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"nofx/market"
 	"nofx/store"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -353,13 +354,16 @@ func writeHardConstraints(sb *strings.Builder, accountEquity, availableBalance f
 	if riskControl.PaperMaxPortfolioRiskRatio > 0 {
 		sb.WriteString(fmt.Sprintf("- Paper portfolio stop-risk cap: %.2f%% of current account equity, including every open position and unfilled entry order. Legacy positions above this cap block new entries; do not force-close or loosen their protections merely to satisfy the new entry policy.\n", riskControl.PaperMaxPortfolioRiskRatio*100))
 	}
-	if zh {
-		sb.WriteString(fmt.Sprintf("- Min Position Size: ≥%.0f USDT\n\n", riskControl.MinPositionSize))
-		sb.WriteString("## AI GUIDED (recommended):\n")
+	if singleSymbol {
+		sb.WriteString(fmt.Sprintf("- Minimum opening notional (%s): ≥%s USDT\n", primarySymbol, strconv.FormatFloat(effectiveMinPositionSize(primarySymbol, riskControl), 'f', -1, 64)))
 	} else {
-		sb.WriteString(fmt.Sprintf("- Min Position Size: ≥%.0f USDT\n\n", riskControl.MinPositionSize))
-		sb.WriteString("## AI GUIDED (recommended):\n")
+		sb.WriteString(fmt.Sprintf("- Minimum opening notional (Altcoin/Stock): ≥%s USDT\n", strconv.FormatFloat(effectiveMinPositionSize("SOLUSDT", riskControl), 'f', -1, 64)))
+		sb.WriteString(fmt.Sprintf("- Minimum opening notional (BTC/ETH): ≥%s USDT\n", strconv.FormatFloat(effectiveMinPositionSize("BTCUSDT", riskControl), 'f', -1, 64)))
 	}
+	if riskControl.IsMarginBased() && availableBalance*float64(riskControl.MaxLeverage) < effectiveMinPositionSize(primarySymbol, riskControl) {
+		sb.WriteString("- If the current available-margin ceiling cannot reach the applicable minimum opening notional, output wait; never increase the order to force feasibility.\n")
+	}
+	sb.WriteString("\n## AI GUIDED (recommended):\n")
 
 	if singleSymbol {
 		if zh {

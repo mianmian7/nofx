@@ -7,8 +7,8 @@ import (
 	"testing"
 )
 
-// Opt-in bounded integration check for 生产环境. It constructs only credential-free
-// public market-data providers and ephemeral Paper brokers: no Store, no trader
+// Opt-in bounded integration check using public network data only. It constructs
+// credential-free providers and ephemeral Paper brokers: no Store, no trader
 // Run(), no AI call, no live exchange writer, and no persistent account mutations.
 func TestPaperAccountRiskPublicMarketIntegration(t *testing.T) {
 	if os.Getenv("NOFX_PAPER_POLICY_NETWORK") != "1" {

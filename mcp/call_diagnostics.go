@@ -14,6 +14,7 @@ import (
 // diagnostics and telemetry.
 type CallMetadata struct {
 	CallID     string `json:"-"`
+	CycleID    string `json:"-"`
 	TraderID   string `json:"-"`
 	StrategyID string `json:"-"`
 	Provider   string `json:"-"`

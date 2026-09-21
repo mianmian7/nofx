@@ -36,8 +36,13 @@ type Config struct {
 	RetryableErrors []string
 
 	// Timeout configuration
-	Timeout           time.Duration
-	StreamIdleTimeout time.Duration
+	Timeout            time.Duration
+	StreamIdleTimeout  time.Duration
+	AdmissionTimeout   time.Duration
+	CompletionReserve  time.Duration
+	MinAttemptBudget   time.Duration
+	RateLimitCooldown  time.Duration
+	UsageLimitCooldown time.Duration
 
 	// Dependency injection
 	Logger     Logger
@@ -48,14 +53,19 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		// Default values
-		MaxTokens:         getEnvInt("AI_MAX_TOKENS", 2000),
-		Temperature:       MCPClientTemperature,
-		MaxRetries:        MaxRetryTimes,
-		RetryWaitBase:     2 * time.Second,
-		Timeout:           DefaultTimeout,
-		StreamIdleTimeout: time.Duration(getEnvInt("AI_STREAM_IDLE_TIMEOUT_SECONDS", 60)) * time.Second,
-		RetryableErrors:   retryableErrors,
-		Stream:            getEnvBool("AI_STREAM_ENABLED", true),
+		MaxTokens:          getEnvInt("AI_MAX_TOKENS", 2000),
+		Temperature:        MCPClientTemperature,
+		MaxRetries:         MaxRetryTimes,
+		RetryWaitBase:      2 * time.Second,
+		Timeout:            DefaultTimeout,
+		StreamIdleTimeout:  time.Duration(getEnvInt("AI_STREAM_IDLE_TIMEOUT_SECONDS", 60)) * time.Second,
+		AdmissionTimeout:   time.Duration(getEnvInt("AI_REQUEST_ADMISSION_TIMEOUT_SECONDS", 60)) * time.Second,
+		CompletionReserve:  time.Duration(getEnvInt("AI_CYCLE_COMPLETION_RESERVE_SECONDS", 30)) * time.Second,
+		MinAttemptBudget:   time.Duration(getEnvInt("AI_MIN_ATTEMPT_BUDGET_SECONDS", 10)) * time.Second,
+		RateLimitCooldown:  time.Duration(getEnvInt("AI_RATE_LIMIT_COOLDOWN_SECONDS", 30)) * time.Second,
+		UsageLimitCooldown: time.Duration(getEnvInt("AI_USAGE_LIMIT_COOLDOWN_SECONDS", 900)) * time.Second,
+		RetryableErrors:    retryableErrors,
+		Stream:             getEnvBool("AI_STREAM_ENABLED", true),
 
 		// Default dependencies (use global logger)
 		Logger:     logger.NewMCPLogger(),

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/google/uuid"
 	"nofx/kernel"
 	"nofx/logger"
 	"nofx/market"
@@ -210,11 +211,12 @@ type AutoTrader struct {
 	config                 AutoTraderConfig
 	trader                 Trader // Use Trader interface (supports multiple platforms)
 	mcpClient              mcp.AIClient
-	cycleRunner            func() error                // Optional injected cycle runner for deterministic lifecycle tests
-	cycleRunnerWithContext func(context.Context) error // Optional context-aware runner for lifecycle tests
-	store                  *store.Store                // Data storage (decision records, etc.)
-	strategyEngine         *kernel.StrategyEngine      // Strategy engine (uses strategy configuration)
-	cycleNumber            int                         // Current cycle number
+	cycleRunner            func() error                                   // Optional injected cycle runner for deterministic lifecycle tests
+	cycleRunnerWithContext func(context.Context) error                    // Optional context-aware runner for lifecycle tests
+	tradingContextBuilder  func(context.Context) (*kernel.Context, error) // Optional private context seam for full-cycle tests
+	store                  *store.Store                                   // Data storage (decision records, etc.)
+	strategyEngine         *kernel.StrategyEngine                         // Strategy engine (uses strategy configuration)
+	cycleNumber            int                                            // Current cycle number
 	initialBalance         float64
 	dailyPnL               float64
 	customPrompt           string // Custom trading strategy prompt
@@ -245,6 +247,7 @@ type AutoTrader struct {
 	runGeneration          atomic.Uint64      // Changes whenever a pause invalidates pending Run calls
 	stopInProgress         atomic.Bool        // Excludes Run calls that overlap Stop's signal commit
 	runAttemptHook         func()             // Optional lifecycle-test hook invoked before admission
+	cycleInFlight          atomic.Bool        // Remains true until the cycle worker actually exits
 	cycleCancel            context.CancelFunc // Cancels the active decision cycle
 	cycleStateMu           sync.RWMutex       // Guards cycle phase/timestamps
 	cyclePhase             string
@@ -780,7 +783,11 @@ func (at *AutoTrader) run(startupDelay time.Duration) error {
 				}
 			} else {
 				if err := at.runAutomaticCycle(); err != nil {
-					at.logErrorf("❌ Execution failed: %v", err)
+					if errors.Is(err, ErrDecisionCycleInFlight) {
+						at.logWarnf("⏳ Previous decision cycle is still draining; skipping this scan")
+					} else {
+						at.logErrorf("❌ Execution failed: %v", err)
+					}
 				}
 			}
 		case <-runStopCh:
@@ -792,9 +799,43 @@ func (at *AutoTrader) run(startupDelay time.Duration) error {
 	return nil
 }
 
+type cycleFinalizationContextKey struct{}
+
+type cycleFinalizationState struct {
+	cycleID string
+	claimed atomic.Bool
+	callID  atomic.Pointer[string] // Published only when the logical AI call starts.
+}
+
+func cycleFinalizationFromContext(ctx context.Context) *cycleFinalizationState {
+	if ctx == nil {
+		return nil
+	}
+	state, _ := ctx.Value(cycleFinalizationContextKey{}).(*cycleFinalizationState)
+	return state
+}
+
+func cycleIDFromContext(ctx context.Context) string {
+	if state := cycleFinalizationFromContext(ctx); state != nil {
+		return state.cycleID
+	}
+	return ""
+}
+
+func claimCycleFinalization(ctx context.Context) bool {
+	state := cycleFinalizationFromContext(ctx)
+	return state == nil || state.claimed.CompareAndSwap(false, true)
+}
+
 func (at *AutoTrader) runAutomaticCycle() error {
+	if !at.cycleInFlight.CompareAndSwap(false, true) {
+		return ErrDecisionCycleInFlight
+	}
+
 	timeout := at.decisionCycleTimeout()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	baseCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	state := &cycleFinalizationState{cycleID: uuid.NewString()}
+	ctx := context.WithValue(baseCtx, cycleFinalizationContextKey{}, state)
 	at.runLifecycleMu.Lock()
 	at.cycleCancel = cancel
 	at.runLifecycleMu.Unlock()
@@ -807,6 +848,7 @@ func (at *AutoTrader) runAutomaticCycle() error {
 
 	done := make(chan error, 1)
 	go func() {
+		defer at.cycleInFlight.Store(false)
 		if at.cycleRunnerWithContext != nil {
 			done <- at.cycleRunnerWithContext(ctx)
 			return
@@ -818,6 +860,12 @@ func (at *AutoTrader) runAutomaticCycle() error {
 		done <- at.runCycleContext(ctx)
 	}()
 
+	finalizeTimeout := func(completionErr error) error {
+		at.finalizeCycleTimeout(ctx, timeout, nil, completionErr)
+		at.recordCycleCompletion(completionErr)
+		return fmt.Errorf("%w after %s", ErrDecisionCycleTimeout, timeout)
+	}
+
 	select {
 	case err := <-done:
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
@@ -825,10 +873,7 @@ func (at *AutoTrader) runAutomaticCycle() error {
 			if completionErr == nil {
 				completionErr = err
 			}
-			at.saveCycleTimeoutRecord(timeout)
-			at.recordCycleCompletion(completionErr)
-			at.handleCycleTimeoutFailure(timeout)
-			return fmt.Errorf("%w after %s", ErrDecisionCycleTimeout, timeout)
+			return finalizeTimeout(completionErr)
 		}
 		at.recordCycleCompletion(err)
 		return err
@@ -839,10 +884,15 @@ func (at *AutoTrader) runAutomaticCycle() error {
 			// context: do not let the loop exit while that cycle is still running.
 			return <-done
 		}
-		at.saveCycleTimeoutRecord(timeout)
-		at.recordCycleCompletion(ctx.Err())
-		at.handleCycleTimeoutFailure(timeout)
-		return fmt.Errorf("%w after %s", ErrDecisionCycleTimeout, timeout)
+
+		// Context-aware workers normally return immediately after cancellation.
+		// Give them a short chance to persist their richer correlated record;
+		// a legacy worker that ignores context must not block the outer loop.
+		select {
+		case <-done:
+		case <-time.After(100 * time.Millisecond):
+		}
+		return finalizeTimeout(ctx.Err())
 	}
 }
 
@@ -860,6 +910,10 @@ func (at *AutoTrader) handleCycleTimeoutFailure(timeout time.Duration) {
 // hard deadline. The runtime records the failure and retries on the next scan
 // interval while background risk monitoring remains active.
 var ErrDecisionCycleTimeout = errors.New("decision cycle timed out")
+
+// ErrDecisionCycleInFlight means a previous worker has exceeded its deadline
+// but has not returned yet. New cycles must not overlap it.
+var ErrDecisionCycleInFlight = errors.New("previous decision cycle is still in flight")
 
 const defaultDecisionCycleTimeout = 10 * time.Minute
 

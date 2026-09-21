@@ -31,6 +31,17 @@ func validateDecision(d *Decision, accountEquity float64, maxLeverage int, btcEt
 	return validateDecisionWithRisk(d, accountEquity, risk)
 }
 
+func effectiveMinPositionSize(symbol string, risk store.RiskControlConfig) float64 {
+	minimum := risk.MinPositionSize
+	if minimum <= 0 {
+		minimum = 12
+	}
+	if symbol == "BTCUSDT" || symbol == "ETHUSDT" {
+		return math.Max(60, minimum)
+	}
+	return minimum
+}
+
 func validateDecisionWithRisk(d *Decision, accountEquity float64, risk store.RiskControlConfig) error {
 	validActions := map[string]bool{
 		"open_long":       true,
@@ -87,20 +98,12 @@ func validateDecisionWithRisk(d *Decision, accountEquity float64, risk store.Ris
 			return fmt.Errorf("position size must be greater than 0: %.2f", d.PositionSizeUSD)
 		}
 
-		minPositionSizeGeneral := risk.MinPositionSize
-		if minPositionSizeGeneral <= 0 {
-			minPositionSizeGeneral = 12
-		}
-		minPositionSizeBTCETH := math.Max(60, minPositionSizeGeneral)
-
-		if d.Symbol == "BTCUSDT" || d.Symbol == "ETHUSDT" {
-			if d.PositionSizeUSD < minPositionSizeBTCETH {
-				return fmt.Errorf("%s opening amount too small (%.2f USDT), must be ≥%.2f USDT", d.Symbol, d.PositionSizeUSD, minPositionSizeBTCETH)
+		minPositionSize := effectiveMinPositionSize(d.Symbol, risk)
+		if d.PositionSizeUSD < minPositionSize {
+			if d.Symbol == "BTCUSDT" || d.Symbol == "ETHUSDT" {
+				return fmt.Errorf("%s opening amount too small (%.2f USDT), must be ≥%.2f USDT", d.Symbol, d.PositionSizeUSD, minPositionSize)
 			}
-		} else {
-			if d.PositionSizeUSD < minPositionSizeGeneral {
-				return fmt.Errorf("opening amount too small (%.2f USDT), must be ≥%.2f USDT", d.PositionSizeUSD, minPositionSizeGeneral)
-			}
+			return fmt.Errorf("opening amount too small (%.2f USDT), must be ≥%.2f USDT", d.PositionSizeUSD, minPositionSize)
 		}
 
 		// Margin-based strategies size from the account's live available margin

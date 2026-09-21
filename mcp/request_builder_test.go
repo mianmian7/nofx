@@ -405,8 +405,8 @@ func TestClient_CallWithRequest_RetrySleepStopsWhenContextCancelled(t *testing.T
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 		t.Fatalf("retry sleep did not respect context cancellation, elapsed=%v", elapsed)
 	}
-	if got := len(mockHTTP.GetRequests()); got != 1 {
-		t.Fatalf("expected no retry after context cancellation, got %d requests", got)
+	if got := len(mockHTTP.GetRequests()); got != 0 {
+		t.Fatalf("canceled parent context must not send an HTTP request, got %d", got)
 	}
 }
 
