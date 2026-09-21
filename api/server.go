@@ -681,26 +681,17 @@ func (s *Server) getTraderFromQuery(c *gin.Context) (*manager.TraderManager, str
 	}
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		if traderID == "" {
-			return nil, "", fmt.Errorf("No available traders")
+			return nil, "", fmt.Errorf("no available traders: %w", err)
 		}
-		return nil, "", fmt.Errorf("trader not found for this account")
+		return nil, "", fmt.Errorf("trader not found for this account: %w", err)
 	}
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to load traders for this account: %w", err)
 	}
-	resolvedTraderID := ownedTrader.ID
-
-	// The dashboard polls several endpoints in parallel. Only restore the
-	// caller's in-memory runtimes when the requested trader is absent; repeated
-	// reads of an already-loaded trader must not reload every config or attempt
-	// duplicate Run calls while holding the manager lock.
-	if _, getErr := s.traderManager.GetTrader(resolvedTraderID); getErr != nil {
-		if loadErr := s.loadUserTradersFromStore(userID); loadErr != nil {
-			logger.Infof("⚠️ Failed to load traders for user %s: %v", userID, loadErr)
-		}
-	}
-
-	return s.traderManager, resolvedTraderID, nil
+	// Query resolution is read-only. Restoring a missing runtime can start
+	// trading and mutate persisted state, so leave that to explicit lifecycle
+	// operations instead of dashboard polling (status, account, positions, ...).
+	return s.traderManager, ownedTrader.ID, nil
 }
 
 // authMiddleware JWT authentication middleware

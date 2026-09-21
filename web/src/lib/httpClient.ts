@@ -139,7 +139,7 @@ export class HttpClient {
             : 'Unable to reach the server',
         })
       }
-      throw new Error(message)
+      throw new ApiError(message)
     }
 
     const status = error.response?.status ?? 0
@@ -184,18 +184,30 @@ export class HttpClient {
           description: 'You do not have permission to access this resource',
         })
       }
-      throw new Error('Permission denied')
+      throw new ApiError(
+        serverMessage || 'Permission denied',
+        errorData?.error_key,
+        errorData?.error_params,
+        status,
+        errorData
+      )
     }
 
     // Handle 404 Not Found - system error
     if (status === 404) {
       if (!isSilent) {
-        toast.error('API Not Found', {
+        toast.error('Resource Not Found', {
           id: `404-${(error.config as any)?.url || 'unknown'}`,
-          description: 'The requested endpoint does not exist (404)',
+          description: serverMessage || 'The requested resource was not found',
         })
       }
-      throw new Error('API not found')
+      throw new ApiError(
+        serverMessage || 'Resource not found',
+        errorData?.error_key,
+        errorData?.error_params,
+        status,
+        errorData
+      )
     }
 
     // Handle 500+ Server Error - system error
@@ -209,7 +221,13 @@ export class HttpClient {
           description: 'Please try again later or contact support',
         })
       }
-      throw new Error('Server error')
+      throw new ApiError(
+        'Server error',
+        undefined,
+        undefined,
+        status,
+        errorData
+      )
     }
 
     // 4xx errors (except 401/403/404) are business logic errors

@@ -142,13 +142,13 @@ func (s *Server) handleGetTraderConfig(c *gin.Context) {
 func (s *Server) handleStatus(c *gin.Context) {
 	_, traderID, err := s.getTraderFromQuery(c)
 	if err != nil {
-		SafeBadRequest(c, "Invalid trader ID")
+		respondTraderStoreError(c, "Load trader", err)
 		return
 	}
 
 	trader, err := s.traderManager.GetTrader(traderID)
 	if err != nil {
-		SafeNotFound(c, "Trader")
+		SafeError(c, http.StatusServiceUnavailable, "Trader runtime is not loaded", nil)
 		return
 	}
 

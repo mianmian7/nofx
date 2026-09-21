@@ -36,6 +36,10 @@ interface TerminalDashboardProps {
   selectedTraderId?: string
   onTraderSelect: (traderId: string) => void
   status?: SystemStatus
+  statusError?: Error
+  statusLoading?: boolean
+  statusRefreshing?: boolean
+  onStatusRefresh?: () => void
   account?: AccountInfo
   positions?: Position[]
   decisions?: DecisionRecord[]
@@ -428,12 +432,13 @@ function fmtHold(entry?: number, exit?: number): string {
   return `${d}d${h % 24}h`
 }
 
-function useTick(ms = 1000) {
-  const [, set] = useState(0)
+function useNow(ms = 1000) {
+  const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
-    const id = setInterval(() => set((n) => n + 1), ms)
+    const id = setInterval(() => setNow(Date.now()), ms)
     return () => clearInterval(id)
   }, [ms])
+  return now
 }
 
 export function TerminalDashboard({
@@ -442,6 +447,10 @@ export function TerminalDashboard({
   selectedTraderId,
   onTraderSelect,
   status: propStatus,
+  statusError,
+  statusLoading = false,
+  statusRefreshing = false,
+  onStatusRefresh,
   account: propAccount,
   positions: propPositions,
   decisions: propDecisions,
@@ -451,8 +460,8 @@ export function TerminalDashboard({
     t(`terminalDashboard.${key}`, language, params)
   const traderId = selectedTrader?.trader_id || selectedTraderId
   const [closing, setClosing] = useState<string | null>(null)
-  useTick(1000)
-  const clock = new Date().toLocaleTimeString('en-GB', { hour12: false })
+  const now = useNow(1000)
+  const clock = new Date(now).toLocaleTimeString('en-GB', { hour12: false })
 
   async function closePositionRow(symbol: string, side: 'LONG' | 'SHORT') {
     if (!traderId || closing) return
@@ -546,6 +555,22 @@ export function TerminalDashboard({
   const pnlPct = account?.total_pnl_pct ?? 0
   const up = pnl >= 0
   const running = status?.is_running
+  const statusKnown = typeof running === 'boolean'
+  const confirmedStatusLabel = running ? tt('running') : tt('stopped')
+  const statusLabel = statusError
+    ? statusKnown
+      ? tt('statusStale', { state: confirmedStatusLabel })
+      : tt('statusFailed')
+    : statusKnown
+      ? `${running ? '●' : '○'} ${confirmedStatusLabel}`
+      : statusLoading
+        ? tt('statusLoading')
+        : tt('statusUnavailable')
+  const statusColor = statusError
+    ? 'var(--tm-down)'
+    : running === true
+      ? 'var(--tm-up)'
+      : 'var(--tm-muted)'
 
   // Direction comes only from the AI's recorded decision, never external boards.
   const dirFor = useMemo(() => {
@@ -571,7 +596,7 @@ export function TerminalDashboard({
   }, [latest?.timestamp, scanMin])
   let countdown = '—'
   if (nextCycleMs) {
-    const ms = nextCycleMs - Date.now()
+    const ms = nextCycleMs - now
     if (ms <= 0) countdown = 'due now'
     else {
       const s = Math.floor(ms / 1000)
@@ -633,11 +658,7 @@ export function TerminalDashboard({
               onTraderSelect={onTraderSelect}
               ariaLabel={traderSelectorLabel}
             />
-            <span
-              style={{ color: running ? 'var(--tm-up)' : 'var(--tm-muted)' }}
-            >
-              {running ? `● ${tt('running')}` : `○ ${tt('stopped')}`}
-            </span>
+            <span style={{ color: statusColor }}>{statusLabel}</span>
             <span className="tm-sc" style={{ color: 'var(--tm-muted)' }}>
               {tt('cycle')}
             </span>
@@ -668,9 +689,9 @@ export function TerminalDashboard({
         />
         <span
           className="terminal-context-status"
-          style={{ color: running ? 'var(--tm-up)' : 'var(--tm-muted)' }}
+          style={{ color: statusColor }}
         >
-          {running ? `● ${tt('running')}` : `○ ${tt('stopped')}`}
+          {statusLabel}
         </span>
         <span className="terminal-context-cycle tm-sc">
           {tt('cycle')}{' '}
@@ -682,6 +703,48 @@ export function TerminalDashboard({
         className="tm-box terminal-dashboard-shell"
         style={{ maxWidth: 1280, margin: '0 auto', border: 'none' }}
       >
+        {(statusError || !statusKnown) && (
+          <div
+            className="tm-mono"
+            role={statusError ? 'alert' : 'status'}
+            style={{
+              display: 'flex',
+              gap: 10,
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              padding: '8px 14px',
+              borderBottom: '1px solid var(--tm-hair)',
+              color: statusColor,
+              fontSize: 11,
+            }}
+          >
+            <span>{statusLabel}</span>
+            {statusError && (
+              <span>
+                {status ? `${tt('statusStaleHint')} ` : ''}
+                {statusError.message}
+              </span>
+            )}
+            {onStatusRefresh && (
+              <button
+                type="button"
+                onClick={onStatusRefresh}
+                disabled={!traderId || statusRefreshing}
+                style={{
+                  marginLeft: 'auto',
+                  padding: '4px 8px',
+                  border: '1px solid var(--tm-hair)',
+                  color: 'var(--tm-ink)',
+                  opacity: !traderId || statusRefreshing ? 0.5 : 1,
+                }}
+              >
+                {statusRefreshing
+                  ? tt('statusRefreshing')
+                  : tt('statusRefresh')}
+              </button>
+            )}
+          </div>
+        )}
         {status?.execution_mode === 'paper' && status.paper && (
           <>
             <PaperTradingBanner
@@ -734,7 +797,8 @@ export function TerminalDashboard({
         )}
         {/* first-run reassurance — a fresh autopilot looks idle for its first
             minute (the AI is reading the market); tell newcomers what to expect */}
-        {status?.is_running &&
+        {!statusError &&
+          status?.is_running &&
           (status.call_count ?? 0) <= 1 &&
           !status.safe_mode && (
             <div

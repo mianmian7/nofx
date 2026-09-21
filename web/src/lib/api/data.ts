@@ -10,6 +10,7 @@ import type {
   PositionHistoryResponse,
 } from '../../types'
 import { API_BASE, httpClient } from './helpers'
+import { ApiError } from '../httpClient'
 
 export interface Kline {
   openTime: number
@@ -61,12 +62,27 @@ export const dataApi = {
     return result.data || { exchange, symbols: [], count: 0 }
   },
 
-  async getStatus(traderId?: string, silent?: boolean): Promise<SystemStatus> {
+  async getStatus(
+    traderId?: string,
+    silent?: boolean,
+    signal?: AbortSignal
+  ): Promise<SystemStatus> {
     const url = traderId
-      ? `${API_BASE}/status?trader_id=${traderId}`
+      ? `${API_BASE}/status?trader_id=${encodeURIComponent(traderId)}`
       : `${API_BASE}/status`
-    const result = await httpClient.request<SystemStatus>(url, { silent })
-    if (!result.success) throw new Error('Failed to fetch system status')
+    const result = await httpClient.request<SystemStatus>(url, {
+      silent,
+      signal,
+    })
+    if (!result.success) {
+      throw new ApiError(
+        result.message || 'Failed to fetch system status',
+        result.errorKey,
+        result.errorParams,
+        result.statusCode,
+        result.errorData
+      )
+    }
     return result.data!
   },
 

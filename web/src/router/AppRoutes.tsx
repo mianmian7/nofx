@@ -30,6 +30,7 @@ import { useLanguage } from '../contexts/LanguageContext'
 import { useSystemConfig } from '../hooks/useSystemConfig'
 import { t } from '../i18n/translations'
 import { api } from '../lib/api'
+import { ApiError } from '../lib/httpClient'
 import type {
   AccountInfo,
   DecisionRecord,
@@ -216,10 +217,17 @@ function DashboardRoute() {
     setDecisionsPollOff(false)
   }, [selectedTraderId])
 
-  const { data: traders } = useMyTraders({ refreshInterval: 10000, silent: true })
+  const { data: traders } = useMyTraders({
+    refreshInterval: 10000,
+    silent: true,
+  })
 
   useEffect(() => {
-    if (!traders || traders.length === 0) {
+    if (!traders) {
+      return
+    }
+    if (traders.length === 0) {
+      setSelectedTraderId(undefined)
       return
     }
 
@@ -232,18 +240,35 @@ function DashboardRoute() {
       return
     }
 
-    if (!selectedTraderId) {
+    if (!traders.some((trader) => trader.trader_id === selectedTraderId)) {
       setSelectedTraderId(traders[0].trader_id)
     }
   }, [selectedTraderId, selectedTraderSlug, traders])
 
-  const { data: status } = useSWR<SystemStatus>(
+  const {
+    data: status,
+    error: statusError,
+    isLoading: statusLoading,
+    isValidating: statusRefreshing,
+    mutate: refreshStatus,
+  } = useSWR<SystemStatus, Error>(
     selectedTraderId ? `status-${selectedTraderId}` : null,
     () => api.getStatus(selectedTraderId, true),
     {
       refreshInterval: 15000,
       revalidateOnFocus: false,
+      // Failed requests require a bounded retry or an explicit user refresh.
+      revalidateOnReconnect: false,
       dedupingInterval: 10000,
+      errorRetryCount: 2,
+      errorRetryInterval: 1000,
+      shouldRetryOnError: (error) => {
+        if (error.name === 'AbortError' || error.name === 'CanceledError') {
+          return false
+        }
+        const code = error instanceof ApiError ? error.statusCode : undefined
+        return code === undefined || code >= 500 || code === 408 || code === 429
+      },
     }
   )
 
@@ -330,6 +355,13 @@ function DashboardRoute() {
       <TerminalDashboard
         selectedTrader={selectedTrader}
         status={status}
+        statusError={statusError}
+        statusLoading={statusLoading}
+        statusRefreshing={statusRefreshing}
+        onStatusRefresh={() => {
+          // SWR retains the failure for the status warning shown below.
+          void refreshStatus().catch(() => {})
+        }}
         account={account}
         positions={positions}
         decisions={decisions}

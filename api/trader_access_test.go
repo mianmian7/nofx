@@ -130,8 +130,8 @@ func TestGetTraderFromQueryReadsOneOwnedRow(t *testing.T) {
 			t.Fatalf("expected one query reading one trader; queries=%d rows=%d", queryCount, rowsRead)
 		}
 	}
-	if reloads != 2 {
-		t.Fatalf("missing runtimes should still be restored: %d", reloads)
+	if reloads != 0 {
+		t.Fatalf("query resolution must not restore missing runtimes: %d", reloads)
 	}
 	// Even an account with no traders must be rejected before consulting the
 	// global manager. It must not fall back to a different owner's runtime.
