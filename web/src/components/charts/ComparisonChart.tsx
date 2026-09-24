@@ -77,16 +77,28 @@ export function rebaseVisibleComparisonData(
   })
 }
 
+export function downsampleData<T>(data: T[], maxPoints: number): T[] {
+  if (!data || data.length <= maxPoints || maxPoints <= 0) return data
+  if (maxPoints === 1) return [data[data.length - 1]]
+
+  const result: T[] = []
+  const step = (data.length - 1) / (maxPoints - 1)
+
+  for (let i = 0; i < maxPoints; i++) {
+    const idx = Math.min(Math.round(i * step), data.length - 1)
+    result.push(data[idx])
+  }
+
+  return result
+}
+
 export function buildComparisonDisplayData(
   combinedData: ComparisonDataPoint[],
   traders: CompetitionTraderData[],
   selectedHours: number,
   maxDisplayPoints = 500
 ): ComparisonDataPoint[] {
-  const visibleData =
-    combinedData.length > maxDisplayPoints
-      ? combinedData.slice(-maxDisplayPoints)
-      : combinedData
+  const visibleData = downsampleData(combinedData, maxDisplayPoints)
 
   return rebaseVisibleComparisonData(visibleData, traders, selectedHours)
 }

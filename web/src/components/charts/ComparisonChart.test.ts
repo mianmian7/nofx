@@ -3,6 +3,7 @@ import type { CompetitionTraderData } from '../../types'
 import {
   buildComparisonDisplayData,
   calculateComparisonTicks,
+  downsampleData,
   formatComparisonTick,
   mapEquityHistoriesByTraderId,
   rebaseVisibleComparisonData,
@@ -90,23 +91,48 @@ describe('rebaseVisibleComparisonData', () => {
   })
 })
 
+describe('downsampleData', () => {
+  it('returns original data if length is within maxPoints limit', () => {
+    const data = [1, 2, 3]
+    expect(downsampleData(data, 5)).toEqual([1, 2, 3])
+  })
+
+  it('samples evenly preserving both the very first and very last points', () => {
+    const data = [10, 20, 30, 40, 50]
+    const sampled = downsampleData(data, 3)
+    expect(sampled).toEqual([10, 30, 50])
+  })
+
+  it('downsamples large time series without discarding earlier historical range', () => {
+    const timestamps = Array.from({ length: 1000 }, (_, i) => ({
+      ts: i,
+    }))
+    const sampled = downsampleData(timestamps, 100)
+    expect(sampled).toHaveLength(100)
+    expect(sampled[0].ts).toBe(0)
+    expect(sampled[sampled.length - 1].ts).toBe(999)
+  })
+})
+
 describe('buildComparisonDisplayData', () => {
-  it('uses the first point after the visible-point limit as the short-period baseline', () => {
+  it('preserves the full time window from the start of the period and rebases from the period start', () => {
     const alpha = trader('alpha')
+    // Combined data over a multi-day period: start is 10, middle is 12, end is 15
     const combinedData = [10, 12, 15].map((pnl) => ({ alpha_pnl_pct: pnl }))
 
+    // When downsampling to 2 points, first (10) and last (15) are kept; rebased: 10-10=0, 15-10=5
     expect(buildComparisonDisplayData(combinedData, [alpha], 24, 2)).toEqual([
       { alpha_pnl_pct: 0 },
-      { alpha_pnl_pct: 3 },
+      { alpha_pnl_pct: 5 },
     ])
   })
 
-  it('keeps the limited All view on its lifetime baseline', () => {
+  it('keeps the downsampled All view on its lifetime baseline', () => {
     const alpha = trader('alpha')
     const combinedData = [10, 12, 15].map((pnl) => ({ alpha_pnl_pct: pnl }))
 
     expect(buildComparisonDisplayData(combinedData, [alpha], 0, 2)).toEqual([
-      { alpha_pnl_pct: 12 },
+      { alpha_pnl_pct: 10 },
       { alpha_pnl_pct: 15 },
     ])
   })
