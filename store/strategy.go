@@ -1396,6 +1396,7 @@ const (
 	contextLimitGrok     = 131_072   // 128K
 	contextLimitKimi     = 131_072   // 128K
 	contextLimitMinimax  = 1_000_000 // 1M
+	contextLimitJev      = 32_000    // 32K
 )
 
 // ModelContextLimits maps provider names to their context window sizes (in tokens)
@@ -1408,6 +1409,7 @@ var ModelContextLimits = map[string]int{
 	"grok":     contextLimitGrok,
 	"kimi":     contextLimitKimi,
 	"minimax":  contextLimitMinimax,
+	"jev":      contextLimitJev,
 }
 
 // GetContextLimit returns the context limit for a given provider

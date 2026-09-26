@@ -201,3 +201,17 @@ func WithMiniMaxConfig(apiKey string) ClientOption {
 		c.Model = DefaultMiniMaxModel
 	}
 }
+
+// WithJevConfig sets Jev configuration
+//
+// Usage example:
+//
+//	client := mcp.NewClient(mcp.WithJevConfig("sk-xxx"))
+func WithJevConfig(apiKey string) ClientOption {
+	return func(c *Config) {
+		c.Provider = ProviderJev
+		c.APIKey = apiKey
+		c.BaseURL = DefaultJevBaseURL
+		c.Model = DefaultJevModel
+	}
+}

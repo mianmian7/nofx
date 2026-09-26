@@ -185,6 +185,7 @@ func ResolveAIModelAPIKey(model *AIModel) string {
 		"kimi":     "MOONSHOT_API_KEY",
 		"minimax":  "MINIMAX_API_KEY",
 		"qwen":     "DASHSCOPE_API_KEY",
+		"jev":      "JEV_API_KEY",
 	}
 	envKey := envKeyByProvider[strings.ToLower(strings.TrimSpace(model.Provider))]
 	if envKey == "" {

@@ -12,6 +12,7 @@ const (
 	ProviderGrok     = "grok"
 	ProviderKimi     = "kimi"
 	ProviderMiniMax  = "minimax"
+	ProviderJev      = "jev"
 
 	// Default DeepSeek configuration (used as fallback in NewClient)
 	DefaultDeepSeekBaseURL = "https://api.deepseek.com"
@@ -24,4 +25,8 @@ const (
 	// Default MiniMax configuration (used by WithMiniMaxConfig convenience option)
 	DefaultMiniMaxBaseURL = "https://api.minimax.io/v1"
 	DefaultMiniMaxModel   = "MiniMax-M2.7"
+
+	// Default Jev configuration (used by WithJevConfig convenience option)
+	DefaultJevBaseURL = "https://api.typesafe.ai/v1/systemone"
+	DefaultJevModel   = "jev-latest"
 )

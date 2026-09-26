@@ -15,6 +15,8 @@ export function getModelDisplayName(modelId: string): string {
       return 'Qwen'
     case 'claude':
       return 'Claude'
+    case 'jev':
+      return 'Jev (System 1)'
     default:
       return modelId.toUpperCase()
   }
@@ -67,6 +69,11 @@ export const AI_PROVIDER_CONFIG: Record<string, AIProviderConfig> = {
     defaultModel: 'MiniMax-M2.7',
     apiUrl: 'https://platform.minimax.io',
     apiName: 'MiniMax',
+  },
+  jev: {
+    defaultModel: 'jev-latest',
+    apiUrl: 'https://typesafe.ai/',
+    apiName: 'TypeSafe AI',
   },
 }
 
