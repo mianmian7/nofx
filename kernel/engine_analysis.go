@@ -7,6 +7,7 @@ import (
 	"nofx/logger"
 	"nofx/market"
 	"nofx/mcp"
+	"nofx/mcp/provider"
 	"nofx/store"
 	"regexp"
 	"strings"
@@ -104,6 +105,55 @@ func newLogicalCallID() string {
 	return uuid.NewString()
 }
 
+func resolveDualBrainClients(client mcp.AIClient) (macroClient mcp.AIClient, jevClient *provider.JevClient) {
+	if client == nil {
+		return nil, nil
+	}
+	if jev, ok := client.(*provider.JevClient); ok {
+		return nil, jev
+	}
+	if failover, ok := client.(interface{ CandidateClients() []mcp.AIClient }); ok {
+		candidates := failover.CandidateClients()
+		for _, c := range candidates {
+			if jev, ok := c.(*provider.JevClient); ok && jevClient == nil {
+				jevClient = jev
+			} else if macroClient == nil {
+				if embedder, ok := c.(mcp.ClientEmbedder); ok && embedder.BaseClient() != nil && embedder.BaseClient().Provider != mcp.ProviderJev {
+					macroClient = c
+				}
+			}
+		}
+	}
+	if jevClient == nil {
+		jevClient = resolveJevClient(client)
+	}
+	return macroClient, jevClient
+}
+
+func resolveJevClient(client mcp.AIClient) *provider.JevClient {
+	if client == nil {
+		return nil
+	}
+	if jev, ok := client.(*provider.JevClient); ok {
+		return jev
+	}
+	if failover, ok := client.(interface{ ActiveClient() mcp.AIClient }); ok {
+		if active := failover.ActiveClient(); active != nil {
+			if jev, ok := active.(*provider.JevClient); ok {
+				return jev
+			}
+		}
+	}
+	if embedder, ok := client.(mcp.ClientEmbedder); ok {
+		if base := embedder.BaseClient(); base != nil && base.Provider == mcp.ProviderJev {
+			if jev, ok := client.(*provider.JevClient); ok {
+				return jev
+			}
+		}
+	}
+	return nil
+}
+
 // GetFullDecisionWithStrategy uses StrategyEngine to get AI decision (unified prompt generation)
 func GetFullDecisionWithStrategy(ctx *Context, mcpClient mcp.AIClient, engine *StrategyEngine, variant string) (*FullDecision, error) {
 	return GetFullDecisionWithStrategyContext(context.Background(), ctx, mcpClient, engine, variant)
@@ -160,6 +210,15 @@ func GetFullDecisionWithStrategyContext(requestCtx context.Context, ctx *Context
 		return nil, &MarketDataUnavailableError{Cause: fmt.Errorf("preloaded market data has no freshness proof")}
 	}
 	pruneCandidateCoinsWithoutMarketData(ctx)
+
+	// Direct route for Jev and Dual-Brain (System 1 + 2)
+	macroClient, jevClient := resolveDualBrainClients(mcpClient)
+	if jevClient != nil {
+		if macroClient != nil {
+			return GetDualBrainDecision(requestCtx, ctx, macroClient, jevClient, engine)
+		}
+		return GetJevDecisionWithStrategyContext(requestCtx, ctx, jevClient, engine)
+	}
 
 	// 2. Build System Prompt using strategy engine
 	riskConfig := engine.GetRiskControlConfig()

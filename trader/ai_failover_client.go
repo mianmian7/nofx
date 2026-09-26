@@ -335,6 +335,25 @@ func (client *AIModelFailoverClient) BaseClient() *mcp.Client {
 	return nil
 }
 
+func (client *AIModelFailoverClient) ActiveClient() mcp.AIClient {
+	client.mu.RLock()
+	defer client.mu.RUnlock()
+	if len(client.candidates) == 0 {
+		return nil
+	}
+	return client.candidates[client.activeIndex].client
+}
+
+func (client *AIModelFailoverClient) CandidateClients() []mcp.AIClient {
+	client.mu.RLock()
+	defer client.mu.RUnlock()
+	res := make([]mcp.AIClient, len(client.candidates))
+	for i := range client.candidates {
+		res[i] = client.candidates[i].client
+	}
+	return res
+}
+
 func (client *AIModelFailoverClient) ActiveModel() (provider, model, modelID string) {
 	client.mu.RLock()
 	defer client.mu.RUnlock()
