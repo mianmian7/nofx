@@ -50,12 +50,19 @@ func (at *AutoTrader) executeDecisionWithRecordContext(ctx context.Context, deci
 		return err
 	}
 	if decision.Action == "open_long" || decision.Action == "open_short" {
+		if decision.Leverage <= 0 {
+			if at.config.StrategyConfig != nil && at.config.StrategyConfig.RiskControl.MaxLeverage > 0 {
+				decision.Leverage = at.config.StrategyConfig.RiskControl.MaxLeverage
+			} else {
+				decision.Leverage = 10
+			}
+		}
 		if provider, ok := at.trader.(leverageLimitProvider); ok {
 			if err := clampDecisionToExchangeLeverageLimit(decision, provider); err != nil {
 				return err
 			}
-			actionRecord.Leverage = decision.Leverage
 		}
+		actionRecord.Leverage = decision.Leverage
 	}
 	if at.executionMode == ExecutionModePaper && (decision.Action == "open_long" || decision.Action == "open_short") {
 		availability, err := at.validateOpenMarket(decision.Symbol)
@@ -1169,7 +1176,11 @@ func (at *AutoTrader) enforceOpenRiskBudget(decision *kernel.Decision, entryPric
 		return nil
 	}
 	if decision.Leverage <= 0 {
-		return fmt.Errorf("leverage must be greater than 0: %d", decision.Leverage)
+		if at.config.StrategyConfig.RiskControl.MaxLeverage > 0 {
+			decision.Leverage = at.config.StrategyConfig.RiskControl.MaxLeverage
+		} else {
+			decision.Leverage = 10
+		}
 	}
 	account := at.trader
 	if at.executionMode == ExecutionModePaper {
