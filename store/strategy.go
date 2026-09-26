@@ -710,6 +710,23 @@ func (c *StrategyConfig) UnmarshalJSON(data []byte) error {
 		c.CustomPrompt = raw.AIConfig.CustomPrompt
 		c.RiskControl = raw.AIConfig.RiskControl
 		c.PromptSections = raw.AIConfig.PromptSections
+
+		// Allow root-level overrides/fallbacks if ai_config subfields are empty
+		if raw.CoinSource != nil && c.CoinSource.SourceType == "" && len(c.CoinSource.StaticCoins) == 0 {
+			c.CoinSource = *raw.CoinSource
+		}
+		if raw.Indicators != nil && len(c.Indicators.Klines.SelectedTimeframes) == 0 {
+			c.Indicators = *raw.Indicators
+		}
+		if raw.CustomPrompt != nil && c.CustomPrompt == "" {
+			c.CustomPrompt = *raw.CustomPrompt
+		}
+		if raw.RiskControl != nil && c.RiskControl.MaxPositions == 0 && c.RiskControl.MaxLeverage == 0 {
+			c.RiskControl = *raw.RiskControl
+		}
+		if raw.PromptSections != nil && c.PromptSections.RoleDefinition == "" {
+			c.PromptSections = *raw.PromptSections
+		}
 	} else {
 		if raw.CoinSource != nil {
 			c.CoinSource = *raw.CoinSource
