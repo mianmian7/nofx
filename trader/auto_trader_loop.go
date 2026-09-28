@@ -117,11 +117,17 @@ func (at *AutoTrader) runCycleContext(requestCtx context.Context) error {
 	// An empty candidate universe is a market-data/configuration failure, not a
 	// successful no-op. Record it explicitly so proxy/upstream outages cannot be
 	// mistaken for a model decision or a healthy trading cycle.
-	if len(ctx.CandidateCoins) == 0 {
+	if len(ctx.CandidateCoins) == 0 && !(at.strategyEngine.UsesLocalSignals() && len(ctx.Positions) > 0) {
 		at.logInfof("ℹ️ No candidate coins available, skipping this cycle")
 		record.Success = false
 		record.ErrorMessage = "No candidate coins available; market-data candidate universe is empty"
-		record.ExecutionLog = append(record.ExecutionLog, record.ErrorMessage)
+		if at.strategyEngine.UsesLocalSignals() {
+			record.Success = true
+			record.ErrorMessage = ""
+			record.ExecutionLog = append(record.ExecutionLog, "Local analysis completed: no confirmed candidates meet this strategy's score; waiting without opening exposure")
+		} else {
+			record.ExecutionLog = append(record.ExecutionLog, record.ErrorMessage)
+		}
 		record.AccountState = store.AccountSnapshot{
 			TotalBalance:          ctx.Account.TotalEquity,
 			AvailableBalance:      ctx.Account.AvailableBalance,
@@ -796,7 +802,11 @@ func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 			// not turn an upstream/proxy failure into an apparently successful
 			// empty-candidate cycle that can be reported as a no-op.
 			at.logWarnf("⚠️ Failed to get candidate coins: %v", err)
-			return nil, fmt.Errorf("failed to get candidate coins: %w", err)
+			if !at.strategyEngine.UsesLocalSignals() || len(positionInfos) == 0 {
+				return nil, fmt.Errorf("failed to get candidate coins: %w", err)
+			}
+			// Preserve position management when local analysis is unavailable.
+			// Execution independently blocks every opening against current signals.
 		} else {
 			candidateCoins = coins
 			logger.Infof("📋 [%s] Strategy engine fetched candidate coins: %d", at.name, len(candidateCoins))

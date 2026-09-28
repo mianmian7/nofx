@@ -177,6 +177,10 @@ func (c *StrategyConfig) NormalizeProductSchema() {
 	}
 
 	switch c.CoinSource.SourceType {
+	case "local_signals":
+		c.CoinSource.UseWatchlist = false
+		c.CoinSource.UseHyperAll = false
+		c.CoinSource.UseHyperMain = false
 	case "binance_dynamic":
 		c.CoinSource.UseWatchlist = false
 		c.CoinSource.UseHyperAll = false
@@ -245,6 +249,8 @@ func normalizeCoinSourceType(value string) string {
 	switch {
 	case compact == "":
 		return ""
+	case compact == "localsignals":
+		return "local_signals"
 	case strings.Contains(compact, "hyperrank"):
 		return "hyper_rank"
 	case strings.Contains(compact, "binance") && (strings.Contains(compact, "dynamic") || strings.Contains(compact, "local")):
@@ -801,7 +807,9 @@ type PromptSectionsConfig struct {
 type CoinSourceConfig struct {
 	// source type shown in the product editor. binance_dynamic is the local,
 	// public-market default and does not use paid signal providers.
-	SourceType string `json:"source_type"`
+	SourceType          string  `json:"source_type"`
+	LocalSignalMinScore float64 `json:"local_signal_min_score,omitempty"`
+	LocalSignalLimit    int     `json:"local_signal_limit,omitempty"`
 	// Binance public-market candidate count, ranked by 24h quote volume.
 	BinanceDynamicLimit int `json:"binance_dynamic_limit,omitempty"`
 	// static coin list (used when source_type = "static")
@@ -976,6 +984,8 @@ type RiskControlConfig struct {
 	// Includes costs and all resting entry remainders; zero preserves old behavior.
 	PaperMaxTradeRiskRatio     float64 `json:"paper_max_trade_risk_ratio,omitempty"`
 	PaperMaxPortfolioRiskRatio float64 `json:"paper_max_portfolio_risk_ratio,omitempty"`
+	// Blocks only new Paper entries after persistent peak-to-trough drawdown.
+	PaperMaxDrawdownRatio float64 `json:"paper_max_drawdown_ratio,omitempty"`
 	// Min position size in USDT (CODE ENFORCED)
 	MinPositionSize float64 `json:"min_position_size"`
 

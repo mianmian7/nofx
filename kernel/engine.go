@@ -63,8 +63,9 @@ type AccountInfo struct {
 
 // CandidateCoin candidate coin (from coin pool)
 type CandidateCoin struct {
-	Symbol  string   `json:"symbol"`
-	Sources []string `json:"sources"`
+	Symbol      string             `json:"symbol"`
+	Sources     []string           `json:"sources"`
+	LocalSignal *store.LocalSignal `json:"local_signal,omitempty"`
 }
 
 // TradingStats trading statistics (for AI input)
@@ -371,6 +372,12 @@ func (e *StrategyEngine) GetCandidateCoins() ([]CandidateCoin, error) {
 	coinSource := e.config.CoinSource
 
 	switch coinSource.SourceType {
+	case "local_signals":
+		coins, err := e.localSignalCandidates()
+		if err != nil {
+			return nil, err
+		}
+		return e.filterExcludedCoins(coins), nil
 	case "binance_dynamic":
 		coins, err := e.getBinanceDynamicCoins(coinSource.BinanceDynamicLimit)
 		if err != nil {

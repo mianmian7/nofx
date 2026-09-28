@@ -73,8 +73,11 @@ func (at *AutoTrader) openThrottleReason(decision kernel.Decision, ctx *kernel.C
 	openCount, err := at.countRecentOpenOrders(time.Now().Add(-1 * time.Hour))
 	if err != nil {
 		at.logWarnf("⚠️ Trade throttle could not read recent open orders: %v", err)
+		if at.executionMode == ExecutionModePaper {
+			return "trade throttle: Paper opening history unavailable; new entries are blocked"
+		}
 	} else if openCount >= throttle.MaxOpensPerHour {
-		return fmt.Sprintf("trade throttle: %d open order already executed in the last hour; max is %d", openCount, throttle.MaxOpensPerHour)
+		return fmt.Sprintf("trade throttle: %d openings/reservations in the last hour; max is %d", openCount, throttle.MaxOpensPerHour)
 	}
 
 	reentryCooldown := time.Duration(throttle.ReentryCooldownMinutes) * time.Minute
@@ -114,6 +117,12 @@ func (at *AutoTrader) recentOrders(limit int) ([]*store.TraderOrder, error) {
 }
 
 func (at *AutoTrader) countRecentOpenOrders(since time.Time) (int, error) {
+	if at != nil && at.executionMode == ExecutionModePaper {
+		if at.paperBroker == nil {
+			return 0, fmt.Errorf("Paper broker is unavailable")
+		}
+		return at.paperBroker.countRecentOpenEntries(since), nil
+	}
 	orders, err := at.recentOrders(100)
 	if err != nil {
 		return 0, err

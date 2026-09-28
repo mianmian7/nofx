@@ -203,6 +203,10 @@ func (s *Server) handleCreateStrategy(c *gin.Context) {
 	}
 	beforeClamp := *req.Config
 	req.Config.ClampLimits()
+	if err := req.Config.ValidateLocalSignals(); err != nil {
+		SafeBadRequest(c, err.Error())
+		return
+	}
 	hadPublishConfig := req.Config.PublishConfig != nil
 	isPublic := req.IsPublic
 	configVisible := req.ConfigVisible
@@ -314,6 +318,10 @@ func (s *Server) handleUpdateStrategy(c *gin.Context) {
 	}
 	beforeClamp := mergedConfig
 	mergedConfig.ClampLimits()
+	if err := mergedConfig.ValidateLocalSignals(); err != nil {
+		SafeBadRequest(c, err.Error())
+		return
+	}
 
 	// Preserve existing name/description when not supplied
 	name := req.Name

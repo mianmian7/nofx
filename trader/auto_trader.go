@@ -294,6 +294,16 @@ func (at *AutoTrader) getStopLossRetryDelays() []time.Duration {
 // NewAutoTrader creates an automatic trader
 // st parameter is used to store decision records to database
 func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*AutoTrader, error) {
+	if err := config.StrategyConfig.ValidateLocalSignals(); err != nil {
+		return nil, err
+	}
+	if config.StrategyConfig != nil && config.StrategyConfig.CoinSource.SourceType == "local_signals" {
+		switch strings.ToLower(config.Exchange) {
+		case "binance", "okx", "bitget":
+		default:
+			return nil, fmt.Errorf("local analysis requires Binance, OKX or Bitget market data")
+		}
+	}
 	// Set default values
 	if config.PaperRiskMonitorInterval <= 0 {
 		config.PaperRiskMonitorInterval = defaultPaperRiskMonitorInterval
@@ -441,7 +451,11 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 		priceSource := newMarketPaperPriceSource(marketDataProvider)
 		tradeRisk, portfolioRisk, minimumNotional := paperStrategyAccountRisk(config.StrategyConfig)
 		paperConfig := PaperBrokerConfig{
+			EntryValidator:    localSignalEntryValidator(config.StrategyConfig, config.Exchange),
 			InitialBalance:    config.InitialBalance,
+			MaxPositions:      paperStrategyMaxPositions(config.StrategyConfig),
+			MaxOpensPerHour:   paperStrategyMaxOpensPerHour(config.StrategyConfig),
+			MaxDrawdownRatio:  paperStrategyMaxDrawdown(config.StrategyConfig),
 			MaxTradeRiskRatio: tradeRisk, MaxPortfolioRiskRatio: portfolioRisk, MinEntryNotional: minimumNotional,
 			MinRiskRewardRatio: paperStrategyMinRiskReward(config.StrategyConfig),
 			MakerFirst:         true, MakerFeeBPS: 2, TakerFeeBPS: 5, SlippageBPS: 2,
@@ -635,6 +649,13 @@ func (at *AutoTrader) reloadStrategyConfigIfChanged() error {
 		if err := at.paperBroker.setMinRiskRewardRatio(paperStrategyMinRiskReward(strategyConfig)); err != nil {
 			return fmt.Errorf("failed to refresh Paper entry risk policy: %w", err)
 		}
+		if err := at.paperBroker.setEntrySafetyLimits(paperStrategyMaxPositions(strategyConfig), paperStrategyMaxDrawdown(strategyConfig)); err != nil {
+			return fmt.Errorf("failed to refresh Paper entry safety limits: %w", err)
+		}
+		if err := at.paperBroker.setHourlyOpenLimit(paperStrategyMaxOpensPerHour(strategyConfig)); err != nil {
+			return fmt.Errorf("failed to refresh Paper hourly opening limit: %w", err)
+		}
+		at.paperBroker.setLocalSignalEntryValidator(strategyConfig, at.exchange)
 	}
 	at.config.StrategyConfig = strategyConfig
 	at.config.StrategyConfigRaw = strategy.Config

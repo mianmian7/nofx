@@ -743,6 +743,7 @@ func (e *StrategyEngine) BuildUserPrompt(ctx *Context) string {
 
 		sourceTags := e.formatCoinSourceTag(coin.Sources)
 		sb.WriteString(fmt.Sprintf("### %d. %s%s\n\n", displayedCount, coin.Symbol, sourceTags))
+		sb.WriteString(formatLocalSignal(coin.LocalSignal))
 		sb.WriteString(e.formatMarketData(marketData))
 		sb.WriteString("\n")
 	}

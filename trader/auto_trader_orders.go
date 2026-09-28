@@ -50,6 +50,9 @@ func (at *AutoTrader) executeDecisionWithRecordContext(ctx context.Context, deci
 		return err
 	}
 	if decision.Action == "open_long" || decision.Action == "open_short" {
+		if err := at.validateLocalSignalOpening(decision); err != nil {
+			return err
+		}
 		if decision.Leverage <= 0 {
 			if at.config.StrategyConfig != nil && at.config.StrategyConfig.RiskControl.MaxLeverage > 0 {
 				decision.Leverage = at.config.StrategyConfig.RiskControl.MaxLeverage
@@ -101,6 +104,9 @@ func (at *AutoTrader) executeDecisionWithRecordContext(ctx context.Context, deci
 	if at.executionMode == ExecutionModePaper {
 		if at.paperBroker == nil {
 			return fmt.Errorf("paper broker is not configured")
+		}
+		if err := at.validateLocalSignalOpening(decision); err != nil {
+			return err
 		}
 		fill, err := at.paperBroker.ExecuteDecisionContext(ctx, decision)
 		if err != nil {
@@ -1486,6 +1492,9 @@ func (at *AutoTrader) executeOpenLongWithRecordContext(ctx context.Context, deci
 	// Once submitted, confirmation and opening protection must finish even if
 	// the cycle expires. An expired decision cannot leave an entry unprotected.
 	// Open position
+	if err := at.validateLocalSignalOpening(decision); err != nil {
+		return err
+	}
 	order, err := at.trader.OpenLong(decision.Symbol, quantity, decision.Leverage)
 	if err != nil {
 		return fmt.Errorf("failed to open long position for %s: %w", decision.Symbol, err)
@@ -1631,6 +1640,9 @@ func (at *AutoTrader) executeOpenShortWithRecordContext(ctx context.Context, dec
 	}
 	// Confirmation and protection deliberately survive cancellation after entry.
 	// Open position
+	if err := at.validateLocalSignalOpening(decision); err != nil {
+		return err
+	}
 	order, err := at.trader.OpenShort(decision.Symbol, quantity, decision.Leverage)
 	if err != nil {
 		return fmt.Errorf("failed to open short position for %s: %w", decision.Symbol, err)
