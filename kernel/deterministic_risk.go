@@ -10,12 +10,12 @@ import (
 
 // DeterministicRiskConfig holds configuration parameters for algorithmic SL/TP and sizing
 type DeterministicRiskConfig struct {
-	ATRMultiplier   float64       `json:"atr_multiplier"`    // Multiplier for ATR stop distance (e.g. 1.8)
-	RewardRiskRatio float64       `json:"reward_risk_ratio"` // Target Reward to Risk ratio (e.g. 2.0)
-	RiskPctPerTrade float64       `json:"risk_pct_per_trade"`// Max risk per trade as % of equity (e.g. 1.5)
-	MaxLeverage     int           `json:"max_leverage"`      // Max leverage
-	MinConfidence   int           `json:"min_confidence"`    // Minimum confidence required to open
-	Cooldown        time.Duration `json:"cooldown"`          // Cooldown between conflicting trades
+	ATRMultiplier   float64       `json:"atr_multiplier"`     // Multiplier for ATR stop distance (e.g. 1.8)
+	RewardRiskRatio float64       `json:"reward_risk_ratio"`  // Target Reward to Risk ratio (e.g. 2.0)
+	RiskPctPerTrade float64       `json:"risk_pct_per_trade"` // Max risk per trade as % of equity (e.g. 1.5)
+	MaxLeverage     int           `json:"max_leverage"`       // Max leverage
+	MinConfidence   int           `json:"min_confidence"`     // Minimum confidence required to open
+	Cooldown        time.Duration `json:"cooldown"`           // Cooldown between conflicting trades
 }
 
 // DefaultDeterministicRiskConfig returns sensible defaults
@@ -83,17 +83,17 @@ func CalculateATRParams(
 	detConfig DeterministicRiskConfig,
 	confidence int,
 ) (*Decision, error) {
-	if currentPrice <= 0 {
+	if math.IsNaN(currentPrice) || math.IsInf(currentPrice, 0) || currentPrice <= 0 {
 		return nil, fmt.Errorf("current price must be positive, got %.4f", currentPrice)
 	}
-	if atr <= 0 {
-		atr = currentPrice * 0.015 // fallback 1.5%
+	if math.IsNaN(atr) || math.IsInf(atr, 0) || atr <= 0 {
+		return &Decision{Symbol: symbol, Action: "wait", Reasoning: "observed ATR is unavailable"}, nil
 	}
-	if accountEquity <= 0 {
+	if math.IsNaN(accountEquity) || math.IsInf(accountEquity, 0) || accountEquity <= 0 {
 		return nil, fmt.Errorf("account equity must be positive, got %.2f", accountEquity)
 	}
-	if availableBalance <= 0 {
-		availableBalance = accountEquity
+	if math.IsNaN(availableBalance) || math.IsInf(availableBalance, 0) || availableBalance <= 0 {
+		return &Decision{Symbol: symbol, Action: "wait", Reasoning: "no available balance"}, nil
 	}
 
 	maxLeverage := riskConfig.MaxLeverage
@@ -117,6 +117,7 @@ func CalculateATRParams(
 	if rrr <= 0 {
 		rrr = 2.0
 	}
+	rrr = math.Max(rrr, riskConfig.MinRiskRewardRatio)
 
 	riskPct := detConfig.RiskPctPerTrade
 	if riskPct <= 0 {
@@ -158,21 +159,29 @@ func CalculateATRParams(
 	// lossFraction = stopDistance / currentPrice
 	// positionSizeUSD = maxRiskUSD / lossFraction
 	maxRiskUSD := accountEquity * (riskPct / 100.0)
+	if riskConfig.PaperMaxTradeRiskRatio > 0 {
+		maxRiskUSD = math.Min(maxRiskUSD, accountEquity*riskConfig.PaperMaxTradeRiskRatio)
+	}
 	lossFraction := stopDistance / currentPrice
 	if lossFraction <= 0 {
 		lossFraction = 0.01
 	}
-	targetPositionSizeUSD := maxRiskUSD / lossFraction
+	// Include conservative two-sided fees/slippage instead of sizing to raw SL alone.
+	targetPositionSizeUSD := maxRiskUSD / (lossFraction + 0.002)
 
 	// Minimum position size requirement (BTC/ETH >= 60, Altcoins >= 12 or config)
 	minPos := effectiveMinPositionSize(symbol, riskConfig)
 	if targetPositionSizeUSD < minPos {
-		targetPositionSizeUSD = minPos
+		return &Decision{Symbol: symbol, Action: "wait", Reasoning: "risk-sized notional is below minimum; risk must not be rounded up"}, nil
 	}
 
 	// Apply margin budget clamp
 	// Notional cannot exceed availableBalance * maxLeverage * 0.9 (safety buffer)
-	maxMarginNotional := availableBalance * float64(maxLeverage) * 0.9
+	marginBudget := availableBalance
+	if riskConfig.MaxMarginUsage > 0 {
+		marginBudget = math.Min(marginBudget, accountEquity*riskConfig.MaxMarginUsage)
+	}
+	maxMarginNotional := marginBudget * float64(maxLeverage) * 0.9
 	if maxMarginNotional < minPos {
 		return &Decision{
 			Symbol:     symbol,
@@ -202,14 +211,32 @@ func CalculateATRParams(
 
 	// Re-verify min position size
 	if targetPositionSizeUSD < minPos {
-		targetPositionSizeUSD = minPos
+		return &Decision{Symbol: symbol, Action: "wait", Reasoning: "affordable notional is below minimum"}, nil
 	}
 
-	// Format precision dynamically by magnitude to prevent stop loss distortion
+	// Recompute final risk after price rounding; never round quantity/risk up.
 	stopLoss = roundPriceByMagnitude(stopLoss)
-	takeProfit = roundPriceByMagnitude(takeProfit)
-	targetPositionSizeUSD = math.Round(targetPositionSizeUSD*100) / 100
-	maxRiskUSD = math.Round(maxRiskUSD*100) / 100
+	// Derive the target from the rounded stop, then round outward by at most
+	// one display tick. Nearest rounding otherwise rejects valid ATR setups
+	// nondeterministically just below the exact configured RR boundary.
+	step := priceStepByMagnitude(takeProfit)
+	if action == "open_long" {
+		takeProfit = math.Ceil((currentPrice+(currentPrice-stopLoss)*rrr)/step) * step
+	} else {
+		takeProfit = math.Floor((currentPrice-(stopLoss-currentPrice)*rrr)/step) * step
+	}
+	finalRisk, finalReward := currentPrice-stopLoss, takeProfit-currentPrice
+	if action == "open_short" {
+		finalRisk, finalReward = stopLoss-currentPrice, currentPrice-takeProfit
+	}
+	if finalRisk <= 0 || finalReward <= 0 || finalReward/finalRisk+1e-6 < rrr {
+		return &Decision{Symbol: symbol, Action: "wait", Reasoning: "rounded protection does not meet risk/reward"}, nil
+	}
+	targetPositionSizeUSD = math.Min(targetPositionSizeUSD, maxRiskUSD/(finalRisk/currentPrice+0.002))
+	targetPositionSizeUSD = math.Floor(targetPositionSizeUSD*100) / 100
+	if targetPositionSizeUSD < minPos {
+		return &Decision{Symbol: symbol, Action: "wait", Reasoning: "rounded risk-sized notional below minimum"}, nil
+	}
 
 	reasoning := fmt.Sprintf("Jev System 1: %s (conf=%d%%) | ATR(14)=%.4f dist=%.4f (%.2f%%) | SL=%.4f TP=%.4f (RRR=%.1f) | Risk=$%.2f Size=$%.2f",
 		action, confidence, atr, stopDistance, lossFraction*100, stopLoss, takeProfit, rrr, maxRiskUSD, targetPositionSizeUSD)
@@ -227,17 +254,22 @@ func CalculateATRParams(
 	}, nil
 }
 
-func roundPriceByMagnitude(price float64) float64 {
+func priceStepByMagnitude(price float64) float64 {
 	switch {
 	case price >= 1000:
-		return math.Round(price*100) / 100 // 2 decimals (BTC, ETH)
+		return .01
 	case price >= 1:
-		return math.Round(price*10000) / 10000 // 4 decimals (SOL, SUI, APT)
-	case price >= 0.01:
-		return math.Round(price*1000000) / 1000000 // 6 decimals (DOGE, XRP)
+		return .0001
+	case price >= .01:
+		return .000001
 	default:
-		return math.Round(price*100000000) / 100000000 // 8 decimals (PEPE, SHIB)
+		return .00000001
 	}
+}
+
+func roundPriceByMagnitude(price float64) float64 {
+	step := priceStepByMagnitude(price)
+	return math.Round(price/step) * step
 }
 
 // AntiWhipsawFilter evaluates whether a candidate trade should be rejected due to
@@ -249,8 +281,11 @@ func AntiWhipsawFilter(
 	minConfidence int,
 ) (approved bool, reason string) {
 	// 1. Regime filter: Range-bound chop blocks opening
-	if marketRegime == "ranging_chop" || marketRegime == "ranging" {
-		return false, "market regime is ranging/chop; opening blocked by anti-whipsaw filter"
+	if marketRegime != "strong_trend_up" && marketRegime != "strong_trend_down" {
+		return false, "market regime is missing or unsafe; opening blocked by anti-whipsaw filter"
+	}
+	if math.IsNaN(actionProb) || math.IsInf(actionProb, 0) || math.IsNaN(secondProb) || math.IsInf(secondProb, 0) || actionProb < 0 || actionProb > 1 || secondProb < 0 || secondProb > 1 {
+		return false, "invalid action probabilities"
 	}
 
 	// 2. Minimum confidence threshold (default 60% or configured minConfidence)

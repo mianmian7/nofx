@@ -15,12 +15,12 @@ import (
 
 // MacroBias represents the higher-timeframe regime and directional bias from System 2 LLM
 type MacroBias struct {
-	Bias        string    `json:"bias"` // "bullish_only", "bearish_only", "neutral", "risk_off"
-	Confidence  int       `json:"confidence"`
-	Reasoning   string    `json:"reasoning"`
-	UpdatedAt   time.Time `json:"updated_at"`
-	ValidUntil  time.Time `json:"valid_until"`
-	Model       string    `json:"model"` // e.g. "grok-4.6" or "gemini-3.7-flash"
+	Bias       string    `json:"bias"` // "bullish_only", "bearish_only", "neutral", "risk_off"
+	Confidence int       `json:"confidence"`
+	Reasoning  string    `json:"reasoning"`
+	UpdatedAt  time.Time `json:"updated_at"`
+	ValidUntil time.Time `json:"valid_until"`
+	Model      string    `json:"model"` // e.g. "grok-4.6" or "gemini-3.7-flash"
 }
 
 // IsValid checks if the macro bias is still within its validity window
@@ -121,7 +121,10 @@ Output ONLY a JSON object:
 
 	userPrompt := sb.String()
 
-	resp, err := macroClient.CallWithMessages(systemPrompt, userPrompt)
+	resp, err := macroClient.CallWithRequest(&mcp.Request{
+		Ctx: ctx, Messages: []mcp.Message{mcp.NewSystemMessage(systemPrompt), mcp.NewUserMessage(userPrompt)},
+		Metadata: mcp.CallMetadata{TraderID: kCtx.TraderID, StrategyID: kCtx.StrategyID},
+	})
 	if err != nil {
 		return nil, fmt.Errorf("macro LLM call failed: %w", err)
 	}
@@ -142,14 +145,10 @@ Output ONLY a JSON object:
 	}
 
 	if err := json.Unmarshal([]byte(rawJSON), &parsed); err != nil {
-		return &MacroBias{
-			Bias:        "neutral",
-			Confidence:  70,
-			Reasoning:   "Failed to parse macro JSON, defaulting to neutral",
-			UpdatedAt:   time.Now(),
-			ValidUntil:  time.Now().Add(15 * time.Minute),
-			Model:       modelName,
-		}, nil
+		return nil, fmt.Errorf("invalid macro JSON: %w", err)
+	}
+	if !validMacroLabel(parsed.Bias) || parsed.Confidence < 0 || parsed.Confidence > 100 {
+		return nil, fmt.Errorf("invalid macro bias or confidence")
 	}
 
 	duration := time.Duration(parsed.ValidDurationMinutes) * time.Minute
@@ -158,12 +157,12 @@ Output ONLY a JSON object:
 	}
 
 	bias := &MacroBias{
-		Bias:        parsed.Bias,
-		Confidence:  parsed.Confidence,
-		Reasoning:   parsed.Reasoning,
-		UpdatedAt:   time.Now(),
-		ValidUntil:  time.Now().Add(duration),
-		Model:       modelName,
+		Bias:       parsed.Bias,
+		Confidence: parsed.Confidence,
+		Reasoning:  parsed.Reasoning,
+		UpdatedAt:  time.Now(),
+		ValidUntil: time.Now().Add(duration),
+		Model:      modelName,
 	}
 
 	logger.Infof("🧠 [Dual-Brain System 2] Updated Macro Bias from %s: Bias=%s (Conf=%d%%, Valid=%v) | %s",
@@ -196,11 +195,11 @@ func GetDualBrainDecision(
 		var err error
 		macroBias, err = EvaluateMacroBiasWithLLM(ctx, macroClient, kCtx, engine)
 		if err != nil {
-			logger.Warnf("⚠️ [Dual-Brain] Failed to evaluate macro bias: %v, falling back to neutral", err)
+			logger.Warnf("⚠️ [Dual-Brain] Failed to evaluate macro bias: %v, blocking new entries", err)
 			macroBias = &MacroBias{
-				Bias:       "neutral",
-				Confidence: 70,
-				Reasoning:  "Macro LLM temporarily unreachable, running neutral",
+				Bias:       "risk_off",
+				Confidence: 0,
+				Reasoning:  "Macro LLM unavailable; new entries blocked, exits remain enabled",
 				UpdatedAt:  time.Now(),
 				ValidUntil: time.Now().Add(10 * time.Minute),
 				Model:      "fallback",
@@ -255,7 +254,7 @@ func GetJevDecisionWithMacroContext(
 		}
 
 		pos := positionMap[sym]
-		feat := ExtractJevFeature(sym, mktData, pos)
+		feat := extractJevFeature(sym, mktData, pos, engine.config.Indicators.Klines.PrimaryTimeframe)
 		state, questions := BuildJevStateAndQuestions(feat)
 
 		req := &provider.JevRequest{
@@ -275,6 +274,7 @@ func GetJevDecisionWithMacroContext(
 			continue
 		}
 
+		gateJevEntryTrend(dec, mktData)
 		if dec != nil {
 			decisions = append(decisions, *dec)
 		}
@@ -337,6 +337,15 @@ func EvaluateJevSignalWithMacro(
 		return dec, nil
 	}
 
+	// Missing/expired/unknown evidence must not turn the dual-brain strategy
+	// into an unguarded single-brain strategy. Exits were handled above.
+	if macroBias == nil || !macroBias.IsValid() || !validMacroLabel(macroBias.Bias) || macroBias.Confidence < 60 || macroBias.Confidence > 100 {
+		if dec.Action == "open_long" || dec.Action == "open_short" {
+			dec.Action = "wait"
+			dec.Reasoning = "Dual-Brain Veto: macro evidence unavailable, expired or untrusted"
+		}
+		return dec, nil
+	}
 	// Apply System 2 Macro Bias Veto on new opening orders
 	if macroBias != nil && macroBias.IsValid() {
 		if macroBias.Bias == "risk_off" && (dec.Action == "open_long" || dec.Action == "open_short") {

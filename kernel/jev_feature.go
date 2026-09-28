@@ -3,11 +3,11 @@ package kernel
 import (
 	"context"
 	"fmt"
+	"math"
 	"nofx/logger"
 	"nofx/market"
 	"nofx/mcp/provider"
 	"nofx/store"
-	"sort"
 	"strings"
 	"time"
 )
@@ -33,6 +33,10 @@ type JevMarketFeature struct {
 
 // ExtractJevFeature extracts key market indicators from market.Data and position
 func ExtractJevFeature(symbol string, data *market.Data, pos *PositionInfo) *JevMarketFeature {
+	return extractJevFeature(symbol, data, pos, "")
+}
+
+func extractJevFeature(symbol string, data *market.Data, pos *PositionInfo, primary string) *JevMarketFeature {
 	feat := &JevMarketFeature{
 		Symbol:       symbol,
 		HasPosition:  pos != nil,
@@ -53,14 +57,22 @@ func ExtractJevFeature(symbol string, data *market.Data, pos *PositionInfo) *Jev
 	feat.PriceChange4hPct = data.PriceChange4h
 	feat.EMA20 = data.CurrentEMA20
 	feat.MACD = data.CurrentMACD
-	feat.ATR14 = ExtractATR(data)
-	if data.CurrentPrice > 0 && feat.ATR14 > 0 {
-		feat.ATRPercent = (feat.ATR14 / data.CurrentPrice) * 100
+	// Never combine a primary EMA20 with another timeframe's EMA50 or ATR.
+	// With an explicit strategy timeframe, missing data must not silently fall back.
+	timeframes := []string{"5m", "15m", "1h", "3m"}
+	if primary != "" {
+		timeframes = []string{primary}
 	}
-
-	// Try extracting from timeframe series if available
-	for _, tf := range []string{"5m", "15m", "1h", "3m"} {
+	for _, tf := range timeframes {
 		if series, ok := data.TimeframeData[tf]; ok && series != nil {
+			feat.EMA20 = 0
+			if len(series.EMA20Values) > 0 {
+				feat.EMA20 = series.EMA20Values[len(series.EMA20Values)-1]
+			}
+			feat.ATR14 = series.ATR14
+			if len(series.MACDValues) > 0 {
+				feat.MACD = series.MACDValues[len(series.MACDValues)-1]
+			}
 			if len(series.RSI14Values) > 0 {
 				feat.RSI14 = series.RSI14Values[len(series.RSI14Values)-1]
 			} else if len(series.RSI7Values) > 0 {
@@ -82,7 +94,10 @@ func ExtractJevFeature(symbol string, data *market.Data, pos *PositionInfo) *Jev
 		}
 	}
 
-	if feat.RSI14 == 0 && data.CurrentRSI7 > 0 {
+	if data.CurrentPrice > 0 && feat.ATR14 > 0 {
+		feat.ATRPercent = feat.ATR14 / data.CurrentPrice * 100
+	}
+	if feat.RSI14 == 0 && data.CurrentRSI7 > 0 && primary == "" {
 		feat.RSI14 = data.CurrentRSI7
 	}
 
@@ -102,17 +117,17 @@ func ExtractJevFeature(symbol string, data *market.Data, pos *PositionInfo) *Jev
 // BuildJevStateAndQuestions creates the typed question payload for Jev
 func BuildJevStateAndQuestions(feat *JevMarketFeature) (interface{}, map[string]provider.JevQuestion) {
 	state := map[string]interface{}{
-		"symbol":               feat.Symbol,
-		"current_price":        feat.CurrentPrice,
-		"price_change_1h_pct":  feat.PriceChange1hPct,
-		"rsi_14":               feat.RSI14,
-		"macd":                 feat.MACD,
-		"ema_trend":            feat.EMATrend,
-		"atr_pct":              feat.ATRPercent,
-		"bollinger_position":   feat.BOLLPosition,
-		"has_position":         feat.HasPosition,
-		"position_side":        feat.PositionSide,
-		"position_pnl_pct":     feat.PositionPnLPct,
+		"symbol":              feat.Symbol,
+		"current_price":       feat.CurrentPrice,
+		"price_change_1h_pct": feat.PriceChange1hPct,
+		"rsi_14":              feat.RSI14,
+		"macd":                feat.MACD,
+		"ema_trend":           feat.EMATrend,
+		"atr_pct":             feat.ATRPercent,
+		"bollinger_position":  feat.BOLLPosition,
+		"has_position":        feat.HasPosition,
+		"position_side":       feat.PositionSide,
+		"position_pnl_pct":    feat.PositionPnLPct,
 	}
 
 	questions := map[string]provider.JevQuestion{
@@ -120,10 +135,10 @@ func BuildJevStateAndQuestions(feat *JevMarketFeature) (interface{}, map[string]
 			Type:         "choice",
 			Instructions: "What is the current market regime based on technical indicators?",
 			Criteria: map[string]string{
-				"strong_trend_up":   "Clear upward momentum, price above EMAs, RSI > 50",
-				"strong_trend_down": "Clear downward momentum, price below EMAs, RSI < 50",
-				"ranging_chop":      "Oscillating between Bollinger bands, flat EMAs, high whipsaw risk",
-				"extreme_volatility":"Abnormal price/volume spikes, extreme risk",
+				"strong_trend_up":    "Clear upward momentum, price above EMAs, RSI > 50",
+				"strong_trend_down":  "Clear downward momentum, price below EMAs, RSI < 50",
+				"ranging_chop":       "Oscillating between Bollinger bands, flat EMAs, high whipsaw risk",
+				"extreme_volatility": "Abnormal price/volume spikes, extreme risk",
 			},
 		},
 	}
@@ -226,27 +241,38 @@ func EvaluateJevSignal(
 		}, nil
 	}
 
-	// Calculate winning probability and second probability
-	var topProb, secondProb float64
-	if entryAns.Probabilities != nil {
-		probs := make([]float64, 0, len(entryAns.Probabilities))
-		for _, p := range entryAns.Probabilities {
-			probs = append(probs, p)
-		}
-		sort.Slice(probs, func(i, j int) bool { return probs[i] > probs[j] })
-		if len(probs) > 0 {
-			topProb = probs[0]
-		}
-		if len(probs) > 1 {
-			secondProb = probs[1]
-		}
-	} else {
-		topProb = entryAns.Confidence
+	// Confidence belongs to the selected action, not whichever label happened
+	// to have the highest probability. Invalid/missing evidence fails closed.
+	wait := func(reason string) (*Decision, error) {
+		return &Decision{Symbol: feat.Symbol, Action: "wait", Reasoning: reason}, nil
 	}
-
+	if (action != "open_long" && action != "open_short") ||
+		(action == "open_long" && marketRegime != "strong_trend_up") ||
+		(action == "open_short" && marketRegime != "strong_trend_down") {
+		return wait("Jev entry blocked: missing, unsafe or directionally conflicting regime")
+	}
+	topProb, secondProb := entryAns.Confidence, 0.0
+	if entryAns.Probabilities != nil {
+		var found bool
+		topProb, found = entryAns.Probabilities[action]
+		if !found {
+			return wait("Jev entry blocked: selected action probability missing")
+		}
+		for label, p := range entryAns.Probabilities {
+			if math.IsNaN(p) || math.IsInf(p, 0) || p < 0 || p > 1 {
+				return wait("Jev entry blocked: invalid probability")
+			}
+			if label != action {
+				secondProb = math.Max(secondProb, p)
+			}
+		}
+	}
+	if math.IsNaN(topProb) || math.IsInf(topProb, 0) || topProb <= 0 || topProb > 1 {
+		return wait("Jev entry blocked: invalid confidence")
+	}
 	confidence := int(topProb * 100)
-	if confidence == 0 {
-		confidence = 75
+	if riskConfig.MinConfidence > detConfig.MinConfidence {
+		detConfig.MinConfidence = riskConfig.MinConfidence
 	}
 
 	// 3. Anti-whipsaw filter
@@ -321,7 +347,7 @@ func GetJevDecisionWithStrategyContext(
 		}
 
 		pos := positionMap[sym]
-		feat := ExtractJevFeature(sym, mktData, pos)
+		feat := extractJevFeature(sym, mktData, pos, engine.config.Indicators.Klines.PrimaryTimeframe)
 		state, questions := BuildJevStateAndQuestions(feat)
 
 		req := &provider.JevRequest{
@@ -341,6 +367,7 @@ func GetJevDecisionWithStrategyContext(
 			continue
 		}
 
+		gateJevEntryTrend(dec, mktData)
 		if dec != nil {
 			decisions = append(decisions, *dec)
 		}

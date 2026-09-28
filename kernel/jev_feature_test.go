@@ -17,6 +17,7 @@ func TestExtractJevFeature(t *testing.T) {
 			"5m": {
 				ATR14:       250,
 				RSI14Values: []float64{62.5},
+				EMA20Values: []float64{94000},
 				EMA50Values: []float64{93000},
 				BOLLUpper:   []float64{96000},
 				BOLLLower:   []float64{92000},
