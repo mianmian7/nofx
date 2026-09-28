@@ -682,6 +682,11 @@ func remainingBeforeReserve(ctx context.Context, reserve time.Duration) (time.Du
 
 func (client *Client) admissionContext(parent context.Context) (context.Context, context.CancelFunc, error) {
 	limit := 60 * time.Second
+	// Serial reasoning requests commonly exceed one minute. Waiting for a
+	// healthy peer must not consume additional lifecycle/execution budget.
+	if client.Provider == ProviderGrok {
+		limit = 3 * time.Minute
+	}
 	if client.Cfg != nil && client.Cfg.AdmissionTimeout > 0 {
 		limit = client.Cfg.AdmissionTimeout
 	}

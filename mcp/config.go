@@ -38,7 +38,7 @@ type Config struct {
 	// Timeout configuration
 	Timeout            time.Duration
 	StreamIdleTimeout  time.Duration
-	AdmissionTimeout   time.Duration
+	AdmissionTimeout   time.Duration // zero selects provider default; explicit config/env wins
 	CompletionReserve  time.Duration
 	MinAttemptBudget   time.Duration
 	RateLimitCooldown  time.Duration
@@ -59,7 +59,7 @@ func DefaultConfig() *Config {
 		RetryWaitBase:      2 * time.Second,
 		Timeout:            DefaultTimeout,
 		StreamIdleTimeout:  time.Duration(getEnvInt("AI_STREAM_IDLE_TIMEOUT_SECONDS", 60)) * time.Second,
-		AdmissionTimeout:   time.Duration(getEnvInt("AI_REQUEST_ADMISSION_TIMEOUT_SECONDS", 60)) * time.Second,
+		AdmissionTimeout:   time.Duration(getEnvInt("AI_REQUEST_ADMISSION_TIMEOUT_SECONDS", 0)) * time.Second,
 		CompletionReserve:  time.Duration(getEnvInt("AI_CYCLE_COMPLETION_RESERVE_SECONDS", 30)) * time.Second,
 		MinAttemptBudget:   time.Duration(getEnvInt("AI_MIN_ATTEMPT_BUDGET_SECONDS", 10)) * time.Second,
 		RateLimitCooldown:  time.Duration(getEnvInt("AI_RATE_LIMIT_COOLDOWN_SECONDS", 30)) * time.Second,
