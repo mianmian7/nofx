@@ -262,6 +262,9 @@ func (s *Server) setupRoutes() {
 		// Routes requiring authentication
 		protected := api.Group("/", s.authMiddleware())
 		{
+			s.route(protected, "GET", "/local-signals", "Local public-market analysis", s.handleLocalSignals)
+			s.route(protected, "GET", "/local-signals/history", "Local analysis history for one exchange and symbol", s.handleLocalSignalHistory)
+
 			// Logout (add to blacklist)
 			s.route(protected, "POST", "/logout", "Logout (blacklist token)", s.handleLogout)
 

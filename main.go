@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"nofx/api"
 	"nofx/auth"
 	"nofx/config"
@@ -8,6 +9,7 @@ import (
 	"nofx/logger"
 	"nofx/manager"
 	_ "nofx/mcp/provider"
+	"nofx/signals"
 	"nofx/store"
 	"nofx/telemetry"
 	"os"
@@ -98,6 +100,13 @@ func main() {
 	// active symbols. K-lines use hedged fresh requests; no stale snapshot cache
 	// is available to trading callers.
 	logger.Info("📊 Unified fresh-only market data enabled (redundant streams and hedged K-lines)")
+
+	// Shared public-market analysis never owns exchange trading credentials.
+	// Recovered history is display-only until fresh observations are collected.
+	localSignals := signals.New(st.LocalSignal())
+	signals.SetDefault(localSignals)
+	localSignals.Start(context.Background())
+	defer localSignals.Close()
 
 	// Create TraderManager
 	traderManager := manager.NewTraderManager()

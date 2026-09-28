@@ -168,6 +168,9 @@ func (s *Store) initTables() error {
 	if err := s.Paper().initTables(); err != nil {
 		return fmt.Errorf("failed to initialize paper account tables: %w", err)
 	}
+	if err := s.LocalSignal().initTables(); err != nil {
+		return fmt.Errorf("failed to initialize local signal tables: %w", err)
+	}
 	return nil
 }
 
