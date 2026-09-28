@@ -108,6 +108,12 @@ export default function HeaderBar({
                     requiresAuth: true,
                   },
                   {
+                    page: 'analysis',
+                    path: ROUTES.analysis,
+                    label: language === 'zh' ? '行情分析' : 'Market analysis',
+                    requiresAuth: true,
+                  },
+                  {
                     page: 'strategy',
                     path: ROUTES.strategy,
                     label: t('strategyNav', language),
@@ -351,6 +357,12 @@ export default function HeaderBar({
                       page: 'trader',
                       path: ROUTES.dashboard,
                       label: t('dashboardNav', language),
+                      requiresAuth: true,
+                    },
+                    {
+                      page: 'analysis',
+                      path: ROUTES.analysis,
+                      label: language === 'zh' ? '行情分析' : 'Market analysis',
                       requiresAuth: true,
                     },
                     {

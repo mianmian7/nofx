@@ -85,6 +85,53 @@ describe('StrategyStudioPage initial data policy', () => {
     apiMocks.updateStrategy.mockResolvedValue({})
   })
 
+  it('loads a linked local analysis strategy and preserves its settings when saved', async () => {
+    const base = {
+      name: 'Saved analysis',
+      config: {
+        strategy_type: 'ai_trading',
+        ai_config: {
+          coin_source: {
+            source_type: 'local_signals',
+            local_signal_min_score: 72,
+            local_signal_limit: 4,
+          },
+        },
+      },
+    }
+    apiMocks.getStrategies.mockResolvedValue([
+      { ...base, id: 'active-other', is_active: true },
+      { ...base, id: 'linked-analysis', is_active: false },
+    ])
+    render(
+      <MemoryRouter initialEntries={['/strategy?strategy=linked-analysis']}>
+        <StrategyStudioPage />
+      </MemoryRouter>
+    )
+    expect(await screen.findByLabelText('最低分析分数')).toHaveValue(72)
+    expect(screen.getByLabelText('最多候选交易对')).toHaveValue(4)
+    fireEvent.change(screen.getByLabelText('最低分析分数'), {
+      target: { value: '75' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() =>
+      expect(apiMocks.updateStrategy).toHaveBeenCalledWith(
+        'linked-analysis',
+        expect.objectContaining({
+          config: expect.objectContaining({
+            ai_config: expect.objectContaining({
+              coin_source: expect.objectContaining({
+                source_type: 'local_signals',
+                local_signal_min_score: 75,
+                local_signal_limit: 4,
+              }),
+            }),
+          }),
+        })
+      )
+    )
+  })
+
   it('loads the local Binance pool without calling a removed remote source', async () => {
     render(
       <MemoryRouter>

@@ -24,6 +24,7 @@ import { FAQPage } from '../pages/FAQPage'
 import { LandingPage } from '../pages/LandingPage'
 import { SettingsPage } from '../pages/SettingsPage'
 import { StrategyStudioPage } from '../pages/StrategyStudioPage'
+import { LocalSignalsPage } from '../pages/LocalSignalsPage'
 import { TerminalDashboard } from '../components/terminal/TerminalDashboard'
 import { useAuth } from '../contexts/AuthContext'
 import { useLanguage } from '../contexts/LanguageContext'
@@ -486,6 +487,18 @@ export function AppRoutes() {
               </AppChrome>
             ) : (
               <LandingPage />
+            )
+          }
+        />
+        <Route
+          path={ROUTES.analysis}
+          element={
+            isAuthenticated ? (
+              <AppChrome currentPage="analysis">
+                <LocalSignalsPage />
+              </AppChrome>
+            ) : (
+              <Navigate to={ROUTES.login} replace />
             )
           }
         />

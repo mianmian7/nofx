@@ -106,7 +106,7 @@ describe('Paper funding display', () => {
       />
     )
 
-    expect(screen.getByText(/MAKER FIRST/)).toBeInTheDocument()
+    expect(screen.getByText('模拟订单')).toBeInTheDocument()
     expect(screen.getByText(/Maker \$0\.02/)).toBeInTheDocument()
     expect(screen.getByText(/Taker \$0\.5/)).toBeInTheDocument()
     expect(screen.getAllByText(/MUUSDT/).length).toBeGreaterThan(0)

@@ -152,10 +152,28 @@ export function PaperMakerPanel({
   const recent =
     events && events.length > 0 ? events[events.length - 1] : undefined
   const statusLabel = (status: string) => {
+    if (status === 'NEW') return '挂单中'
     if (status === 'PARTIALLY_FILLED') return '部分成交'
     if (status === 'FILLED') return '已成交'
-    if (status === 'CANCELED') return '已撤单'
-    return '挂单中'
+    if (status === 'CANCELED') return '已取消'
+    if (status === 'REJECTED') return '已拒绝'
+    if (status === 'EXPIRED') return '已过期'
+    return status || '状态未知'
+  }
+  const actionLabel = (action: string) =>
+    ({
+      open_long: '开多',
+      open_short: '开空',
+      close_long: '平多',
+      close_short: '平空',
+      take_profit: '止盈',
+      stop_loss: '止损',
+    })[action] || action
+  const reasonLabel = (reason?: string) => {
+    if (reason === 'entry_risk_rejected')
+      return '开仓条件或风险检查未通过，订单已取消'
+    if (reason === 'entry_filled') return '开仓已成交，建立保护委托'
+    return reason
   }
   return (
     <div
@@ -172,15 +190,15 @@ export function PaperMakerPanel({
         color: 'var(--tm-ink-2)',
       }}
     >
-      <strong style={{ color: 'var(--tm-ink)' }}>PAPER MAKER FIRST</strong>
+      <strong style={{ color: 'var(--tm-ink)' }}>模拟订单</strong>
       <span>
         手续费 Maker {fmtUsd(makerFees)} · Taker {fmtUsd(takerFees)}
       </span>
       <span>当前挂单 {pendingOrders?.length ?? 0}</span>
       {(pendingOrders ?? []).slice(0, 3).map((order) => (
         <span key={order.order_id}>
-          <b>{order.symbol}</b> {order.action} · {statusLabel(order.status)}{' '}
-          {order.filled_quantity.toLocaleString()}/
+          <b>{order.symbol}</b> {actionLabel(order.action)} ·{' '}
+          {statusLabel(order.status)} {order.filled_quantity.toLocaleString()}/
           {order.quantity.toLocaleString()}
           {' @ '}
           {order.limit_price.toLocaleString()}
@@ -190,8 +208,92 @@ export function PaperMakerPanel({
         <span>
           最近事件 #{recent.order_id} {recent.symbol} ·{' '}
           {statusLabel(recent.status)}
-          {recent.reason ? ` (${recent.reason})` : ''}
+          {recent.reason ? ` (${reasonLabel(recent.reason)})` : ''}
         </span>
+      )}
+      {events && events.length > 0 && (
+        <details
+          data-testid="paper-order-history"
+          style={{ flexBasis: '100%', minWidth: 0, fontSize: 12 }}
+        >
+          <summary
+            style={{
+              cursor: 'pointer',
+              padding: '8px 0',
+              color: 'var(--tm-ink)',
+            }}
+          >
+            模拟订单记录（{events.length}）
+          </summary>
+          <p style={{ margin: '0 0 6px' }}>
+            这里显示实际挂单、取消和成交状态；执行日志里的请求成功不代表已经成交。
+          </p>
+          <ol
+            style={{
+              maxHeight: 240,
+              overflowY: 'auto',
+              listStyle: 'none',
+              padding: 0,
+              margin: 0,
+            }}
+          >
+            {[...events].reverse().map((event, index) => (
+              <li
+                key={`${event.order_id}-${event.time}-${index}`}
+                style={{
+                  padding: '8px 0',
+                  borderTop: '1px solid var(--tm-hair)',
+                  overflowWrap: 'anywhere',
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: '4px 12px',
+                    alignItems: 'baseline',
+                  }}
+                >
+                  <time dateTime={event.time}>
+                    {Number.isNaN(Date.parse(event.time))
+                      ? '时间未知'
+                      : new Date(event.time).toLocaleString('zh-CN', {
+                          month: '2-digit',
+                          day: '2-digit',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                          second: '2-digit',
+                          hour12: false,
+                        })}
+                  </time>
+                  <b style={{ color: 'var(--tm-ink)' }}>
+                    #{event.order_id} {event.symbol}
+                  </b>
+                  <span>
+                    {actionLabel(event.action)} · {statusLabel(event.status)}
+                  </span>
+                  <span>
+                    委托量{' '}
+                    {event.quantity.toLocaleString(undefined, {
+                      maximumSignificantDigits: 10,
+                    })}
+                    {' @ '}
+                    {event.limit_price.toLocaleString(undefined, {
+                      maximumSignificantDigits: 10,
+                    })}
+                    {(event.filled_quantity ?? 0) > 0 &&
+                      ` · 已成交量 ${event.filled_quantity!.toLocaleString(undefined, { maximumSignificantDigits: 10 })}`}
+                  </span>
+                </div>
+                {event.reason && (
+                  <p style={{ margin: '4px 0 0' }}>
+                    {reasonLabel(event.reason)}
+                  </p>
+                )}
+              </li>
+            ))}
+          </ol>
+        </details>
       )}
     </div>
   )

@@ -107,11 +107,14 @@ export interface GridStrategyConfig {
 export interface CoinSourceConfig {
   source_type:
     | 'binance_dynamic'
+    | 'local_signals'
     | 'static'
     | 'hyper_all'
     | 'hyper_main'
     | 'hyper_rank'
   binance_dynamic_limit?: number
+  local_signal_min_score?: number
+  local_signal_limit?: number
   static_coins?: string[]
   /** User-selected Binance USDⓈ-M TradFi symbols. */
   watchlist?: string[]
@@ -122,13 +125,7 @@ export interface CoinSourceConfig {
   use_hyper_main?: boolean
   hyper_main_limit?: number
   hyper_rank_category?:
-    | 'stock'
-    | 'commodity'
-    | 'index'
-    | 'forex'
-    | 'pre_ipo'
-    | 'crypto'
-    | 'all'
+    'stock' | 'commodity' | 'index' | 'forex' | 'pre_ipo' | 'crypto' | 'all'
   hyper_rank_direction?: 'gainers' | 'losers' | 'volume'
   hyper_rank_limit?: number
 }

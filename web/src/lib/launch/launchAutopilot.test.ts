@@ -104,6 +104,42 @@ describe('launchAutopilot', () => {
     )
   })
 
+  it('keeps the existing Autopilot untouched when launching local analysis', async () => {
+    mocks.api.getTraders.mockResolvedValue([
+      { trader_id: 'old', trader_name: 'NOFX Autopilot', is_running: true },
+    ])
+    await launchAutopilot({
+      traderName: 'Local Analysis strategy-2',
+      ensureStrategy: vi.fn().mockResolvedValue('strategy-2'),
+    })
+    expect(mocks.api.updateTrader).not.toHaveBeenCalled()
+    expect(mocks.api.createTrader).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'Local Analysis strategy-2',
+        execution_mode: 'paper',
+        strategy_id: 'strategy-2',
+      })
+    )
+  })
+
+  it('will not overwrite a live trader using the analysis name', async () => {
+    mocks.api.getTraders.mockResolvedValue([
+      {
+        trader_id: 'old',
+        trader_name: 'Local Analysis strategy-2',
+        execution_mode: 'live',
+      },
+    ])
+    const result = await launchAutopilot({
+      traderName: 'Local Analysis strategy-2',
+      ensureStrategy: vi.fn().mockResolvedValue('strategy-2'),
+    })
+    expect(result.ok).toBe(false)
+    expect(mocks.api.updateTrader).not.toHaveBeenCalled()
+    expect(mocks.api.createTrader).not.toHaveBeenCalled()
+    expect(mocks.api.startTrader).not.toHaveBeenCalled()
+  })
+
   it('returns a setup error when no exchange is ready', async () => {
     mocks.resolveLaunchExchange.mockResolvedValue({
       exchange: null,

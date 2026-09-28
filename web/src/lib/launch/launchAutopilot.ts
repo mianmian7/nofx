@@ -13,6 +13,8 @@ export interface LaunchAutopilotOptions {
    */
   ensureStrategy: () => Promise<string>
   scanIntervalMinutes?: number
+  /** Separate named paper trader, used by local-analysis strategies. */
+  traderName?: string
 }
 
 /**
@@ -24,7 +26,11 @@ export interface LaunchAutopilotOptions {
 export async function launchAutopilot(
   options: LaunchAutopilotOptions
 ): Promise<LaunchOutcome> {
-  const { ensureStrategy, scanIntervalMinutes = 5 } = options
+  const {
+    ensureStrategy,
+    scanIntervalMinutes = 5,
+    traderName = AUTOPILOT_TRADER_NAME,
+  } = options
 
   try {
     const model = await resolveLaunchModel()
@@ -52,7 +58,7 @@ export async function launchAutopilot(
     const strategyId = await ensureStrategy()
 
     const traderRequest = {
-      name: AUTOPILOT_TRADER_NAME,
+      name: traderName,
       ai_model_id: model.id,
       exchange_id: exchange.id,
       strategy_id: strategyId,
@@ -67,9 +73,17 @@ export async function launchAutopilot(
     // deleted id.
     const existingTraders = await api.getTraders(true)
     const existing =
-      existingTraders.find(
-        (trader) => trader.trader_name === AUTOPILOT_TRADER_NAME
-      ) || null
+      existingTraders.find((trader) => trader.trader_name === traderName) ||
+      null
+
+    if (options.traderName && existing && existing.execution_mode !== 'paper') {
+      return {
+        ok: false,
+        kind: 'setup',
+        message:
+          'A non-paper trader already uses this name. It will not be changed.',
+      }
+    }
 
     const autopilot = existing
       ? await api.updateTrader(existing.trader_id, traderRequest)

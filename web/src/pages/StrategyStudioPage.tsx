@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Bot,
   Check,
@@ -30,20 +30,15 @@ import type {
 import type { MarketSymbol } from '../lib/api/data'
 import type { BacktestJob } from '../lib/api/strategies'
 import { launchAutopilot } from '../lib/launch/launchAutopilot'
-import { buildDashboardPath } from '../router/paths'
+import { buildDashboardPath, ROUTES } from '../router/paths'
 
 const API_BASE = import.meta.env.VITE_API_BASE || ''
 
 type Scope =
-  | 'all'
-  | 'crypto'
-  | 'stock'
-  | 'commodity'
-  | 'index'
-  | 'forex'
-  | 'pre_ipo'
+  'all' | 'crypto' | 'stock' | 'commodity' | 'index' | 'forex' | 'pre_ipo'
 
-type CandidateSource = 'binance_dynamic' | 'static' | 'watchlist'
+type CandidateSource =
+  'binance_dynamic' | 'static' | 'watchlist' | 'local_signals'
 
 const scopeOptions: Array<{ value: Scope; zh: string; en: string }> = [
   { value: 'all', zh: '全部', en: 'All' },
@@ -158,6 +153,7 @@ function normalizeSourceType(
   sourceType: CoinSourceConfig['source_type'] | string | undefined
 ): CoinSourceConfig['source_type'] {
   if (
+    sourceType === 'local_signals' ||
     sourceType === 'static' ||
     sourceType === 'hyper_all' ||
     sourceType === 'hyper_main' ||
@@ -173,6 +169,8 @@ function defaultCoinSource(
 ): CoinSourceConfig {
   return {
     source_type: normalizeSourceType(source?.source_type),
+    local_signal_min_score: source?.local_signal_min_score ?? 60,
+    local_signal_limit: source?.local_signal_limit ?? 5,
     binance_dynamic_limit: Math.min(
       Math.max(source?.binance_dynamic_limit || 10, 1),
       10
@@ -366,6 +364,8 @@ export function StrategyStudioPage() {
   const { token } = useAuth()
   const { language } = useLanguage()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const requestedStrategyId = searchParams.get('strategy')
   const [strategies, setStrategies] = useState<Strategy[]>([])
   const [selectedStrategy, setSelectedStrategy] = useState<Strategy | null>(
     null
@@ -445,6 +445,8 @@ export function StrategyStudioPage() {
       try {
         const result = await api.getStrategies()
         setStrategies(result)
+        preferredStrategyId =
+          preferredStrategyId || requestedStrategyId || undefined
         const nextStrategy =
           (preferredStrategyId
             ? result.find((strategy) => strategy.id === preferredStrategyId)
@@ -467,7 +469,7 @@ export function StrategyStudioPage() {
         setLoading(false)
       }
     },
-    [token]
+    [token, requestedStrategyId]
   )
 
   const loadSymbols = useCallback(async () => {
@@ -717,6 +719,10 @@ export function StrategyStudioPage() {
     setSaving(true)
     try {
       const outcome = await launchAutopilot({
+        traderName:
+          coinSource?.source_type === 'local_signals'
+            ? `Local Analysis ${selectedStrategy.id}`
+            : undefined,
         scanIntervalMinutes: 15,
         ensureStrategy: async () => {
           const config = buildAutopilotConfig()
@@ -728,7 +734,8 @@ export function StrategyStudioPage() {
               'Local Binance dynamic candidates evaluated by the configured AI model.',
             config,
           })
-          await api.activateStrategy(selectedStrategy.id)
+          if (coinSource?.source_type !== 'local_signals')
+            await api.activateStrategy(selectedStrategy.id)
           return selectedStrategy.id
         },
       })
@@ -833,6 +840,16 @@ export function StrategyStudioPage() {
   const selectCandidateSource = (source: CandidateSource) => {
     setCandidateQuery('')
     setScope('all')
+    if (source === 'local_signals') {
+      patchCoinSource({
+        source_type: 'local_signals',
+        static_coins: [],
+        use_watchlist: false,
+        local_signal_min_score: coinSource?.local_signal_min_score ?? 60,
+        local_signal_limit: coinSource?.local_signal_limit ?? 5,
+      })
+      return
+    }
     if (source === 'binance_dynamic') {
       patchCoinSource({
         source_type: 'binance_dynamic',
@@ -947,11 +964,13 @@ export function StrategyStudioPage() {
   }
 
   const activeCandidateSource: CandidateSource =
-    coinSource?.source_type === 'static' && watchlistCandidateMode
-      ? 'watchlist'
-      : coinSource?.source_type === 'static'
-        ? 'static'
-        : 'binance_dynamic'
+    coinSource?.source_type === 'local_signals'
+      ? 'local_signals'
+      : coinSource?.source_type === 'static' && watchlistCandidateMode
+        ? 'watchlist'
+        : coinSource?.source_type === 'static'
+          ? 'static'
+          : 'binance_dynamic'
 
   if (loading) {
     return (
@@ -1167,6 +1186,13 @@ export function StrategyStudioPage() {
                     </button>
                     <button
                       type="button"
+                      onClick={() => selectCandidateSource('local_signals')}
+                      className={`rounded-lg border px-3 py-2 text-xs ${activeCandidateSource === 'local_signals' ? 'border-nofx-gold bg-nofx-gold/10 text-nofx-gold' : 'border-nofx-border text-nofx-text-muted'}`}
+                    >
+                      {text(language, '本地行情分析', 'Local market analysis')}
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => selectCandidateSource('watchlist')}
                       disabled={watchlistLoading || watchlist.length === 0}
                       className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs disabled:opacity-50 ${
@@ -1209,121 +1235,198 @@ export function StrategyStudioPage() {
                   </div>
                 </div>
 
-                <div className="mt-4 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
-                  <input
-                    type="search"
-                    value={candidateQuery}
-                    onChange={(event) => setCandidateQuery(event.target.value)}
-                    placeholder={text(
-                      language,
-                      '搜索候选交易对，例如 BTC、ETH 或 QQQ',
-                      'Search candidates, e.g. BTC, ETH, or QQQ'
-                    )}
-                    aria-label={text(
-                      language,
-                      '搜索候选交易对',
-                      'Search candidate symbols'
-                    )}
-                    className="rounded-lg border border-nofx-border bg-nofx-bg px-3 py-2 text-sm text-nofx-text outline-none focus:border-nofx-gold"
-                  />
-                  {candidateQuery ? (
-                    <button
-                      type="button"
-                      onClick={() => setCandidateQuery('')}
-                      className="rounded-lg border border-nofx-border px-4 py-2 text-sm text-nofx-text-muted hover:text-nofx-text"
-                    >
-                      {text(language, '清除搜索', 'Clear search')}
-                    </button>
-                  ) : null}
-                </div>
-
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {scopeOptions.map((option) => {
-                    const count =
-                      option.value === 'all'
-                        ? visibleSymbols.length
-                        : visibleSymbols.filter(
-                            (item) => item.category === option.value
-                          ).length
-                    return (
-                      <button
-                        key={option.value}
-                        type="button"
-                        onClick={() => setScope(option.value)}
-                        className={`rounded-lg border px-3 py-2 text-xs transition ${
-                          scope === option.value
-                            ? 'border-nofx-gold bg-nofx-gold/10 text-nofx-gold'
-                            : 'border-nofx-border bg-nofx-bg-deeper text-nofx-text-muted hover:text-nofx-text'
-                        }`}
-                      >
-                        {text(language, option.zh, option.en)}
-                        {count > 0 ? (
-                          <span className="ml-2 opacity-70">{count}</span>
-                        ) : null}
-                      </button>
-                    )
-                  })}
-                </div>
-
-                {symbolsError || watchlistError ? (
-                  <div className="mt-4 rounded-lg border border-nofx-gold/20 bg-nofx-gold/10 px-3 py-2 text-xs text-nofx-gold">
-                    {symbolsError || watchlistError}
-                  </div>
-                ) : null}
-
-                <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                  {visibleSymbols.map((item) => {
-                    const symbol = normalizeSymbol(item.symbol)
-                    const selected = selectedSet.has(symbol)
-                    return (
-                      <button
-                        key={`${item.exchange}-${symbol}`}
-                        type="button"
-                        onClick={() => toggleSymbol(symbol)}
-                        className={`rounded-lg border p-3 text-left transition ${
-                          selected
-                            ? 'border-nofx-gold bg-nofx-gold/10'
-                            : 'border-nofx-border bg-nofx-bg-deeper hover:border-nofx-border'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-mono text-sm font-semibold text-nofx-text">
-                            {symbol}
-                          </span>
-                          <span className="text-[10px] text-nofx-text-muted">
-                            {formatChange(item.change_24h_pct)}
-                          </span>
-                        </div>
-                        <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-nofx-text-muted">
-                          <span>{categoryLabel(item.category, language)}</span>
-                          <span>
-                            {item.mark_price
-                              ? `$${item.mark_price.toFixed(2)}`
-                              : text(language, '可用', 'ready')}
-                          </span>
-                        </div>
-                      </button>
-                    )
-                  })}
-                </div>
-
-                {visibleSymbols.length === 0 &&
-                !symbolsLoading &&
-                !watchlistLoading ? (
-                  <div className="mt-4 rounded-lg border border-nofx-border bg-nofx-bg-deeper px-3 py-3 text-sm text-nofx-text-muted">
-                    {candidateQuery
-                      ? text(
+                {activeCandidateSource === 'local_signals' ? (
+                  <div className="mt-4 space-y-3">
+                    <p className="text-sm leading-6 text-nofx-text-muted">
+                      {text(
+                        language,
+                        '使用交易员所选交易所的本地分析，只把已确认方向且达到分数的交易对交给 AI。无合格结果时等待；数据过期时禁止新开仓，但不会阻止平仓和止损。',
+                        'Uses local analysis from the trader’s exchange. Only confirmed directions meeting the score are sent to AI. Missing or expired analysis blocks entries, never exits or protection.'
+                      )}
+                    </p>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="flex flex-col gap-2 text-xs text-nofx-text-muted">
+                        {text(
                           language,
-                          '没有匹配的候选交易对，请更换搜索词。',
-                          'No candidates match this search.'
-                        )
-                      : text(
-                          language,
-                          '候选交易对暂不可用，请稍后刷新。',
-                          'Candidate symbols are unavailable; refresh later.'
+                          '最低分析分数',
+                          'Minimum analysis score'
                         )}
+                        <input
+                          type="number"
+                          min={35}
+                          max={95}
+                          value={coinSource.local_signal_min_score ?? 60}
+                          onChange={(event) =>
+                            patchCoinSource({
+                              local_signal_min_score: Number(
+                                event.target.value
+                              ),
+                            })
+                          }
+                          className="rounded-lg border border-nofx-border bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
+                        />
+                      </label>
+                      <label className="flex flex-col gap-2 text-xs text-nofx-text-muted">
+                        {text(
+                          language,
+                          '最多候选交易对',
+                          'Maximum candidate count'
+                        )}
+                        <input
+                          type="number"
+                          min={1}
+                          max={10}
+                          value={coinSource.local_signal_limit ?? 5}
+                          onChange={(event) =>
+                            patchCoinSource({
+                              local_signal_limit: Number(event.target.value),
+                            })
+                          }
+                          className="rounded-lg border border-nofx-border bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
+                        />
+                      </label>
+                    </div>
+                    <Link
+                      to={ROUTES.analysis}
+                      className="inline-block text-sm text-nofx-gold underline"
+                    >
+                      {text(
+                        language,
+                        '查看实时分析和历史记录',
+                        'View current analysis and history'
+                      )}
+                    </Link>
+                    <p className="text-xs text-nofx-text-muted">
+                      {text(
+                        language,
+                        '启动时使用独立模拟交易员，不替换已有 Autopilot。',
+                        'Launch uses a separate paper trader without replacing the existing Autopilot.'
+                      )}
+                    </p>
                   </div>
-                ) : null}
+                ) : (
+                  <>
+                    <div className="mt-4 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
+                      <input
+                        type="search"
+                        value={candidateQuery}
+                        onChange={(event) =>
+                          setCandidateQuery(event.target.value)
+                        }
+                        placeholder={text(
+                          language,
+                          '搜索候选交易对，例如 BTC、ETH 或 QQQ',
+                          'Search candidates, e.g. BTC, ETH, or QQQ'
+                        )}
+                        aria-label={text(
+                          language,
+                          '搜索候选交易对',
+                          'Search candidate symbols'
+                        )}
+                        className="rounded-lg border border-nofx-border bg-nofx-bg px-3 py-2 text-sm text-nofx-text outline-none focus:border-nofx-gold"
+                      />
+                      {candidateQuery ? (
+                        <button
+                          type="button"
+                          onClick={() => setCandidateQuery('')}
+                          className="rounded-lg border border-nofx-border px-4 py-2 text-sm text-nofx-text-muted hover:text-nofx-text"
+                        >
+                          {text(language, '清除搜索', 'Clear search')}
+                        </button>
+                      ) : null}
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {scopeOptions.map((option) => {
+                        const count =
+                          option.value === 'all'
+                            ? visibleSymbols.length
+                            : visibleSymbols.filter(
+                                (item) => item.category === option.value
+                              ).length
+                        return (
+                          <button
+                            key={option.value}
+                            type="button"
+                            onClick={() => setScope(option.value)}
+                            className={`rounded-lg border px-3 py-2 text-xs transition ${
+                              scope === option.value
+                                ? 'border-nofx-gold bg-nofx-gold/10 text-nofx-gold'
+                                : 'border-nofx-border bg-nofx-bg-deeper text-nofx-text-muted hover:text-nofx-text'
+                            }`}
+                          >
+                            {text(language, option.zh, option.en)}
+                            {count > 0 ? (
+                              <span className="ml-2 opacity-70">{count}</span>
+                            ) : null}
+                          </button>
+                        )
+                      })}
+                    </div>
+
+                    {symbolsError || watchlistError ? (
+                      <div className="mt-4 rounded-lg border border-nofx-gold/20 bg-nofx-gold/10 px-3 py-2 text-xs text-nofx-gold">
+                        {symbolsError || watchlistError}
+                      </div>
+                    ) : null}
+
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                      {visibleSymbols.map((item) => {
+                        const symbol = normalizeSymbol(item.symbol)
+                        const selected = selectedSet.has(symbol)
+                        return (
+                          <button
+                            key={`${item.exchange}-${symbol}`}
+                            type="button"
+                            onClick={() => toggleSymbol(symbol)}
+                            className={`rounded-lg border p-3 text-left transition ${
+                              selected
+                                ? 'border-nofx-gold bg-nofx-gold/10'
+                                : 'border-nofx-border bg-nofx-bg-deeper hover:border-nofx-border'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-mono text-sm font-semibold text-nofx-text">
+                                {symbol}
+                              </span>
+                              <span className="text-[10px] text-nofx-text-muted">
+                                {formatChange(item.change_24h_pct)}
+                              </span>
+                            </div>
+                            <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-nofx-text-muted">
+                              <span>
+                                {categoryLabel(item.category, language)}
+                              </span>
+                              <span>
+                                {item.mark_price
+                                  ? `$${item.mark_price.toFixed(2)}`
+                                  : text(language, '可用', 'ready')}
+                              </span>
+                            </div>
+                          </button>
+                        )
+                      })}
+                    </div>
+
+                    {visibleSymbols.length === 0 &&
+                    !symbolsLoading &&
+                    !watchlistLoading ? (
+                      <div className="mt-4 rounded-lg border border-nofx-border bg-nofx-bg-deeper px-3 py-3 text-sm text-nofx-text-muted">
+                        {candidateQuery
+                          ? text(
+                              language,
+                              '没有匹配的候选交易对，请更换搜索词。',
+                              'No candidates match this search.'
+                            )
+                          : text(
+                              language,
+                              '候选交易对暂不可用，请稍后刷新。',
+                              'Candidate symbols are unavailable; refresh later.'
+                            )}
+                      </div>
+                    ) : null}
+                  </>
+                )}
               </section>
 
               <section className="rounded-lg border border-nofx-border bg-nofx-bg-lighter p-4">
@@ -1505,6 +1608,15 @@ export function StrategyStudioPage() {
                     'Replay one symbol at a time. The reproducible trend benchmark is the default; real AI replay is also available.'
                   )}
                 </div>
+                {activeCandidateSource === 'local_signals' && (
+                  <p className="mt-3 text-sm text-nofx-gold">
+                    {text(
+                      language,
+                      '本地分析的过去选币结果不能用今天的排行代替。请在行情分析页查看已保存的历史判断和模拟账户的实际交易记录。此处的单币回放不适用于这套策略。',
+                      'Today’s ranking cannot reconstruct historical selection. Inspect saved analysis and actual paper trades. This single-symbol replay does not apply to local-analysis strategies.'
+                    )}
+                  </p>
+                )}
                 <div className="mt-4 grid gap-3 md:grid-cols-2 lg:grid-cols-5">
                   <label className="text-xs text-nofx-text-muted">
                     {text(language, '回放模式', 'Replay mode')}
@@ -1592,6 +1704,7 @@ export function StrategyStudioPage() {
                   type="button"
                   onClick={startBacktest}
                   disabled={
+                    activeCandidateSource === 'local_signals' ||
                     backtestStarting ||
                     (backtestMode === 'ai_replay' && !backtestModelId) ||
                     !backtestSymbol.trim() ||

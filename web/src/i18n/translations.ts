@@ -1087,7 +1087,8 @@ export const translations = {
       edgeProfile: 'Edge profile',
       edgeProfileDesc: 'Net by hold time and side · after fees',
       executionLog: 'Execution log',
-      executionLogDesc: 'AI decisions and fills per cycle',
+      executionLogDesc:
+        'AI decisions and request results; request success does not mean a fill',
       aiOriginal: 'AI original',
       invertedExecution: 'Executed',
       inverted: 'Inverted',
@@ -2382,7 +2383,7 @@ export const translations = {
       edgeProfile: '优势分布',
       edgeProfileDesc: '按持有时长和方向统计净收益（扣费后）',
       executionLog: '执行日志',
-      executionLogDesc: '每轮 AI 决策与成交记录',
+      executionLogDesc: '每轮 AI 决策与请求结果；请求成功不代表已成交',
       aiOriginal: 'AI 原始',
       invertedExecution: '反向执行',
       inverted: '反向',
@@ -3666,7 +3667,8 @@ export const translations = {
       edgeProfile: 'Profil keunggulan',
       edgeProfileDesc: 'Bersih per durasi dan sisi · setelah biaya',
       executionLog: 'Log eksekusi',
-      executionLogDesc: 'Keputusan dan fill AI per siklus',
+      executionLogDesc:
+        'Keputusan AI dan hasil permintaan; berhasil tidak berarti terisi',
       aiOriginal: 'Asli AI',
       invertedExecution: 'Dieksekusi',
       inverted: 'Dibalik',
