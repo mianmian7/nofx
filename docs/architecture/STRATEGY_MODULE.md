@@ -451,11 +451,16 @@ group identity is hashed in memory; credentials and group keys are never logged.
 
 Default behavior:
 
-- At most **2** logical calls run concurrently in one model group.
-- Logical call starts in one group are separated by at least **30 seconds**.
+- By default, at most **1** request attempt runs concurrently in one model group.
+- Attempt starts in one group are separated by at least **15 seconds**.
 - Different model or credential groups do not block each other.
-- One admission covers all internal retries and releases only after the logical
-  call succeeds or fails, so retries do not queue again.
+- Context-aware request attempts release admission before retrying, then requeue.
+  Legacy message-only calls retain call-level admission.
+- Grok waiting traders are ordered by their least recent admission, with FIFO ties.
+  Canceled or expired waiters do not advance their service age.
+- Grok uses its configured attempt timeout bounded by the parent deadline minus
+  the completion reserve, rather than dividing time equally among possible retries.
+  Attempt deadline expiry ends that cycle; quick transient failures may still retry.
 - Request-based and streaming calls honor their request context while waiting;
   message-only admission is bounded by the configured client timeout.
 - Non-trader MCP/CLI calls without trader metadata bypass the scheduler.
@@ -465,8 +470,10 @@ overridden at process start with:
 
 | Environment variable | Default | Meaning |
 |----------------------|---------|---------|
-| `AI_MODEL_REQUEST_MAX_CONCURRENCY` | `2` | Maximum active logical calls in one model group |
-| `AI_MODEL_REQUEST_START_INTERVAL_SECONDS` | `30` | Minimum delay between logical-call starts in one group |
+| `AI_MODEL_REQUEST_MAX_CONCURRENCY` | `1` | Maximum active attempts in one model group |
+| `AI_GROK_MODEL_REQUEST_MAX_CONCURRENCY` | Inherit global limit | Explicit Grok-only capacity override; validate upstream capacity first, restart to apply |
+| `AI_GROK_REQUEST_TIMEOUT_SECONDS` | Inherit client and idle defaults | Positive Grok-only HTTP/attempt and stream-idle timeout; parent deadline and completion reserve still apply |
+| `AI_MODEL_REQUEST_START_INTERVAL_SECONDS` | `15` | Minimum delay between attempt starts in one group |
 
 Admission emits `ai_request_admitted` with trader, provider, model, wait time,
 and the effective limits. It does not emit credentials or the hashed group key.

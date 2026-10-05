@@ -450,11 +450,13 @@ RetryDelay: 2 seconds (exponential backoff)
 
 默认行为：
 
-- 同一模型组最多同时运行 **2** 个逻辑调用。
-- 同一模型组的逻辑调用启动时间至少间隔 **30 秒**。
+- 同一模型组默认最多同时执行 **1** 次请求尝试。
+- 同一模型组的请求启动时间至少间隔 **15 秒**。
 - 不同模型或不同凭据的组互不阻塞。
-- 一次准入覆盖该逻辑调用内部的全部重试，直到最终成功或失败才释放；重试
-  不会重新排队。
+- 带 context 的请求每次尝试结束即释放名额，重试重新排队；旧的仅消息入口仍按整次调用准入。
+- Grok 等待队列优先服务最久未获准的账户，同龄按先到先服务；取消或过期不会推进服务记录。
+- Grok 单次尝试遵守配置上限及父周期扣除收尾预留后的期限，不再给潜在重试平均分时。
+  单次期限耗尽即结束本轮；短暂连接错误仍可重试。
 - Request 和流式调用在等待时遵守请求 context 的取消信号；仅消息调用的准入
   等待受客户端配置的超时时间限制。
 - 不带 trader metadata 的 MCP/CLI 调用不进入此调度器。
@@ -464,8 +466,10 @@ RetryDelay: 2 seconds (exponential backoff)
 
 | 环境变量 | 默认值 | 含义 |
 |---------|-------|------|
-| `AI_MODEL_REQUEST_MAX_CONCURRENCY` | `2` | 同一模型组内最多同时运行的逻辑调用数 |
-| `AI_MODEL_REQUEST_START_INTERVAL_SECONDS` | `30` | 同一模型组逻辑调用启动的最小间隔秒数 |
+| `AI_MODEL_REQUEST_MAX_CONCURRENCY` | `1` | 同一模型组最多同时执行的请求尝试数 |
+| `AI_GROK_MODEL_REQUEST_MAX_CONCURRENCY` | 继承全局上限 | 仅覆盖 Grok 并发；须先验证上游容量，重启后生效 |
+| `AI_GROK_REQUEST_TIMEOUT_SECONDS` | 继承客户端及空闲默认值 | 正整数，仅覆盖 Grok HTTP/单次尝试及流空闲超时；仍受父周期期限和收尾预留约束 |
+| `AI_MODEL_REQUEST_START_INTERVAL_SECONDS` | `15` | 同一模型组请求启动的最小间隔秒数 |
 
 准入成功会记录结构化日志 `ai_request_admitted`，包含 trader、provider、模型、
 等待时间和生效的限制，但不会记录凭据或哈希分组 key。

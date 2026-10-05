@@ -715,6 +715,12 @@ func (client *Client) attemptContext(parent context.Context, attemptsLeft int) (
 			return nil, nil, ErrInsufficientRequestBudget
 		}
 		share := remaining / time.Duration(attemptsLeft)
+		// Grok reasoning may need the configured attempt cap. Do not abort
+		// healthy work to reserve equal slices for hypothetical retries.
+		// A timed-out Grok attempt is terminal for this cycle.
+		if client.Provider == ProviderGrok {
+			share = remaining
+		}
 		if share < limit {
 			limit = share
 		}
@@ -822,6 +828,7 @@ func (client *Client) CallWithRequest(req *Request) (string, error) {
 		client.logAttemptStart(metadata, attempt, maxAttempts)
 		result, callErr := client.callWithRequest(&attemptReq)
 		attemptDuration := time.Since(attemptStart)
+		attemptExpired := errors.Is(attemptCtx.Err(), context.DeadlineExceeded) || errors.Is(callErr, context.DeadlineExceeded)
 		cancelAttempt()
 		cooldown := time.Duration(0)
 		if callErr != nil {
@@ -841,7 +848,7 @@ func (client *Client) CallWithRequest(req *Request) (string, error) {
 
 		lastErr = callErr
 		retryable := parentCtx.Err() == nil && client.Hooks.IsRetryableError(callErr)
-		willRetry := retryable && attempt < maxAttempts
+		willRetry := retryable && attempt < maxAttempts && !(client.Provider == ProviderGrok && attemptExpired)
 		if cooldown > 0 && !waitFitsBudget(parentCtx, cooldown, client.completionReserve()+client.minAttemptBudget()) {
 			willRetry = false
 		}
@@ -931,6 +938,7 @@ func (client *Client) CallWithRequestFull(req *Request) (*LLMResponse, error) {
 		client.logAttemptStart(metadata, attempt, maxAttempts)
 		result, callErr := client.callWithRequestFull(&attemptReq)
 		attemptDuration := time.Since(attemptStart)
+		attemptExpired := errors.Is(attemptCtx.Err(), context.DeadlineExceeded) || errors.Is(callErr, context.DeadlineExceeded)
 		cancelAttempt()
 		cooldown := time.Duration(0)
 		if callErr != nil {
@@ -947,7 +955,7 @@ func (client *Client) CallWithRequestFull(req *Request) (*LLMResponse, error) {
 		}
 		lastErr = callErr
 		retryable := parentCtx.Err() == nil && client.Hooks.IsRetryableError(callErr)
-		willRetry := retryable && attempt < maxAttempts && (cooldown <= 0 || waitFitsBudget(parentCtx, cooldown, client.completionReserve()+client.minAttemptBudget()))
+		willRetry := retryable && attempt < maxAttempts && !(client.Provider == ProviderGrok && attemptExpired) && (cooldown <= 0 || waitFitsBudget(parentCtx, cooldown, client.completionReserve()+client.minAttemptBudget()))
 		client.logAttemptFailure(metadata, attempt, maxAttempts, attemptDuration, totalDuration, callErr, retryable, willRetry)
 		if !willRetry {
 			return nil, client.wrapFinalCallError(attempt, totalDuration, callErr)
@@ -982,7 +990,7 @@ func (client *Client) callWithRequestFull(req *Request) (*LLMResponse, error) {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	resp, err := client.HTTPClient.Do(httpReq)
+	resp, err := client.doModelHTTP(httpReq, req.Metadata)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
@@ -1025,7 +1033,7 @@ func (client *Client) callWithRequest(req *Request) (string, error) {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
-	resp, err := client.HTTPClient.Do(httpReq)
+	resp, err := client.doModelHTTP(httpReq, req.Metadata)
 	if err != nil {
 		return "", fmt.Errorf("failed to send request: %w", err)
 	}
@@ -1098,7 +1106,7 @@ func (client *Client) callWithRequestStreaming(req *Request, onChunk func(string
 	}()
 
 	httpReq = httpReq.WithContext(ctx)
-	resp, err := client.HTTPClient.Do(httpReq)
+	resp, err := client.doModelHTTP(httpReq, req.Metadata)
 	if err != nil {
 		return "", fmt.Errorf("streaming request failed: %w", err)
 	}

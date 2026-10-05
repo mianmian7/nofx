@@ -2,6 +2,10 @@ package provider
 
 import (
 	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"time"
 
 	"nofx/mcp"
 )
@@ -34,6 +38,18 @@ func NewGrokClientWithOptions(opts ...mcp.ClientOption) mcp.AIClient {
 		mcp.WithProvider(mcp.ProviderGrok),
 		mcp.WithModel(DefaultGrokModel),
 		mcp.WithBaseURL(DefaultGrokBaseURL),
+	}
+
+	// Optional provider-scoped budget for slow reasoning. The request loop still
+	// bounds it by the parent cycle deadline minus its completion reserve.
+	// Set idle and HTTP/attempt limits together: otherwise an older idle timer
+	// cancels the request before the configured attempt budget can be used.
+	seconds, err := strconv.ParseInt(strings.TrimSpace(os.Getenv("AI_GROK_REQUEST_TIMEOUT_SECONDS")), 10, 32)
+	if err == nil && seconds > 0 {
+		timeout := time.Duration(seconds) * time.Second
+		grokOpts = append(grokOpts, mcp.WithTimeout(timeout), func(cfg *mcp.Config) {
+			cfg.StreamIdleTimeout = timeout
+		})
 	}
 
 	allOpts := append(grokOpts, opts...)

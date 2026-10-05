@@ -35,13 +35,24 @@ type modelRequestScheduler struct {
 	afterSlotRelease func()
 }
 
+type modelRequestWaiter struct {
+	ctx      context.Context
+	traderID string
+	ready    chan struct{}
+	granted  bool // protected by slotMu
+}
+
 type modelRequestGroup struct {
-	slots         chan struct{}
-	startGate     chan struct{}
-	nextStart     time.Time
-	cooldownMu    sync.RWMutex
-	cooldownUntil time.Time
-	cooldownKind  ErrorKind
+	slotMu          sync.Mutex
+	waiting         []*modelRequestWaiter
+	lastService     map[string]uint64
+	serviceSequence uint64
+	slots           chan struct{}
+	startGate       chan struct{}
+	nextStart       time.Time
+	cooldownMu      sync.RWMutex
+	cooldownUntil   time.Time
+	cooldownKind    ErrorKind
 }
 
 func newModelRequestScheduler(maxConcurrent int, minStartInterval time.Duration) *modelRequestScheduler {
@@ -59,6 +70,10 @@ func newModelRequestScheduler(maxConcurrent int, minStartInterval time.Duration)
 }
 
 func (scheduler *modelRequestScheduler) acquire(ctx context.Context, key string) (func(), error) {
+	return scheduler.acquireForTrader(ctx, key, "")
+}
+
+func (scheduler *modelRequestScheduler) acquireForTrader(ctx context.Context, key, traderID string) (func(), error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -74,14 +89,12 @@ func (scheduler *modelRequestScheduler) acquire(ctx context.Context, key string)
 		if scheduler.beforeSlotWait != nil {
 			scheduler.beforeSlotWait()
 		}
-		select {
-		case group.slots <- struct{}{}:
-		case <-ctx.Done():
+		if err := group.acquireSlot(ctx, traderID); err != nil {
 			return nil, schedulerContextError(ctx, group)
 		}
 
 		releaseSlot := func() {
-			<-group.slots
+			group.releaseSlot()
 			if scheduler.afterSlotRelease != nil {
 				scheduler.afterSlotRelease()
 			}
@@ -135,6 +148,7 @@ func (scheduler *modelRequestScheduler) acquire(ctx context.Context, key string)
 			continue
 		}
 		group.nextStart = time.Now().Add(scheduler.minStartInterval)
+		group.markServed(traderID)
 		group.startGate <- struct{}{}
 
 		var once sync.Once
@@ -142,6 +156,76 @@ func (scheduler *modelRequestScheduler) acquire(ctx context.Context, key string)
 			once.Do(releaseSlot)
 		}, nil
 	}
+}
+
+// Admission age persists across failed/expired cycles. FIFO alone repeatedly
+// penalizes later phase offsets when healthy reasoning calls take minutes.
+// Only callers supplying a trader identity opt into least-recently-served order;
+// callers without one retain FIFO order. No slot can preempt an active request.
+func (group *modelRequestGroup) acquireSlot(ctx context.Context, traderID string) error {
+	waiter := &modelRequestWaiter{ctx: ctx, traderID: traderID, ready: make(chan struct{})}
+	group.slotMu.Lock()
+	group.waiting = append(group.waiting, waiter)
+	group.dispatchSlotsLocked()
+	group.slotMu.Unlock()
+	select {
+	case <-waiter.ready:
+		return nil
+	case <-ctx.Done():
+		group.slotMu.Lock()
+		if waiter.granted {
+			<-group.slots
+		} else {
+			for i, queued := range group.waiting {
+				if queued == waiter {
+					group.waiting = append(group.waiting[:i], group.waiting[i+1:]...)
+					break
+				}
+			}
+		}
+		group.dispatchSlotsLocked()
+		group.slotMu.Unlock()
+		return ctx.Err()
+	}
+}
+
+func (group *modelRequestGroup) dispatchSlotsLocked() {
+	for len(group.waiting) > 0 && len(group.slots) < cap(group.slots) {
+		best := 0
+		for i, candidate := range group.waiting {
+			if group.lastService[candidate.traderID] < group.lastService[group.waiting[best].traderID] {
+				best = i
+			}
+		}
+		waiter := group.waiting[best]
+		group.waiting = append(group.waiting[:best], group.waiting[best+1:]...)
+		if waiter.ctx.Err() != nil {
+			continue
+		}
+		group.slots <- struct{}{}
+		waiter.granted = true
+		close(waiter.ready)
+	}
+}
+
+func (group *modelRequestGroup) releaseSlot() {
+	group.slotMu.Lock()
+	<-group.slots
+	group.dispatchSlotsLocked()
+	group.slotMu.Unlock()
+}
+
+func (group *modelRequestGroup) markServed(traderID string) {
+	if traderID == "" {
+		return
+	}
+	group.slotMu.Lock()
+	if group.lastService == nil {
+		group.lastService = make(map[string]uint64)
+	}
+	group.serviceSequence++
+	group.lastService[traderID] = group.serviceSequence
+	group.slotMu.Unlock()
 }
 
 func waitForModelCooldown(ctx context.Context, group *modelRequestGroup) error {
@@ -206,13 +290,20 @@ func (scheduler *modelRequestScheduler) cooldownState(key string) (time.Duration
 }
 
 func (scheduler *modelRequestScheduler) group(key string) *modelRequestGroup {
+	return scheduler.groupWithCapacity(key, scheduler.maxConcurrent)
+}
+
+func (scheduler *modelRequestScheduler) groupWithCapacity(key string, capacity int) *modelRequestGroup {
+	if capacity <= 0 {
+		capacity = scheduler.maxConcurrent
+	}
 	scheduler.mu.Lock()
 	defer scheduler.mu.Unlock()
 	if group := scheduler.groups[key]; group != nil {
 		return group
 	}
 	group := &modelRequestGroup{
-		slots:     make(chan struct{}, scheduler.maxConcurrent),
+		slots:     make(chan struct{}, capacity),
 		startGate: make(chan struct{}, 1),
 	}
 	group.startGate <- struct{}{}
@@ -263,7 +354,14 @@ func normalizeModelRequestURL(rawURL string) string {
 }
 
 func (client *Client) modelRequestScheduleKey(model string) string {
-	return modelRequestScheduleKey(client.Provider, client.BaseURL, model, client.APIKey)
+	key := modelRequestScheduleKey(client.Provider, client.BaseURL, model, client.APIKey)
+	if client.Provider == ProviderGrok {
+		// Explicit, Grok-only override. Capacity is fixed when the group is
+		// created; changing environment requires restart, never resizing live slots.
+		capacity := getEnvInt("AI_GROK_MODEL_REQUEST_MAX_CONCURRENCY", defaultModelRequestScheduler.maxConcurrent)
+		defaultModelRequestScheduler.groupWithCapacity(key, capacity)
+	}
+	return key
 }
 
 func (client *Client) acquireModelRequest(metadata CallMetadata, model string, ctx context.Context) (func(), error) {
@@ -271,14 +369,19 @@ func (client *Client) acquireModelRequest(metadata CallMetadata, model string, c
 		return func() {}, nil
 	}
 	waitStart := time.Now()
-	release, err := defaultModelRequestScheduler.acquire(ctx, client.modelRequestScheduleKey(model))
+	traderID := ""
+	if client.Provider == ProviderGrok {
+		traderID = metadata.TraderID
+	}
+	key := client.modelRequestScheduleKey(model)
+	release, err := defaultModelRequestScheduler.acquireForTrader(ctx, key, traderID)
 	if err != nil {
 		return nil, err
 	}
 	client.Log.Infof(
 		"ai_request_admitted call_id=%s cycle_id=%s trader_id=%s provider=%s model=%s wait_ms=%d max_concurrency=%d start_interval_ms=%d",
 		boundedLogValue(metadata.CallID, 96), boundedLogValue(metadata.CycleID, 96), boundedLogValue(metadata.TraderID, 96), boundedLogValue(client.Provider, 96), boundedLogValue(model, 96),
-		time.Since(waitStart).Milliseconds(), defaultModelRequestScheduler.maxConcurrent,
+		time.Since(waitStart).Milliseconds(), cap(defaultModelRequestScheduler.group(key).slots),
 		defaultModelRequestScheduler.minStartInterval.Milliseconds(),
 	)
 	return release, nil
