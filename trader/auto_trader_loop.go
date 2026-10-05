@@ -216,6 +216,34 @@ func (at *AutoTrader) runCycleContext(requestCtx context.Context) error {
 	}
 
 	if err != nil {
+		var noEligible *kernel.NoEligibleCandidatesError
+		if errors.As(err, &noEligible) {
+			at.logInfof("⏳ %v", noEligible)
+			record.Success = true
+			record.ExecutionLog = append(record.ExecutionLog, noEligible.Error())
+			record.AccountState = store.AccountSnapshot{
+				TotalBalance:          ctx.Account.TotalEquity,
+				AvailableBalance:      ctx.Account.AvailableBalance,
+				TotalUnrealizedProfit: ctx.Account.UnrealizedPnL,
+				PositionCount:         ctx.Account.PositionCount,
+				InitialBalance:        at.initialBalance,
+			}
+			for _, symbol := range noEligible.Symbols {
+				record.Decisions = append(record.Decisions, store.DecisionAction{
+					Action: "wait", Symbol: symbol, Reasoning: noEligible.Error(),
+					Success: true, Timestamp: time.Now().UTC(),
+				})
+			}
+			decisionJSON, _ := json.MarshalIndent(record.Decisions, "", "  ")
+			record.DecisionJSON = string(decisionJSON)
+			// No AI request occurred: preserve both the failure count and
+			// safe-mode cause rather than pretending the model recovered.
+			// A persistence error must not turn into a healthy wait.
+			if claimCycleFinalization(requestCtx) {
+				return at.saveDecision(record)
+			}
+			return nil
+		}
 		var marketDataErr *kernel.MarketDataUnavailableError
 		if errors.As(err, &marketDataErr) {
 			at.logWarnf("⏭️ Skipping live AI decision: %v", marketDataErr)

@@ -25,6 +25,18 @@ type MarketDataUnavailableError struct {
 	Cause   error
 }
 
+// NoEligibleCandidatesError is a healthy policy wait, not a market-data
+// outage. It is emitted only after every candidate was fetched successfully
+// and explicitly excluded by the existing liquidity rule, with no positions
+// left to manage. Callers must not invoke AI or reset AI recovery state.
+type NoEligibleCandidatesError struct {
+	Symbols []string
+}
+
+func (err *NoEligibleCandidatesError) Error() string {
+	return fmt.Sprintf("all %d fresh candidates were excluded by liquidity policy; waiting without an AI call", len(err.Symbols))
+}
+
 const minFreshCandidateCoveragePercent = 80
 
 func (err *MarketDataUnavailableError) Error() string {
@@ -357,6 +369,7 @@ func fetchMarketDataWithStrategyContext(requestCtx context.Context, ctx *Context
 	candidateAttempts := 0
 	freshCandidates := 0
 	failedCandidates := make([]string, 0)
+	liquidityFilteredSymbols := make([]string, 0)
 
 	for _, coin := range ctx.CandidateCoins {
 		if err := requestCtx.Err(); err != nil {
@@ -399,6 +412,12 @@ func fetchMarketDataWithStrategyContext(requestCtx context.Context, ctx *Context
 			if oiValueInMillions < minOIThresholdMillions {
 				logger.Infof("⚠️  %s OI value too low (%.2fM USD < %.1fM), skipping coin",
 					coin.Symbol, oiValueInMillions, minOIThresholdMillions)
+				// Missing/zero/invalid OI must not masquerade as a complete,
+				// healthy policy observation. Positive finite values below
+				// the threshold explicitly establish the filtering reason.
+				if oiValue > 0 {
+					liquidityFilteredSymbols = append(liquidityFilteredSymbols, coin.Symbol)
+				}
 				continue
 			}
 		}
@@ -409,6 +428,10 @@ func fetchMarketDataWithStrategyContext(requestCtx context.Context, ctx *Context
 		if err := ensureFreshCandidateCoverage(candidateAttempts, freshCandidates, failedCandidates); err != nil {
 			return err
 		}
+	}
+	if candidateAttempts > 0 && len(ctx.Positions) == 0 && len(ctx.MarketDataMap) == 0 &&
+		freshCandidates == candidateAttempts && len(liquidityFilteredSymbols) == candidateAttempts {
+		return &NoEligibleCandidatesError{Symbols: liquidityFilteredSymbols}
 	}
 	// The provider contract is fresh-only even for paper analysis. An empty
 	// candidate universe or a batch where every symbol failed must never reach
