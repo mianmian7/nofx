@@ -255,7 +255,7 @@ func GetJevDecisionWithMacroContext(
 
 		pos := positionMap[sym]
 		feat := extractJevFeature(sym, mktData, pos, engine.config.Indicators.Klines.PrimaryTimeframe)
-		state, questions := BuildJevStateAndQuestions(feat)
+		state, questions := engine.buildJevStateForStrategy(feat)
 
 		req := &provider.JevRequest{
 			State:     state,

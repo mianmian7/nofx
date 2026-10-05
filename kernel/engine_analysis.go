@@ -315,6 +315,10 @@ func fetchMarketDataWithStrategyContext(requestCtx context.Context, ctx *Context
 	}
 
 	logger.Infof("📊 Strategy timeframes: %v, Primary: %s, Kline count: %d", timeframes, primaryTimeframe, klineCount)
+	fetchObservation := market.GetWithTimeframesForProviderContext
+	if config.Indicators.Klines.ClosedOnly {
+		fetchObservation = market.GetWithClosedTimeframesForProviderContext
+	}
 	marketDataProvider := engine.MarketDataProvider()
 	if marketDataProvider == nil {
 		return fmt.Errorf("strategy market data provider is unavailable")
@@ -331,7 +335,7 @@ func fetchMarketDataWithStrategyContext(requestCtx context.Context, ctx *Context
 		if _, contractErr := engine.ValidateCandidateContract(pos.Symbol); contractErr != nil {
 			return &MarketDataUnavailableError{Symbols: []string{pos.Symbol}, Cause: contractErr}
 		}
-		data, err = market.GetWithTimeframesForProviderContext(requestCtx, marketDataProvider, pos.Symbol, timeframes, primaryTimeframe, klineCount)
+		data, err = fetchObservation(requestCtx, marketDataProvider, pos.Symbol, timeframes, primaryTimeframe, klineCount)
 		if err != nil {
 			logger.Infof("Failed to fetch %s market data for position %s: %v", marketExchange, pos.Symbol, err)
 			if ctx.RequireFreshMarketData {
@@ -375,7 +379,7 @@ func fetchMarketDataWithStrategyContext(requestCtx context.Context, ctx *Context
 			failedCandidates = append(failedCandidates, coin.Symbol)
 			continue
 		}
-		data, err = market.GetWithTimeframesForProviderContext(requestCtx, marketDataProvider, coin.Symbol, timeframes, primaryTimeframe, klineCount)
+		data, err = fetchObservation(requestCtx, marketDataProvider, coin.Symbol, timeframes, primaryTimeframe, klineCount)
 		if err != nil {
 			logger.Infof("Failed to fetch %s market data for %s: %v", marketExchange, coin.Symbol, err)
 			failedCandidates = append(failedCandidates, coin.Symbol)

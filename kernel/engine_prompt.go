@@ -833,6 +833,9 @@ func (e *StrategyEngine) formatMarketData(data *market.Data) string {
 
 	// Clearly label the coin symbol
 	sb.WriteString(fmt.Sprintf("=== %s %s Market Data ===\n\n", exchange, data.Symbol))
+	if !data.ClosedIndicatorsAt.IsZero() {
+		sb.WriteString(fmt.Sprintf("Observation mode: completed candles for indicators and OHLCV; cutoff %s UTC. current_price is the latest raw market price and may differ from the last completed candle.\n\n", data.ClosedIndicatorsAt.UTC().Format("2006-01-02 15:04:05")))
+	}
 	sb.WriteString(fmt.Sprintf("current_price = %.4f", data.CurrentPrice))
 
 	if indicators.EnableEMA {

@@ -98,6 +98,16 @@ func GetWithTimeframesForProviderContext(requestCtx context.Context, provider Ma
 	return getWithTimeframesFromProviderContext(requestCtx, provider, symbol, timeframes, primaryTimeframe, count)
 }
 
+// GetWithClosedTimeframesForProviderContext is an opt-in observation variant.
+// Bypass the aggregate cache: cached forming bars cannot become finalized bars
+// just because a wall-clock boundary passed. Providers still fetch fresh data.
+func GetWithClosedTimeframesForProviderContext(requestCtx context.Context, provider MarketDataProvider, symbol string, timeframes []string, primaryTimeframe string, count int) (*Data, error) {
+	if provider == nil {
+		return nil, fmt.Errorf("market data provider is nil")
+	}
+	return fetchWithTimeframesFromProviderMode(requestCtx, provider, symbol, timeframes, primaryTimeframe, count, true, time.Now().UTC())
+}
+
 func getWithTimeframesFromProvider(provider MarketDataProvider, symbol string, timeframes []string, primaryTimeframe string, count int) (*Data, error) {
 	return getWithTimeframesFromProviderContext(context.Background(), provider, symbol, timeframes, primaryTimeframe, count)
 }
@@ -233,6 +243,10 @@ func getWithTimeframesFromProviderContext(requestCtx context.Context, provider M
 }
 
 func fetchWithTimeframesFromProvider(requestCtx context.Context, provider MarketDataProvider, symbol string, timeframes []string, primaryTimeframe string, count int) (*Data, error) {
+	return fetchWithTimeframesFromProviderMode(requestCtx, provider, symbol, timeframes, primaryTimeframe, count, false, time.Time{})
+}
+
+func fetchWithTimeframesFromProviderMode(requestCtx context.Context, provider MarketDataProvider, symbol string, timeframes []string, primaryTimeframe string, count int, closedOnly bool, cutoff time.Time) (*Data, error) {
 	if requestCtx == nil {
 		requestCtx = context.Background()
 	}
@@ -262,7 +276,7 @@ func fetchWithTimeframesFromProvider(requestCtx context.Context, provider Market
 	// Store data for all timeframes
 	timeframeData := make(map[string]*TimeframeSeriesData)
 	freshnessProofs := make(map[string]FreshnessProof)
-	var primaryKlines []Kline
+	var primaryKlines, rawPrimaryKlines []Kline
 	klinesByTimeframe := make(map[string][]Kline)
 
 	// Get K-line data for each timeframe
@@ -280,8 +294,16 @@ func fetchWithTimeframesFromProvider(requestCtx context.Context, provider Market
 			logger.Infof("%s %s K-line data from %s is empty", symbol, tf, provider.Exchange())
 			return nil, &MarketDataUnavailableError{Exchange: provider.Exchange(), Symbol: symbol, Capability: CapabilityKlines, Cause: fmt.Errorf("fresh %s K-line data is empty", tf)}
 		}
+		rawKlines := klines
+		if closedOnly {
+			var closedErr error
+			klines, closedErr = completedIndicatorKlines(rawKlines, cutoff)
+			if closedErr != nil {
+				return nil, &MarketDataUnavailableError{Exchange: provider.Exchange(), Symbol: symbol, Capability: CapabilityKlines, Cause: fmt.Errorf("completed %s indicators unavailable: %w", tf, closedErr)}
+			}
+		}
 		klinesByTimeframe[tf] = klines
-		sourceTime := time.UnixMilli(klines[len(klines)-1].OpenTime).UTC()
+		sourceTime := time.UnixMilli(rawKlines[len(rawKlines)-1].OpenTime).UTC()
 		receivedAt := time.Now().UTC()
 		freshnessProofs[tf] = FreshnessProof{
 			Exchange:   provider.Exchange(),
@@ -296,6 +318,7 @@ func fetchWithTimeframesFromProvider(requestCtx context.Context, provider Market
 		// Save primary timeframe K-lines for calculating base indicators
 		if tf == primaryTimeframe {
 			primaryKlines = klines
+			rawPrimaryKlines = rawKlines
 		}
 
 		// Calculate series data for this timeframe (use count from config)
@@ -309,13 +332,13 @@ func fetchWithTimeframesFromProvider(requestCtx context.Context, provider Market
 	}
 
 	// Data staleness detection
-	if isStaleData(primaryKlines, symbol) {
+	if isStaleData(rawPrimaryKlines, symbol) {
 		logger.Infof("⚠️  WARNING: %s detected stale data (consecutive price freeze), skipping symbol", symbol)
 		return nil, fmt.Errorf("%s data is stale, possible cache failure", symbol)
 	}
 
 	// Calculate current indicators (based on primary timeframe latest data)
-	currentPrice := primaryKlines[len(primaryKlines)-1].Close
+	currentPrice := rawPrimaryKlines[len(rawPrimaryKlines)-1].Close
 	currentEMA20 := calculateEMA(primaryKlines, 20)
 	currentMACD := calculateMACD(primaryKlines)
 	currentRSI7 := calculateRSI(primaryKlines, 7)
@@ -360,6 +383,9 @@ func fetchWithTimeframesFromProvider(requestCtx context.Context, provider Market
 		FreshnessProofs: freshnessProofs,
 		TimeframeData:   timeframeData,
 	}
+	if closedOnly {
+		data.ClosedIndicatorsAt = cutoff
+	}
 	if intradayKlines, ok := klinesByTimeframe["3m"]; ok {
 		data.IntradaySeries = calculateIntradaySeries(intradayKlines)
 	}
@@ -368,6 +394,35 @@ func fetchWithTimeframesFromProvider(requestCtx context.Context, provider Market
 	}
 
 	return data, nil
+}
+
+// completedIndicatorKlines validates the native inclusive CloseTime contract.
+// At least 50 completed candles are needed for EMA50. Legacy gates are unchanged.
+func completedIndicatorKlines(raw []Kline, cutoff time.Time) ([]Kline, error) {
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("empty native candles")
+	}
+	for i, candle := range raw {
+		if candle.OpenTime <= 0 || candle.CloseTime < candle.OpenTime || (i > 0 && candle.OpenTime <= raw[i-1].OpenTime) {
+			return nil, fmt.Errorf("invalid or unordered native candle timestamps")
+		}
+	}
+	closed := FilterClosedKlines(raw, cutoff.Add(-time.Millisecond))
+	if len(closed) < 50 {
+		return nil, fmt.Errorf("need 50 completed candles, received %d", len(closed))
+	}
+	lastRaw := raw[len(raw)-1]
+	if lastRaw.OpenTime > cutoff.UnixMilli() {
+		return nil, fmt.Errorf("native snapshot crossed observation cutoff")
+	}
+	expected := lastRaw.CloseTime
+	if expected >= cutoff.UnixMilli() {
+		expected = lastRaw.OpenTime - 1
+	}
+	if closed[len(closed)-1].CloseTime != expected {
+		return nil, fmt.Errorf("latest completed candle does not meet native boundary")
+	}
+	return closed, nil
 }
 
 // getOpenInterestData retrieves OI data

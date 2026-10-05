@@ -4,19 +4,22 @@ import "time"
 
 // Data market data structure
 type Data struct {
-	Symbol            string
-	Exchange          string `json:"exchange,omitempty"`
-	CurrentPrice      float64
-	PriceChange1h     float64 // 1-hour price change percentage
-	PriceChange4h     float64 // 4-hour price change percentage
-	CurrentEMA20      float64
-	CurrentMACD       float64
-	CurrentRSI7       float64
-	OpenInterest      *OIData
-	FundingRate       float64
-	IntradaySeries    *IntradayData
-	LongerTermContext *LongerTermData
-	FreshnessProofs   map[string]FreshnessProof `json:"freshness_proofs,omitempty"`
+	Symbol       string
+	Exchange     string `json:"exchange,omitempty"`
+	CurrentPrice float64
+	// Zero for legacy observations. Nonzero marks an opt-in completed-candle
+	// indicator snapshot; CurrentPrice remains the latest raw market price.
+	ClosedIndicatorsAt time.Time `json:"closed_indicators_at,omitzero"`
+	PriceChange1h      float64   // 1-hour price change percentage
+	PriceChange4h      float64   // 4-hour price change percentage
+	CurrentEMA20       float64
+	CurrentMACD        float64
+	CurrentRSI7        float64
+	OpenInterest       *OIData
+	FundingRate        float64
+	IntradaySeries     *IntradayData
+	LongerTermContext  *LongerTermData
+	FreshnessProofs    map[string]FreshnessProof `json:"freshness_proofs,omitempty"`
 	// Multi-timeframe data (new)
 	TimeframeData map[string]*TimeframeSeriesData `json:"timeframe_data,omitempty"`
 }

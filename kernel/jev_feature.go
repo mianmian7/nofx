@@ -14,21 +14,22 @@ import (
 
 // JevMarketFeature represents the distilled numerical features provided to Jev
 type JevMarketFeature struct {
-	Symbol           string  `json:"symbol"`
-	CurrentPrice     float64 `json:"current_price"`
-	PriceChange1hPct float64 `json:"price_change_1h_pct"`
-	PriceChange4hPct float64 `json:"price_change_4h_pct"`
-	RSI14            float64 `json:"rsi_14"`
-	MACD             float64 `json:"macd"`
-	EMA20            float64 `json:"ema_20"`
-	EMA50            float64 `json:"ema_50"`
-	EMATrend         string  `json:"ema_trend"`
-	ATR14            float64 `json:"atr_14"`
-	ATRPercent       float64 `json:"atr_pct"`
-	BOLLPosition     float64 `json:"boll_position"` // 0.0=lower, 0.5=middle, 1.0=upper
-	HasPosition      bool    `json:"has_position"`
-	PositionSide     string  `json:"position_side,omitempty"` // "long", "short", "none"
-	PositionPnLPct   float64 `json:"position_pnl_pct,omitempty"`
+	Symbol             string  `json:"symbol"`
+	CurrentPrice       float64 `json:"current_price"`
+	PriceChange1hPct   float64 `json:"price_change_1h_pct"`
+	PriceChange4hPct   float64 `json:"price_change_4h_pct"`
+	RSI14              float64 `json:"rsi_14"`
+	MACD               float64 `json:"macd"`
+	EMA20              float64 `json:"ema_20"`
+	EMA50              float64 `json:"ema_50"`
+	EMATrend           string  `json:"ema_trend"`
+	IndicatorTimeframe string  `json:"indicator_timeframe,omitempty"`
+	ATR14              float64 `json:"atr_14"`
+	ATRPercent         float64 `json:"atr_pct"`
+	BOLLPosition       float64 `json:"boll_position"` // 0.0=lower, 0.5=middle, 1.0=upper
+	HasPosition        bool    `json:"has_position"`
+	PositionSide       string  `json:"position_side,omitempty"` // "long", "short", "none"
+	PositionPnLPct     float64 `json:"position_pnl_pct,omitempty"`
 }
 
 // ExtractJevFeature extracts key market indicators from market.Data and position
@@ -65,6 +66,7 @@ func extractJevFeature(symbol string, data *market.Data, pos *PositionInfo, prim
 	}
 	for _, tf := range timeframes {
 		if series, ok := data.TimeframeData[tf]; ok && series != nil {
+			feat.IndicatorTimeframe = tf
 			feat.EMA20 = 0
 			if len(series.EMA20Values) > 0 {
 				feat.EMA20 = series.EMA20Values[len(series.EMA20Values)-1]
@@ -165,6 +167,32 @@ func BuildJevStateAndQuestions(feat *JevMarketFeature) (interface{}, map[string]
 		}
 	}
 
+	return state, questions
+}
+
+// buildJevStateForStrategy keeps the legacy wire contract unchanged unless the
+// strategy explicitly opts into the price/EMA information candidate. It does
+// not change feature extraction, ATR sizing, action thresholds or exits.
+func (e *StrategyEngine) buildJevStateForStrategy(feat *JevMarketFeature) (interface{}, map[string]provider.JevQuestion) {
+	state, questions := BuildJevStateAndQuestions(feat)
+	if !e.config.Indicators.JevPriceContext {
+		return state, questions
+	}
+	values := state.(map[string]interface{})
+	values["indicator_timeframe"] = feat.IndicatorTimeframe
+	// A missing configured series must not label a fallback EMA with the wrong
+	// timeframe. JSON null explicitly represents unavailable price levels.
+	level := func(value float64) interface{} {
+		if feat.IndicatorTimeframe == "" || value <= 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+			return nil
+		}
+		return value
+	}
+	values["ema_20"] = level(feat.EMA20)
+	values["ema_50"] = level(feat.EMA50)
+	question := questions["market_regime"]
+	question.Instructions = "What is the current market regime? Compare current_price with ema_20 and ema_50 from indicator_timeframe. ema_trend describes only the ordering of the EMAs, not whether price is above or below them. A null EMA or empty timeframe means that price comparison is unavailable; do not infer missing levels or a strong trend from that comparison."
+	questions["market_regime"] = question
 	return state, questions
 }
 
@@ -348,7 +376,7 @@ func GetJevDecisionWithStrategyContext(
 
 		pos := positionMap[sym]
 		feat := extractJevFeature(sym, mktData, pos, engine.config.Indicators.Klines.PrimaryTimeframe)
-		state, questions := BuildJevStateAndQuestions(feat)
+		state, questions := engine.buildJevStateForStrategy(feat)
 
 		req := &provider.JevRequest{
 			State:     state,

@@ -838,6 +838,9 @@ type CoinSourceConfig struct {
 type IndicatorConfig struct {
 	// K-line configuration
 	Klines KlineConfig `json:"klines"`
+	// Opt-in Jev request candidate: expose primary price/EMA context without
+	// changing legacy risk inputs or requests for existing strategies.
+	JevPriceContext bool `json:"jev_price_context,omitempty"`
 	// raw kline data (OHLCV) - always enabled, required for AI analysis
 	EnableRawKlines bool `json:"enable_raw_klines"`
 	// technical indicator switches
@@ -867,6 +870,9 @@ type KlineConfig struct {
 	PrimaryTimeframe string `json:"primary_timeframe"`
 	// primary timeframe K-line count
 	PrimaryCount int `json:"primary_count"`
+	// Opt-in observation candidate: indicators use only completed candles;
+	// current price and all execution/risk rules remain unchanged.
+	ClosedOnly bool `json:"closed_only,omitempty"`
 	// longer timeframe
 	LongerTimeframe string `json:"longer_timeframe,omitempty"`
 	// longer timeframe K-line count
