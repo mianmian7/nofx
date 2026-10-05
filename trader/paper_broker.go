@@ -102,6 +102,22 @@ type PaperFundingPollResult struct {
 	PaymentsApplied  int
 }
 
+// PaperStopLossEvidence binds a broker-validated update to one position and
+// level. Its mark proves update-time validity; it is never a fresh market mark.
+type PaperStopLossEvidence struct {
+	Symbol     string
+	Side       string
+	EntryPrice float64
+	EntryTime  time.Time
+	StopLoss   float64
+	MarkPrice  float64
+	UpdatedAt  time.Time
+}
+
+type paperStopLossHistory interface {
+	LastPaperStopLossUpdate(traderID, symbol string, entryTime time.Time) (*store.PaperStopLossUpdate, error)
+}
+
 type PaperPosition struct {
 	Symbol           string
 	Side             string
@@ -114,6 +130,7 @@ type PaperPosition struct {
 	EntryFee         float64
 	InitialMargin    float64
 	LiquidationPrice float64
+	StopLossEvidence *PaperStopLossEvidence `json:"stop_loss_evidence,omitempty"`
 }
 
 type PaperPendingOrder struct {
@@ -638,6 +655,11 @@ func (b *PaperBroker) updateProtection(decision *kernel.Decision) (PaperFill, er
 	now := b.now()
 	if decision.NewStopLoss > 0 {
 		position.StopLoss = decision.NewStopLoss
+		position.StopLossEvidence = &PaperStopLossEvidence{
+			Symbol: position.Symbol, Side: position.Side,
+			EntryPrice: position.EntryPrice, EntryTime: position.EntryTime,
+			StopLoss: position.StopLoss, MarkPrice: currentPrice, UpdatedAt: now,
+		}
 	}
 	if decision.NewTakeProfit > 0 {
 		position.TakeProfit = decision.NewTakeProfit
@@ -1360,7 +1382,32 @@ func (b *PaperBroker) restoreState(state paperBrokerState) (bool, error) {
 	b.restoreWarnings = append([]string(nil), state.RestoreWarnings...)
 	migrated := false
 	for key, position := range b.positions {
-		if err := validateRestoredPaperPosition(position); err != nil {
+		err := validateRestoredPaperPosition(position)
+		if err != nil && !position.EntryTime.IsZero() {
+			if history, ok := b.ledger.(paperStopLossHistory); ok {
+				update, lookupErr := history.LastPaperStopLossUpdate(b.traderID, position.Symbol, position.EntryTime)
+				if lookupErr != nil {
+					return false, fmt.Errorf("restore paper protection history %s: %w", key, lookupErr)
+				}
+				if update != nil && isFinitePositive(update.Quantity) && update.Quantity >= position.Quantity {
+					proved := position
+					proved.StopLossEvidence = &PaperStopLossEvidence{
+						Symbol: position.Symbol, Side: position.Side,
+						EntryPrice: position.EntryPrice, EntryTime: position.EntryTime,
+						StopLoss: update.StopLoss, MarkPrice: update.MarkPrice, UpdatedAt: update.Timestamp,
+					}
+					// Persist only the verified metadata so later restoration does not
+					// depend on decision-log retention. No financial field is changed.
+					err = validateRestoredPaperPosition(proved)
+					if err == nil {
+						position = proved
+						b.positions[key] = proved
+						migrated = true
+					}
+				}
+			}
+		}
+		if err != nil {
 			warning := fmt.Sprintf("restore paper position %s: quarantined invalid historical state: %v", key, err)
 			b.quarantinedPositions[key] = position
 			delete(b.positions, key)
@@ -1481,7 +1528,28 @@ func validateRestoredPaperPosition(position PaperPosition) error {
 	if position.Leverage <= 0 {
 		return fmt.Errorf("leverage must be greater than zero")
 	}
-	return validatePaperExitPrices("open_"+position.Side, position.EntryPrice, position.StopLoss, position.TakeProfit)
+	action := "open_" + position.Side
+	entryErr := validatePaperExitPrices(action, position.EntryPrice, position.StopLoss, position.TakeProfit)
+	if entryErr == nil {
+		return nil
+	}
+	// The exception is only for a previously validated SL update. Entry and TP
+	// checks stay intact. Neither a safe-looking persisted mark nor a proposal
+	// proves provenance; an already crossed SL is handled by the fresh risk loop.
+	if err := validatePaperExitPrices(action, position.EntryPrice, 0, position.TakeProfit); err != nil {
+		return err
+	}
+	proof := position.StopLossEvidence
+	if proof == nil || proof.Symbol != position.Symbol || proof.Side != position.Side ||
+		position.EntryTime.IsZero() || proof.EntryPrice != position.EntryPrice ||
+		!proof.EntryTime.Equal(position.EntryTime) || proof.StopLoss != position.StopLoss ||
+		proof.UpdatedAt.IsZero() || proof.UpdatedAt.Before(position.EntryTime) {
+		return entryErr
+	}
+	if err := validatePaperUpdateExitPrices(action, proof.MarkPrice, proof.StopLoss, 0); err != nil {
+		return entryErr
+	}
+	return nil
 }
 
 // RestoreWarnings reports historical records that were quarantined during
@@ -2678,6 +2746,7 @@ func (b *PaperBroker) setExitLevel(symbol, side string, value float64, stop bool
 	}
 	if stop {
 		position.StopLoss = value
+		position.StopLossEvidence = nil // Entry-validated setter invalidates older evidence.
 	} else {
 		position.TakeProfit = value
 		if b.config.MakerFirst {
