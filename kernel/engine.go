@@ -149,16 +149,33 @@ type Decision struct {
 	Reasoning  string  `json:"reasoning"`
 }
 
-// UnmarshalJSON accepts lossless integer representations such as 3 and 3.0,
-// while rejecting fractional leverage instead of silently rounding it.
+// UnmarshalJSON accepts lossless integer leverage but never rounds leverage.
+// Wait/hold confidence is observational, not entry authorization: a legal
+// fractional score is rounded down, with the original model response retained.
+// All other actions keep the strict integer confidence contract.
 func (d *Decision) UnmarshalJSON(data []byte) error {
 	type decisionAlias Decision
 	aux := struct {
-		Leverage json.RawMessage `json:"leverage"`
+		Leverage   json.RawMessage `json:"leverage"`
+		Confidence json.RawMessage `json:"confidence"`
 		*decisionAlias
 	}{decisionAlias: (*decisionAlias)(d)}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
+	}
+	if len(aux.Confidence) != 0 && string(aux.Confidence) != "null" {
+		if d.Action == "wait" || d.Action == "hold" {
+			raw := strings.TrimSpace(string(aux.Confidence))
+			score, ok := new(big.Rat).SetString(raw)
+			if !ok || score.Sign() < 0 || score.Cmp(big.NewRat(100, 1)) > 0 {
+				return fmt.Errorf("wait/hold confidence must be a number between 0 and 100, got %s", raw)
+			}
+			d.Confidence = int(new(big.Int).Quo(score.Num(), score.Denom()).Int64())
+		} else if err := json.Unmarshal(aux.Confidence, &d.Confidence); err != nil {
+			return fmt.Errorf("confidence must be an integer: %w", err)
+		}
+	} else {
+		d.Confidence = 0
 	}
 	if len(aux.Leverage) == 0 || string(aux.Leverage) == "null" {
 		return nil
