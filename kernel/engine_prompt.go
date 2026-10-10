@@ -632,6 +632,7 @@ func (e *StrategyEngine) BuildUserPrompt(ctx *Context) string {
 		ctx.Account.PositionCount))
 
 	e.writeExecutionUserGuidance(&sb, ctx)
+	e.writePaperEntryGuidance(&sb, ctx)
 
 	// Recently completed orders (placed before positions to ensure visibility)
 	if len(ctx.RecentOrders) > 0 {

@@ -459,6 +459,12 @@ func (at *AutoTrader) executeDecisionBatchContext(requestCtx context.Context, de
 			record.Decisions = append(record.Decisions, actionRecord)
 			continue
 		}
+		if err := at.attachPaperEntryEvidence(&d, ctx, time.Now().UTC()); err != nil {
+			actionRecord.Error = err.Error()
+			record.ExecutionLog = append(record.ExecutionLog, fmt.Sprintf("Entry evidence rejected %s %s: %v", d.Symbol, d.Action, err))
+			record.Decisions = append(record.Decisions, actionRecord)
+			continue
+		}
 		if isOpenAction(d.Action) {
 			opensAllowedThisCycle++
 		}

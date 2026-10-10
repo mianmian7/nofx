@@ -294,6 +294,9 @@ func (at *AutoTrader) getStopLossRetryDelays() []time.Duration {
 // NewAutoTrader creates an automatic trader
 // st parameter is used to store decision records to database
 func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*AutoTrader, error) {
+	if err := config.StrategyConfig.ValidatePaperEntryGuard(); err != nil {
+		return nil, err
+	}
 	if err := config.StrategyConfig.ValidateLocalSignals(); err != nil {
 		return nil, err
 	}
@@ -451,12 +454,13 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 		priceSource := newMarketPaperPriceSource(marketDataProvider)
 		tradeRisk, portfolioRisk, minimumNotional := paperStrategyAccountRisk(config.StrategyConfig)
 		paperConfig := PaperBrokerConfig{
-			EntryValidator:    localSignalEntryValidator(config.StrategyConfig, config.Exchange),
-			InitialBalance:    config.InitialBalance,
-			MaxPositions:      paperStrategyMaxPositions(config.StrategyConfig),
-			MaxOpensPerHour:   paperStrategyMaxOpensPerHour(config.StrategyConfig),
-			MaxDrawdownRatio:  paperStrategyMaxDrawdown(config.StrategyConfig),
-			MaxTradeRiskRatio: tradeRisk, MaxPortfolioRiskRatio: portfolioRisk, MinEntryNotional: minimumNotional,
+			EntryValidator:       localSignalEntryValidator(config.StrategyConfig, config.Exchange),
+			RequireEntryEvidence: paperEntryGuardEnabled(config.StrategyConfig),
+			InitialBalance:       config.InitialBalance,
+			MaxPositions:         paperStrategyMaxPositions(config.StrategyConfig),
+			MaxOpensPerHour:      paperStrategyMaxOpensPerHour(config.StrategyConfig),
+			MaxDrawdownRatio:     paperStrategyMaxDrawdown(config.StrategyConfig),
+			MaxTradeRiskRatio:    tradeRisk, MaxPortfolioRiskRatio: portfolioRisk, MinEntryNotional: minimumNotional,
 			MinRiskRewardRatio: paperStrategyMinRiskReward(config.StrategyConfig),
 			MakerFirst:         true, MakerFeeBPS: 2, TakerFeeBPS: 5, SlippageBPS: 2,
 			MakerTimeout: 15 * time.Second, MakerMaxReprices: 2,
@@ -634,6 +638,9 @@ func (at *AutoTrader) reloadStrategyConfigIfChanged() error {
 		return fmt.Errorf("failed to parse strategy %s: %w", strategy.Name, err)
 	}
 	strategyConfig.ClampLimits()
+	if err := strategyConfig.ValidatePaperEntryGuard(); err != nil {
+		return err
+	}
 
 	// NOTE: this used to hardcode the Autopilot book shape (6 positions ×
 	// equity×1.2 notional), silently overriding whatever the user configured in

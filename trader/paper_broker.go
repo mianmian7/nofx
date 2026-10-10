@@ -37,6 +37,7 @@ type PaperDepthSource interface {
 
 type PaperBrokerConfig struct {
 	EntryValidator                 func(symbol, action string) error
+	RequireEntryEvidence           bool // opt-in AI Paper entries only; no effect on exits
 	InitialBalance                 float64
 	MaxPositions                   int     // optional atomic position + resting-entry slot limit
 	MaxOpensPerHour                int     // optional logical opening + resting-entry reservation limit
@@ -134,27 +135,28 @@ type PaperPosition struct {
 }
 
 type PaperPendingOrder struct {
-	OrderID           int64     `json:"order_id"`
-	ClientID          string    `json:"client_id,omitempty"`
-	Symbol            string    `json:"symbol"`
-	Action            string    `json:"action"`
-	Side              string    `json:"side"`
-	LimitPrice        float64   `json:"limit_price"`
-	Quantity          float64   `json:"quantity"`
-	FilledQuantity    float64   `json:"filled_quantity"`
-	RemainingQuantity float64   `json:"remaining_quantity"`
-	PositionSizeUSD   float64   `json:"position_size_usd"`
-	RiskUSD           float64   `json:"risk_usd,omitempty"`
-	Leverage          int       `json:"leverage"`
-	StopLoss          float64   `json:"stop_loss,omitempty"`
-	TakeProfit        float64   `json:"take_profit,omitempty"`
-	ReduceOnly        bool      `json:"reduce_only"`
-	TriggerOnMark     bool      `json:"trigger_on_mark,omitempty"`
-	Status            string    `json:"status"`
-	RepriceCount      int       `json:"reprice_count"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
-	ExpiresAt         time.Time `json:"expires_at"`
+	OrderID           int64                      `json:"order_id"`
+	ClientID          string                     `json:"client_id,omitempty"`
+	Symbol            string                     `json:"symbol"`
+	Action            string                     `json:"action"`
+	Side              string                     `json:"side"`
+	LimitPrice        float64                    `json:"limit_price"`
+	Quantity          float64                    `json:"quantity"`
+	FilledQuantity    float64                    `json:"filled_quantity"`
+	RemainingQuantity float64                    `json:"remaining_quantity"`
+	PositionSizeUSD   float64                    `json:"position_size_usd"`
+	RiskUSD           float64                    `json:"risk_usd,omitempty"`
+	EntryEvidence     *kernel.PaperEntryEvidence `json:"entry_evidence,omitempty"`
+	Leverage          int                        `json:"leverage"`
+	StopLoss          float64                    `json:"stop_loss,omitempty"`
+	TakeProfit        float64                    `json:"take_profit,omitempty"`
+	ReduceOnly        bool                       `json:"reduce_only"`
+	TriggerOnMark     bool                       `json:"trigger_on_mark,omitempty"`
+	Status            string                     `json:"status"`
+	RepriceCount      int                        `json:"reprice_count"`
+	CreatedAt         time.Time                  `json:"created_at"`
+	UpdatedAt         time.Time                  `json:"updated_at"`
+	ExpiresAt         time.Time                  `json:"expires_at"`
 }
 
 type PaperOrderEvent struct {
@@ -564,6 +566,9 @@ func (b *PaperBroker) ExecuteDecisionContext(ctx context.Context, decision *kern
 	if err := b.validateEntrySlotLocked(decision.Symbol, side, 0); err != nil {
 		return PaperFill{}, err
 	}
+	if err := b.validateEntryEvidenceLocked(decision.PaperEntryEvidence, decision.Symbol, decision.Action, fillPrice, decision.StopLoss, b.now()); err != nil {
+		return PaperFill{}, err
+	}
 	if err := b.validateEntryRiskRewardLocked(decision.Action, fillPrice, decision.StopLoss, decision.TakeProfit); err != nil {
 		return PaperFill{}, err
 	}
@@ -797,6 +802,9 @@ func (b *PaperBroker) placeMakerOpen(ctx context.Context, decision *kernel.Decis
 	if err := b.validateEntrySlotLocked(decision.Symbol, side, 0); err != nil {
 		return PaperFill{}, err
 	}
+	if err := b.validateEntryEvidenceLocked(decision.PaperEntryEvidence, decision.Symbol, decision.Action, limitPrice, decision.StopLoss, b.now()); err != nil {
+		return PaperFill{}, err
+	}
 	if err := b.validateEntryRiskRewardLocked(decision.Action, limitPrice, decision.StopLoss, decision.TakeProfit); err != nil {
 		return PaperFill{}, err
 	}
@@ -822,7 +830,8 @@ func (b *PaperBroker) placeMakerOpen(ctx context.Context, decision *kernel.Decis
 		OrderID: b.nextID, Symbol: decision.Symbol, Action: decision.Action,
 		Side: side, LimitPrice: limitPrice, Quantity: quantity,
 		RemainingQuantity: quantity, PositionSizeUSD: notional, RiskUSD: decision.RiskUSD,
-		Leverage: decision.Leverage, StopLoss: decision.StopLoss,
+		EntryEvidence: copyEntryEvidence(decision.PaperEntryEvidence),
+		Leverage:      decision.Leverage, StopLoss: decision.StopLoss,
 		TakeProfit: decision.TakeProfit, Status: "NEW", CreatedAt: now,
 		UpdatedAt: now, ExpiresAt: now.Add(b.config.MakerTimeout),
 	}
@@ -1897,6 +1906,11 @@ func (b *PaperBroker) expireOrRepriceMakerOrder(orderID int64, depth *market.Bin
 	if err != nil {
 		return nil, err
 	}
+	if !order.ReduceOnly {
+		if err := b.validateEntryEvidenceLocked(order.EntryEvidence, order.Symbol, order.Action, price, order.StopLoss, at); err != nil {
+			return nil, b.rejectPendingEntryLocked(order, at, err)
+		}
+	}
 	if !order.ReduceOnly && !order.TriggerOnMark && b.entryRiskPolicyEnabledLocked() {
 		if err := b.validatePendingEntryRiskLocked(order, price); err != nil {
 			return nil, b.rejectPendingEntryLocked(order, at, err)
@@ -2071,6 +2085,11 @@ func (b *PaperBroker) applyPendingOpenFillLocked(order PaperPendingOrder, quanti
 	}
 	if b.config.EntryValidator != nil {
 		if err := b.config.EntryValidator(order.Symbol, order.Action); err != nil {
+			return PaperFill{}, b.rejectPendingEntryLocked(order, at, err)
+		}
+	}
+	for _, price := range []float64{mark, order.LimitPrice} {
+		if err := b.validateEntryEvidenceLocked(order.EntryEvidence, order.Symbol, order.Action, price, order.StopLoss, at); err != nil {
 			return PaperFill{}, b.rejectPendingEntryLocked(order, at, err)
 		}
 	}

@@ -16,6 +16,14 @@ Guided prompts show only the latest six values of repeated indicator arrays. Ind
 
 The decision parser conservatively floors fractional confidence for `wait`/`hold` only (e.g. `63.4` becomes `63`), retaining the original response for diagnostics. Opening confidence and fractional leverage remain strict; unrelated malformed fields still reject the action. These reliability improvements are not evidence of future profitability.
 
+## Opt-in Paper entry evidence
+
+`ai_config.paper_entry_guard` defaults to `false` and applies to AI Paper openings only. It requires completed `15m/1h/4h` data with `15m` as primary; an incompatible enabled configuration is rejected. Numeric 1h/4h EMA20/EMA50 ordering and current price must agree with the direction. The latest completed 15m candle must close directionally relative to both its open and the previous close. The initial stop must lie beyond the last two candles’ extreme. These are necessary conditions, not proof of a valid setup or future profit; the model must still justify the target and entry structure.
+
+The execution batch creates evidence from market data, never model JSON. The Paper broker checks identity, current price, stop and original 15m-window expiry at order submission, repricing and every delayed/partial fill. Evidence persists with pending orders; restarts or repricing cannot renew it. Rejection releases only unfilled entry exposure, not filled positions, exits or protection. Missing evidence fails closed when enabled. Existing account limits, liquidity/coverage checks and independent fresh-price protection remain unchanged.
+
+Both regular prompts and Jev typed entry questions expose this eligibility; Jev exit questions remain unchanged. Guided prompts preserve small prices/ATR and serialize the fee-inclusive boundary losslessly, without relaxing its execution check. Disabled strategies retain their input and execution contracts.
+
 ## Complete Data Flow
 
 ```

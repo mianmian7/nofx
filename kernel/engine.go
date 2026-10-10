@@ -151,6 +151,8 @@ type Decision struct {
 	Confidence int     `json:"confidence,omitempty"` // Confidence level (0-100)
 	RiskUSD    float64 `json:"risk_usd,omitempty"`   // Maximum USD risk
 	Reasoning  string  `json:"reasoning"`
+	// Assigned by the Paper execution batch from observed data, not AI JSON.
+	PaperEntryEvidence *PaperEntryEvidence `json:"-"`
 }
 
 // UnmarshalJSON accepts lossless integer leverage but never rounds leverage.

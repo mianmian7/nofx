@@ -625,6 +625,8 @@ type StrategyConfig struct {
 	PromptSections PromptSectionsConfig `json:"-"`
 	// Opt-in decision inputs; does not change execution risk limits.
 	ExecutionGuidance bool `json:"-"`
+	// Paper-only entry contract, explicitly enabled; never alters existing exits.
+	PaperEntryGuard bool `json:"-"`
 
 	// Grid trading configuration (only used when StrategyType == "grid_trading")
 	GridConfig *GridStrategyConfig `json:"grid_config,omitempty"`
@@ -643,6 +645,7 @@ type AIStrategyConfig struct {
 	RiskControl       RiskControlConfig    `json:"risk_control"`
 	PromptSections    PromptSectionsConfig `json:"prompt_sections,omitempty"`
 	ExecutionGuidance bool                 `json:"execution_guidance,omitempty"`
+	PaperEntryGuard   bool                 `json:"paper_entry_guard,omitempty"`
 }
 
 // PublishStrategyConfig contains settings shared by all strategy types.
@@ -681,6 +684,7 @@ func (c StrategyConfig) MarshalJSON() ([]byte, error) {
 			RiskControl:       c.RiskControl,
 			PromptSections:    c.PromptSections,
 			ExecutionGuidance: c.ExecutionGuidance,
+			PaperEntryGuard:   c.PaperEntryGuard,
 		}
 	}
 
@@ -703,6 +707,7 @@ func (c *StrategyConfig) UnmarshalJSON(data []byte) error {
 		RiskControl       *RiskControlConfig    `json:"risk_control"`
 		PromptSections    *PromptSectionsConfig `json:"prompt_sections"`
 		ExecutionGuidance bool                  `json:"execution_guidance"`
+		PaperEntryGuard   bool                  `json:"paper_entry_guard"`
 	}
 
 	var raw rawStrategyConfig
@@ -715,6 +720,7 @@ func (c *StrategyConfig) UnmarshalJSON(data []byte) error {
 	c.GridConfig = raw.GridConfig
 	c.PublishConfig = raw.PublishConfig
 	c.ExecutionGuidance = raw.ExecutionGuidance
+	c.PaperEntryGuard = raw.PaperEntryGuard
 
 	if raw.AIConfig != nil {
 		c.CoinSource = raw.AIConfig.CoinSource
@@ -723,6 +729,7 @@ func (c *StrategyConfig) UnmarshalJSON(data []byte) error {
 		c.RiskControl = raw.AIConfig.RiskControl
 		c.PromptSections = raw.AIConfig.PromptSections
 		c.ExecutionGuidance = raw.AIConfig.ExecutionGuidance
+		c.PaperEntryGuard = raw.AIConfig.PaperEntryGuard
 
 		// Allow root-level overrides/fallbacks if ai_config subfields are empty
 		if raw.CoinSource != nil && c.CoinSource.SourceType == "" && len(c.CoinSource.StaticCoins) == 0 {

@@ -36,4 +36,5 @@ func (b *PaperBroker) setLocalSignalEntryValidator(config *store.StrategyConfig,
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.config.EntryValidator = validator
+	b.config.RequireEntryEvidence = paperEntryGuardEnabled(config)
 }
