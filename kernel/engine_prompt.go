@@ -176,6 +176,7 @@ func (e *StrategyEngine) BuildSystemPrompt(accountEquity float64, variant string
 		}
 	}
 
+	e.writeExecutionSystemGuidance(&sb)
 	return sb.String()
 }
 
@@ -630,6 +631,8 @@ func (e *StrategyEngine) BuildUserPrompt(ctx *Context) string {
 		ctx.Account.MarginUsedPct,
 		ctx.Account.PositionCount))
 
+	e.writeExecutionUserGuidance(&sb, ctx)
+
 	// Recently completed orders (placed before positions to ensure visibility)
 	if len(ctx.RecentOrders) > 0 {
 		sb.WriteString("## Recent Completed Trades\n")
@@ -784,6 +787,9 @@ func (e *StrategyEngine) formatPositionInfo(index int, pos PositionInfo, ctx *Co
 	if pos.ProtectionWarning != "" {
 		sb.WriteString(fmt.Sprintf("   Protection snapshot warning: %s\n", pos.ProtectionWarning))
 	}
+	if e.config.ExecutionGuidance {
+		writePositionBreakevenGuidance(&sb, pos)
+	}
 
 	if marketData, ok := ctx.MarketDataMap[pos.Symbol]; ok {
 		sb.WriteString(e.formatMarketData(marketData))
@@ -836,14 +842,14 @@ func (e *StrategyEngine) formatMarketData(data *market.Data) string {
 	if !data.ClosedIndicatorsAt.IsZero() {
 		sb.WriteString(fmt.Sprintf("Observation mode: completed candles for indicators and OHLCV; cutoff %s UTC. current_price is the latest raw market price and may differ from the last completed candle.\n\n", data.ClosedIndicatorsAt.UTC().Format("2006-01-02 15:04:05")))
 	}
-	sb.WriteString(fmt.Sprintf("current_price = %.4f", data.CurrentPrice))
+	sb.WriteString(fmt.Sprintf("current_price = %s", e.formatPromptPrice(data.CurrentPrice, 4)))
 
 	if indicators.EnableEMA {
-		sb.WriteString(fmt.Sprintf(", current_ema20 = %.3f", data.CurrentEMA20))
+		sb.WriteString(fmt.Sprintf(", current_ema20 = %s", e.formatPromptPrice(data.CurrentEMA20, 3)))
 	}
 
 	if indicators.EnableMACD {
-		sb.WriteString(fmt.Sprintf(", current_macd = %.3f", data.CurrentMACD))
+		sb.WriteString(fmt.Sprintf(", current_macd = %s", e.formatPromptPrice(data.CurrentMACD, 3)))
 	}
 
 	if indicators.EnableRSI {
@@ -941,6 +947,9 @@ func (e *StrategyEngine) formatMarketData(data *market.Data) string {
 }
 
 func (e *StrategyEngine) formatTimeframeSeriesData(sb *strings.Builder, data *market.TimeframeSeriesData, indicators store.IndicatorConfig) {
+	if e.config.ExecutionGuidance {
+		sb.WriteString("Indicator arrays show the latest six observations; full-history indicator calculations and the supplied OHLCV window are unchanged.\n")
+	}
 	if len(data.Klines) > 0 {
 		sb.WriteString("Time(UTC)      Open      High      Low       Close     Volume\n")
 		for i, k := range data.Klines {
@@ -950,8 +959,8 @@ func (e *StrategyEngine) formatTimeframeSeriesData(sb *strings.Builder, data *ma
 			if i == len(data.Klines)-1 {
 				marker = "  <- current"
 			}
-			sb.WriteString(fmt.Sprintf("%-14s %-9.4f %-9.4f %-9.4f %-9.4f %-12.2f%s\n",
-				timeStr, k.Open, k.High, k.Low, k.Close, k.Volume, marker))
+			sb.WriteString(fmt.Sprintf("%-14s %-9s %-9s %-9s %-9s %-12.2f%s\n",
+				timeStr, e.formatPromptPrice(k.Open, 4), e.formatPromptPrice(k.High, 4), e.formatPromptPrice(k.Low, 4), e.formatPromptPrice(k.Close, 4), k.Volume, marker))
 		}
 		sb.WriteString("\n")
 	} else if len(data.MidPrices) > 0 {
@@ -963,34 +972,34 @@ func (e *StrategyEngine) formatTimeframeSeriesData(sb *strings.Builder, data *ma
 
 	if indicators.EnableEMA {
 		if len(data.EMA20Values) > 0 {
-			sb.WriteString(fmt.Sprintf("EMA20: %s\n", formatFloatSlice(data.EMA20Values)))
+			sb.WriteString(fmt.Sprintf("EMA20: %s\n", e.formatIndicatorSeries(data.EMA20Values)))
 		}
 		if len(data.EMA50Values) > 0 {
-			sb.WriteString(fmt.Sprintf("EMA50: %s\n", formatFloatSlice(data.EMA50Values)))
+			sb.WriteString(fmt.Sprintf("EMA50: %s\n", e.formatIndicatorSeries(data.EMA50Values)))
 		}
 	}
 
 	if indicators.EnableMACD && len(data.MACDValues) > 0 {
-		sb.WriteString(fmt.Sprintf("MACD: %s\n", formatFloatSlice(data.MACDValues)))
+		sb.WriteString(fmt.Sprintf("MACD: %s\n", e.formatIndicatorSeries(data.MACDValues)))
 	}
 
 	if indicators.EnableRSI {
 		if len(data.RSI7Values) > 0 {
-			sb.WriteString(fmt.Sprintf("RSI7: %s\n", formatFloatSlice(data.RSI7Values)))
+			sb.WriteString(fmt.Sprintf("RSI7: %s\n", e.formatIndicatorSeries(data.RSI7Values)))
 		}
 		if len(data.RSI14Values) > 0 {
-			sb.WriteString(fmt.Sprintf("RSI14: %s\n", formatFloatSlice(data.RSI14Values)))
+			sb.WriteString(fmt.Sprintf("RSI14: %s\n", e.formatIndicatorSeries(data.RSI14Values)))
 		}
 	}
 
 	if indicators.EnableATR && data.ATR14 > 0 {
-		sb.WriteString(fmt.Sprintf("ATR14: %.4f\n", data.ATR14))
+		sb.WriteString(fmt.Sprintf("ATR14: %s\n", e.formatPromptPrice(data.ATR14, 4)))
 	}
 
 	if indicators.EnableBOLL && len(data.BOLLUpper) > 0 {
-		sb.WriteString(fmt.Sprintf("BOLL Upper: %s\n", formatFloatSlice(data.BOLLUpper)))
-		sb.WriteString(fmt.Sprintf("BOLL Middle: %s\n", formatFloatSlice(data.BOLLMiddle)))
-		sb.WriteString(fmt.Sprintf("BOLL Lower: %s\n", formatFloatSlice(data.BOLLLower)))
+		sb.WriteString(fmt.Sprintf("BOLL Upper: %s\n", e.formatIndicatorSeries(data.BOLLUpper)))
+		sb.WriteString(fmt.Sprintf("BOLL Middle: %s\n", e.formatIndicatorSeries(data.BOLLMiddle)))
+		sb.WriteString(fmt.Sprintf("BOLL Lower: %s\n", e.formatIndicatorSeries(data.BOLLLower)))
 	}
 
 	sb.WriteString("\n")

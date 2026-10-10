@@ -882,6 +882,7 @@ func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 		Positions:      positionInfos,
 		CandidateCoins: candidateCoins,
 	}
+	at.addExecutionGuidance(ctx, managedSnapshots)
 
 	// 7. Add recent closed trades (if store is available)
 	if at.store != nil {

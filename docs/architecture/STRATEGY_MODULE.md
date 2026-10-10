@@ -8,6 +8,14 @@ This document describes the complete data flow of the NOFX strategy module, incl
 
 ---
 
+## Opt-in execution guidance
+
+`ai_config.execution_guidance` defaults to `false`. For Paper traders, enabling it adds current opening-throttle reasons and the execution layer's fee-inclusive, tick-rounded breakeven stop boundary to decision inputs. These snapshots are advisory: execution still rechecks current prices, costs and all risk limits. A breakeven boundary applies to existing-position management, not initial-entry stops; it must never loosen an existing stop or cross the current mark. Missing costs are explicitly unavailable.
+
+Guided prompts show only the latest six values of repeated indicator arrays. Indicator calculations and the raw OHLCV window remain unchanged. `ai_config.indicators.klines.closed_only` independently selects completed-candle observations while retaining fresh current prices. Both settings are opt-in and do not change strategy risk budgets.
+
+The decision parser conservatively floors fractional confidence for `wait`/`hold` only (e.g. `63.4` becomes `63`), retaining the original response for diagnostics. Opening confidence and fractional leverage remain strict; unrelated malformed fields still reject the action. These reliability improvements are not evidence of future profitability.
+
 ## Complete Data Flow
 
 ```

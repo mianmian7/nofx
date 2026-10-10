@@ -623,6 +623,8 @@ type StrategyConfig struct {
 	CustomPrompt   string               `json:"-"`
 	RiskControl    RiskControlConfig    `json:"-"`
 	PromptSections PromptSectionsConfig `json:"-"`
+	// Opt-in decision inputs; does not change execution risk limits.
+	ExecutionGuidance bool `json:"-"`
 
 	// Grid trading configuration (only used when StrategyType == "grid_trading")
 	GridConfig *GridStrategyConfig `json:"grid_config,omitempty"`
@@ -635,11 +637,12 @@ type StrategyConfig struct {
 
 // AIStrategyConfig contains fields only used by AI trading strategies.
 type AIStrategyConfig struct {
-	CoinSource     CoinSourceConfig     `json:"coin_source"`
-	Indicators     IndicatorConfig      `json:"indicators"`
-	CustomPrompt   string               `json:"custom_prompt,omitempty"`
-	RiskControl    RiskControlConfig    `json:"risk_control"`
-	PromptSections PromptSectionsConfig `json:"prompt_sections,omitempty"`
+	CoinSource        CoinSourceConfig     `json:"coin_source"`
+	Indicators        IndicatorConfig      `json:"indicators"`
+	CustomPrompt      string               `json:"custom_prompt,omitempty"`
+	RiskControl       RiskControlConfig    `json:"risk_control"`
+	PromptSections    PromptSectionsConfig `json:"prompt_sections,omitempty"`
+	ExecutionGuidance bool                 `json:"execution_guidance,omitempty"`
 }
 
 // PublishStrategyConfig contains settings shared by all strategy types.
@@ -672,11 +675,12 @@ func (c StrategyConfig) MarshalJSON() ([]byte, error) {
 		out.GridConfig = c.GridConfig
 	} else {
 		out.AIConfig = &AIStrategyConfig{
-			CoinSource:     c.CoinSource,
-			Indicators:     c.Indicators,
-			CustomPrompt:   c.CustomPrompt,
-			RiskControl:    c.RiskControl,
-			PromptSections: c.PromptSections,
+			CoinSource:        c.CoinSource,
+			Indicators:        c.Indicators,
+			CustomPrompt:      c.CustomPrompt,
+			RiskControl:       c.RiskControl,
+			PromptSections:    c.PromptSections,
+			ExecutionGuidance: c.ExecutionGuidance,
 		}
 	}
 
@@ -693,11 +697,12 @@ func (c *StrategyConfig) UnmarshalJSON(data []byte) error {
 		GridConfig    *GridStrategyConfig    `json:"grid_config"`
 		PublishConfig *PublishStrategyConfig `json:"publish_config"`
 
-		CoinSource     *CoinSourceConfig     `json:"coin_source"`
-		Indicators     *IndicatorConfig      `json:"indicators"`
-		CustomPrompt   *string               `json:"custom_prompt"`
-		RiskControl    *RiskControlConfig    `json:"risk_control"`
-		PromptSections *PromptSectionsConfig `json:"prompt_sections"`
+		CoinSource        *CoinSourceConfig     `json:"coin_source"`
+		Indicators        *IndicatorConfig      `json:"indicators"`
+		CustomPrompt      *string               `json:"custom_prompt"`
+		RiskControl       *RiskControlConfig    `json:"risk_control"`
+		PromptSections    *PromptSectionsConfig `json:"prompt_sections"`
+		ExecutionGuidance bool                  `json:"execution_guidance"`
 	}
 
 	var raw rawStrategyConfig
@@ -709,6 +714,7 @@ func (c *StrategyConfig) UnmarshalJSON(data []byte) error {
 	c.Language = raw.Language
 	c.GridConfig = raw.GridConfig
 	c.PublishConfig = raw.PublishConfig
+	c.ExecutionGuidance = raw.ExecutionGuidance
 
 	if raw.AIConfig != nil {
 		c.CoinSource = raw.AIConfig.CoinSource
@@ -716,6 +722,7 @@ func (c *StrategyConfig) UnmarshalJSON(data []byte) error {
 		c.CustomPrompt = raw.AIConfig.CustomPrompt
 		c.RiskControl = raw.AIConfig.RiskControl
 		c.PromptSections = raw.AIConfig.PromptSections
+		c.ExecutionGuidance = raw.AIConfig.ExecutionGuidance
 
 		// Allow root-level overrides/fallbacks if ai_config subfields are empty
 		if raw.CoinSource != nil && c.CoinSource.SourceType == "" && len(c.CoinSource.StaticCoins) == 0 {

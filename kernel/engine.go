@@ -46,7 +46,10 @@ type PositionInfo struct {
 	StopLossState     string  `json:"stop_loss_state,omitempty"`
 	TakeProfitState   string  `json:"take_profit_state,omitempty"`
 	ProtectionWarning string  `json:"protection_warning,omitempty"`
-	UpdateTime        int64   `json:"update_time"` // Position update timestamp (milliseconds)
+	// Decision guidance reuses the execution-layer mark-trigger boundary.
+	FeeInclusiveBreakevenStop float64 `json:"fee_inclusive_breakeven_stop,omitempty"`
+	BreakevenCostSource       string  `json:"breakeven_cost_source,omitempty"`
+	UpdateTime                int64   `json:"update_time"` // Position update timestamp (milliseconds)
 }
 
 // AccountInfo account information
@@ -95,20 +98,21 @@ type RecentOrder struct {
 
 // Context trading context (complete information passed to AI)
 type Context struct {
-	CurrentTime    string                             `json:"current_time"`
-	RuntimeMinutes int                                `json:"runtime_minutes"`
-	CallCount      int                                `json:"call_count"`
-	CycleID        string                             `json:"-"`
-	TraderID       string                             `json:"trader_id"`
-	StrategyID     string                             `json:"strategy_id"`
-	Account        AccountInfo                        `json:"account"`
-	Positions      []PositionInfo                     `json:"positions"`
-	CandidateCoins []CandidateCoin                    `json:"candidate_coins"`
-	PromptVariant  string                             `json:"prompt_variant,omitempty"`
-	TradingStats   *TradingStats                      `json:"trading_stats,omitempty"`
-	RecentOrders   []RecentOrder                      `json:"recent_orders,omitempty"`
-	MarketDataMap  map[string]*market.Data            `json:"-"`
-	MultiTFMarket  map[string]map[string]*market.Data `json:"-"`
+	CurrentTime         string                             `json:"current_time"`
+	RuntimeMinutes      int                                `json:"runtime_minutes"`
+	CallCount           int                                `json:"call_count"`
+	CycleID             string                             `json:"-"`
+	TraderID            string                             `json:"trader_id"`
+	StrategyID          string                             `json:"strategy_id"`
+	Account             AccountInfo                        `json:"account"`
+	Positions           []PositionInfo                     `json:"positions"`
+	CandidateCoins      []CandidateCoin                    `json:"candidate_coins"`
+	PromptVariant       string                             `json:"prompt_variant,omitempty"`
+	TradingStats        *TradingStats                      `json:"trading_stats,omitempty"`
+	RecentOrders        []RecentOrder                      `json:"recent_orders,omitempty"`
+	OpeningRestrictions map[string]string                  `json:"opening_restrictions,omitempty"`
+	MarketDataMap       map[string]*market.Data            `json:"-"`
+	MultiTFMarket       map[string]map[string]*market.Data `json:"-"`
 	// RequireFreshMarketData is set by live traders. When enabled, the strategy
 	// fetcher fails closed instead of using a public K-line snapshot that was
 	// retained through an upstream outage.
