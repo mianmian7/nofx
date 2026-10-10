@@ -31,9 +31,9 @@ type nativePublicCacheEntry struct {
 
 const (
 	nativePublicResponseCacheTTL = 5 * time.Second
-	nativePublicKlineCacheTTL   = 3 * time.Minute
-	nativePublicFundingCacheTTL = 3 * time.Minute
-	nativePublicOICacheTTL      = 2 * time.Minute
+	nativePublicKlineCacheTTL    = 3 * time.Minute
+	nativePublicFundingCacheTTL  = 3 * time.Minute
+	nativePublicOICacheTTL       = 2 * time.Minute
 )
 
 func nativePublicCacheTTL(path string) time.Duration {
@@ -85,6 +85,22 @@ func (client nativePublicHTTPClient) getWithCacheContext(ctx context.Context, pa
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	var coordinator *okxCandleCoordinator
+	switch path {
+	case okxPublicCandlesPath:
+		coordinator = &sharedOKXCandles
+	case bitgetPublicCandlesPath:
+		coordinator = &sharedBitgetCandles
+	}
+	if coordinator != nil {
+		return coordinator.get(ctx, client, query, attemptTimeout, allowCache, func(workCtx context.Context, gate *okxCandleGate) ([]byte, error) {
+			return client.requestWithCacheContext(workCtx, path, query, allowCache, attemptTimeout, gate)
+		})
+	}
+	return client.requestWithCacheContext(ctx, path, query, allowCache, attemptTimeout, nil)
+}
+
+func (client nativePublicHTTPClient) requestWithCacheContext(ctx context.Context, path string, query url.Values, allowCache bool, attemptTimeout time.Duration, gate *okxCandleGate) ([]byte, error) {
 	cacheKey := path
 	if encodedQuery := query.Encode(); encodedQuery != "" {
 		cacheKey += "?" + encodedQuery
@@ -105,7 +121,13 @@ func (client nativePublicHTTPClient) getWithCacheContext(ctx context.Context, pa
 		requestURL += "?" + query.Encode()
 	}
 	var lastErr error
-	for attempt := 1; attempt <= nativePublicMaxAttempts; attempt++ {
+	maxAttempts := nativePublicMaxAttempts
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if gate != nil {
+			if err := gate.admit(ctx); err != nil {
+				return nil, fmt.Errorf("public market request %s: %w", path, err)
+			}
+		}
 		requestCtx := ctx
 		var cancel context.CancelFunc
 		if attemptTimeout > 0 {
@@ -125,7 +147,7 @@ func (client nativePublicHTTPClient) getWithCacheContext(ctx context.Context, pa
 				cancel()
 			}
 			lastErr = fmt.Errorf("public market request %s: %w", path, err)
-			if attempt < nativePublicMaxAttempts {
+			if attempt < maxAttempts {
 				if !waitNativePublicRetry(ctx, nativePublicRetryDelay) {
 					return nil, fmt.Errorf("public market request %s: %w", path, ctx.Err())
 				}
@@ -140,11 +162,24 @@ func (client nativePublicHTTPClient) getWithCacheContext(ctx context.Context, pa
 		}
 		if readErr != nil {
 			lastErr = fmt.Errorf("read public market response %s: %w", path, readErr)
-			if attempt < nativePublicMaxAttempts {
+			if attempt < maxAttempts {
 				if !waitNativePublicRetry(ctx, nativePublicRetryDelay) {
 					return nil, fmt.Errorf("public market request %s: %w", path, ctx.Err())
 				}
 				continue
+			}
+			return nil, lastErr
+		}
+		if gate != nil && (response.StatusCode == http.StatusTooManyRequests || (path == okxPublicCandlesPath && okxCandleThrottled(response.StatusCode, body))) {
+			maxAttempts = 3 // One extra, paced attempt only for venue throttling.
+			gate.coolDown(okxCandleRetryDelay(response.Header.Get("Retry-After"), attempt))
+			message := strings.TrimSpace(string(body))
+			if len(message) > 300 {
+				message = message[:300] + "..."
+			}
+			lastErr = fmt.Errorf("public market request %s throttled (HTTP %d): %s", path, response.StatusCode, message)
+			if attempt < maxAttempts {
+				continue // All candle requests recheck the shared cooldown.
 			}
 			return nil, lastErr
 		}
@@ -154,7 +189,7 @@ func (client nativePublicHTTPClient) getWithCacheContext(ctx context.Context, pa
 				message = message[:300] + "..."
 			}
 			lastErr = fmt.Errorf("public market request %s failed with HTTP %d: %s", path, response.StatusCode, message)
-			if nativePublicRetryableStatus(response.StatusCode) && attempt < nativePublicMaxAttempts {
+			if nativePublicRetryableStatus(response.StatusCode) && attempt < maxAttempts {
 				if !waitNativePublicRetry(ctx, nativePublicRetryDelay) {
 					return nil, fmt.Errorf("public market request %s: %w", path, ctx.Err())
 				}

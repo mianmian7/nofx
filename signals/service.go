@@ -363,7 +363,7 @@ func collect(ctx context.Context, p market.MarketDataProvider, symbol string) (s
 		}
 		bars, err := reader.GetKlinesFreshContext(ctx, symbol, tf, 182)
 		if err != nil {
-			return store.LocalSignal{}, fmt.Errorf("%s candles unavailable", tf)
+			return store.LocalSignal{}, fmt.Errorf("%s candles unavailable: %w", tf, err)
 		}
 		data[tf] = bars
 	}
