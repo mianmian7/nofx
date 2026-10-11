@@ -856,8 +856,17 @@ func claimCycleFinalization(ctx context.Context) bool {
 }
 
 func (at *AutoTrader) runAutomaticCycle() error {
+	return at.runAutomaticCycleAt(time.Now().UTC())
+}
+
+func (at *AutoTrader) runAutomaticCycleAt(now time.Time) error {
 	if !at.cycleInFlight.CompareAndSwap(false, true) {
 		return ErrDecisionCycleInFlight
+	}
+	if !at.waitForPaperDecisionWindow(now) {
+		// No worker, cycle record or model call was created during the wait.
+		at.cycleInFlight.Store(false)
+		return nil
 	}
 
 	timeout := at.decisionCycleTimeout()

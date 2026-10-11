@@ -22,6 +22,8 @@ The decision parser conservatively floors fractional confidence for `wait`/`hold
 
 The execution batch creates evidence from market data, never model JSON. The Paper broker checks identity, current price, stop and original 15m-window expiry at order submission, repricing and every delayed/partial fill. Evidence persists with pending orders; restarts or repricing cannot renew it. Rejection releases only unfilled entry exposure, not filled positions, exits or protection. Missing evidence fails closed when enabled. Existing account limits, liquidity/coverage checks and independent fresh-price protection remain unchanged.
 
+For these opted-in Paper accounts, an automatic cycle scheduled in the last 60 seconds of a 15m window waits until one second after the next boundary before collecting data or starting its decision deadline. The first second after a boundary also waits. This avoids a fixed schedule repeatedly submitting nearly expired observations; it does not extend evidence or guarantee that slow model responses remain timely. The wait is stop-cancellable and single-flight, creates no synthetic cycle or extra model call, and leaves independent risk/price monitoring and explicit order APIs running. AI-directed position management in that cycle can also be delayed by up to 61 seconds. Live, grid and opted-out accounts retain their schedule.
+
 Both regular prompts and Jev typed entry questions expose this eligibility; Jev exit questions remain unchanged. Guided prompts preserve small prices/ATR and serialize the fee-inclusive boundary losslessly, without relaxing its execution check. Disabled strategies retain their input and execution contracts.
 
 ## Complete Data Flow
