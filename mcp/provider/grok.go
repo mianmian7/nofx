@@ -50,6 +50,10 @@ func NewGrokClientWithOptions(opts ...mcp.ClientOption) mcp.AIClient {
 		grokOpts = append(grokOpts, mcp.WithTimeout(timeout), func(cfg *mcp.Config) {
 			cfg.StreamIdleTimeout = timeout
 		})
+	} else {
+		// Grok reasoning routinely exceeds the generic per-request default
+		// (AI_REQUEST_TIMEOUT_SECONDS), so keep its historical attempt cap.
+		grokOpts = append(grokOpts, mcp.WithTimeout(mcp.DefaultTimeout))
 	}
 
 	allOpts := append(grokOpts, opts...)

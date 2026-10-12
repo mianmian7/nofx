@@ -515,7 +515,7 @@ Returns: {"total_trades","win_trades","loss_trades","win_rate","profit_factor","
 func (s *Server) handleHealth(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status": "ok",
-		"time":   c.Request.Context().Value("time"),
+		"time":   time.Now().UTC().Format(time.RFC3339),
 	})
 }
 

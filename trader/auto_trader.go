@@ -197,10 +197,11 @@ type binanceMarketAvailabilityClient interface {
 
 // AutoTrader automatic trader
 type AutoTrader struct {
-	id                     string // Trader unique identifier
-	name                   string // Trader display name
-	aiModel                string // AI model name
-	exchange               string // Trading platform type (binance/bybit/etc)
+	zeroStatsLogged        atomic.Bool // suppress repeated "0 trades" stats log
+	id                     string      // Trader unique identifier
+	name                   string      // Trader display name
+	aiModel                string      // AI model name
+	exchange               string      // Trading platform type (binance/bybit/etc)
 	executionMode          ExecutionMode
 	paperBroker            *PaperBroker
 	binanceMarketClient    binanceMarketAvailabilityClient // Shared-cache public client used for Binance open preflight

@@ -13,7 +13,7 @@ import (
 func grokFairnessClient(id string, handler func(*http.Request) (*http.Response, error)) (*Client, *Request) {
 	transport := NewMockHTTPClient()
 	transport.ResponseFunc = handler
-	c := NewClient(WithHTTPClient(transport.ToHTTPClient()), WithLogger(NewMockLogger()), WithProvider(ProviderGrok), WithBaseURL("https://example.invalid/v1"), WithModel("reasoning-model"), WithAPIKey("test-key"), WithStream(false), WithMaxRetries(3)).(*Client)
+	c := NewClient(WithHTTPClient(transport.ToHTTPClient()), WithLogger(NewMockLogger()), WithProvider(ProviderGrok), WithBaseURL("https://example.invalid/v1"), WithModel("reasoning-model"), WithAPIKey("test-key"), WithStream(false), WithMaxRetries(3), WithTimeout(DefaultTimeout)).(*Client)
 	req := NewRequestBuilder().WithModel("reasoning-model").WithUserPrompt("test").MustBuild()
 	req.Metadata = CallMetadata{TraderID: id, CallID: id}
 	return c, req

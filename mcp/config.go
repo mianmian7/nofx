@@ -51,13 +51,14 @@ type Config struct {
 
 // DefaultConfig returns default configuration
 func DefaultConfig() *Config {
+	requestTimeout := defaultRequestTimeout()
 	return &Config{
 		// Default values
 		MaxTokens:          getEnvInt("AI_MAX_TOKENS", 2000),
 		Temperature:        MCPClientTemperature,
 		MaxRetries:         MaxRetryTimes,
 		RetryWaitBase:      2 * time.Second,
-		Timeout:            DefaultTimeout,
+		Timeout:            requestTimeout,
 		StreamIdleTimeout:  time.Duration(getEnvInt("AI_STREAM_IDLE_TIMEOUT_SECONDS", 60)) * time.Second,
 		AdmissionTimeout:   time.Duration(getEnvInt("AI_REQUEST_ADMISSION_TIMEOUT_SECONDS", 0)) * time.Second,
 		CompletionReserve:  time.Duration(getEnvInt("AI_CYCLE_COMPLETION_RESERVE_SECONDS", 30)) * time.Second,
@@ -69,8 +70,18 @@ func DefaultConfig() *Config {
 
 		// Default dependencies (use global logger)
 		Logger:     logger.NewMCPLogger(),
-		HTTPClient: security.SafeHTTPClient(DefaultTimeout),
+		HTTPClient: security.SafeHTTPClient(requestTimeout),
 	}
+}
+
+// DefaultRequestTimeoutSeconds bounds one AI HTTP attempt so a hung call
+// cannot consume the whole decision cycle. Override with
+// AI_REQUEST_TIMEOUT_SECONDS; provider-scoped settings such as
+// AI_GROK_REQUEST_TIMEOUT_SECONDS still take precedence for that provider.
+const DefaultRequestTimeoutSeconds = 120
+
+func defaultRequestTimeout() time.Duration {
+	return time.Duration(getEnvInt("AI_REQUEST_TIMEOUT_SECONDS", DefaultRequestTimeoutSeconds)) * time.Second
 }
 
 // getEnvInt reads integer from environment variable, returns default value if failed

@@ -94,7 +94,7 @@ func TestGrokTimeoutOverrideDoesNotChangeOtherProvidersOrExplicitOptions(t *test
 		t.Fatal("Grok timeout override missing")
 	}
 	plain := mcp.NewClient(mcp.WithProvider(mcp.ProviderOpenAI)).(*mcp.Client)
-	if plain.Cfg.Timeout != 300*time.Second {
+	if plain.Cfg.Timeout != mcp.DefaultRequestTimeoutSeconds*time.Second {
 		t.Fatal("unrelated provider timeout changed")
 	}
 	explicit := NewGrokClientWithOptions(mcp.WithTimeout(90 * time.Second)).(*GrokClient)

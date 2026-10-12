@@ -929,7 +929,10 @@ func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 		} else if stats == nil {
 			at.logWarnf("⚠️ GetFullStats returned nil")
 		} else if stats.TotalTrades == 0 {
-			at.logWarnf("⚠️ GetFullStats returned 0 trades")
+			// Normal for new/idle traders; log once per process instead of every cycle.
+			if at.zeroStatsLogged.CompareAndSwap(false, true) {
+				at.logInfof("GetFullStats returned 0 trades (no closed trades yet; further repeats suppressed)")
+			}
 		} else {
 			ctx.TradingStats = &kernel.TradingStats{
 				TotalTrades:    stats.TotalTrades,
