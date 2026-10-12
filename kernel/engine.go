@@ -153,6 +153,9 @@ type Decision struct {
 	Reasoning  string  `json:"reasoning"`
 	// Assigned by the Paper execution batch from observed data, not AI JSON.
 	PaperEntryEvidence *PaperEntryEvidence `json:"-"`
+	// RiskRewardStopLoss is the AI's original stop when execution widened
+	// StopLoss to the minimum stop distance; risk/reward gates use it.
+	RiskRewardStopLoss float64 `json:"-"`
 }
 
 // UnmarshalJSON accepts lossless integer leverage but never rounds leverage.

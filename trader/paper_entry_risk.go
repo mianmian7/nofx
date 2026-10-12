@@ -69,7 +69,7 @@ func (b *PaperBroker) validatePendingEntryRiskLocked(order PaperPendingOrder, en
 			return fmt.Errorf("paper pending entry protection changed after partial fill; canceling remainder for %s %s", order.Symbol, order.Side)
 		}
 	}
-	if err := b.validateEntryRiskRewardLocked(order.Action, entry, order.StopLoss, order.TakeProfit); err != nil {
+	if err := b.validateEntryRiskRewardLocked(order.Action, entry, riskRewardStop(order.RiskRewardStopLoss, order.StopLoss), order.TakeProfit); err != nil {
 		return err
 	}
 	return b.validatePendingAccountRiskLocked(order, entry)

@@ -149,14 +149,16 @@ type PaperPendingOrder struct {
 	EntryEvidence     *kernel.PaperEntryEvidence `json:"entry_evidence,omitempty"`
 	Leverage          int                        `json:"leverage"`
 	StopLoss          float64                    `json:"stop_loss,omitempty"`
-	TakeProfit        float64                    `json:"take_profit,omitempty"`
-	ReduceOnly        bool                       `json:"reduce_only"`
-	TriggerOnMark     bool                       `json:"trigger_on_mark,omitempty"`
-	Status            string                     `json:"status"`
-	RepriceCount      int                        `json:"reprice_count"`
-	CreatedAt         time.Time                  `json:"created_at"`
-	UpdatedAt         time.Time                  `json:"updated_at"`
-	ExpiresAt         time.Time                  `json:"expires_at"`
+	// AI's original stop when widened by min stop distance (R:R gate input).
+	RiskRewardStopLoss float64   `json:"rr_stop_loss,omitempty"`
+	TakeProfit         float64   `json:"take_profit,omitempty"`
+	ReduceOnly         bool      `json:"reduce_only"`
+	TriggerOnMark      bool      `json:"trigger_on_mark,omitempty"`
+	Status             string    `json:"status"`
+	RepriceCount       int       `json:"reprice_count"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+	ExpiresAt          time.Time `json:"expires_at"`
 }
 
 type PaperOrderEvent struct {
@@ -569,7 +571,7 @@ func (b *PaperBroker) ExecuteDecisionContext(ctx context.Context, decision *kern
 	if err := b.validateEntryEvidenceLocked(decision.PaperEntryEvidence, decision.Symbol, decision.Action, fillPrice, decision.StopLoss, b.now()); err != nil {
 		return PaperFill{}, err
 	}
-	if err := b.validateEntryRiskRewardLocked(decision.Action, fillPrice, decision.StopLoss, decision.TakeProfit); err != nil {
+	if err := b.validateEntryRiskRewardLocked(decision.Action, fillPrice, riskRewardStop(decision.RiskRewardStopLoss, decision.StopLoss), decision.TakeProfit); err != nil {
 		return PaperFill{}, err
 	}
 	notional, err := b.limitEntryNotionalLocked(decision, fillPrice)
@@ -805,7 +807,7 @@ func (b *PaperBroker) placeMakerOpen(ctx context.Context, decision *kernel.Decis
 	if err := b.validateEntryEvidenceLocked(decision.PaperEntryEvidence, decision.Symbol, decision.Action, limitPrice, decision.StopLoss, b.now()); err != nil {
 		return PaperFill{}, err
 	}
-	if err := b.validateEntryRiskRewardLocked(decision.Action, limitPrice, decision.StopLoss, decision.TakeProfit); err != nil {
+	if err := b.validateEntryRiskRewardLocked(decision.Action, limitPrice, riskRewardStop(decision.RiskRewardStopLoss, decision.StopLoss), decision.TakeProfit); err != nil {
 		return PaperFill{}, err
 	}
 	for _, pending := range b.pendingOrders {
@@ -832,7 +834,8 @@ func (b *PaperBroker) placeMakerOpen(ctx context.Context, decision *kernel.Decis
 		RemainingQuantity: quantity, PositionSizeUSD: notional, RiskUSD: decision.RiskUSD,
 		EntryEvidence: copyEntryEvidence(decision.PaperEntryEvidence),
 		Leverage:      decision.Leverage, StopLoss: decision.StopLoss,
-		TakeProfit: decision.TakeProfit, Status: "NEW", CreatedAt: now,
+		RiskRewardStopLoss: decision.RiskRewardStopLoss,
+		TakeProfit:         decision.TakeProfit, Status: "NEW", CreatedAt: now,
 		UpdatedAt: now, ExpiresAt: now.Add(b.config.MakerTimeout),
 	}
 	b.pendingOrders[order.OrderID] = order

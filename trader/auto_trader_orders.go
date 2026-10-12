@@ -91,6 +91,9 @@ func (at *AutoTrader) executeDecisionWithRecordContext(ctx context.Context, deci
 		if err := validateOpenProtection(decision.Action, entryPrice, decision.StopLoss, decision.TakeProfit); err != nil {
 			return err
 		}
+		if err := at.applyMinStopDistance(decision, entryPrice); err != nil {
+			return err
+		}
 		if err := at.enforceOpenRiskBudget(decision, entryPrice); err != nil {
 			return err
 		}
@@ -1417,6 +1420,9 @@ func (at *AutoTrader) executeOpenLongWithRecordContext(ctx context.Context, deci
 	if err := validateOpenProtection(decision.Action, currentPrice, decision.StopLoss, decision.TakeProfit); err != nil {
 		return err
 	}
+	if err := at.applyMinStopDistance(decision, currentPrice); err != nil {
+		return err
+	}
 
 	// Get balance (needed for multiple checks)
 	balance, err := at.trader.GetBalance()
@@ -1564,6 +1570,9 @@ func (at *AutoTrader) executeOpenShortWithRecordContext(ctx context.Context, dec
 		return err
 	}
 	if err := validateOpenProtection(decision.Action, currentPrice, decision.StopLoss, decision.TakeProfit); err != nil {
+		return err
+	}
+	if err := at.applyMinStopDistance(decision, currentPrice); err != nil {
 		return err
 	}
 
