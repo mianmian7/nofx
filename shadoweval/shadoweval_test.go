@@ -107,6 +107,8 @@ func setupDB(t *testing.T) *sql.DB {
 		`CREATE TABLE traders (id text, ai_model_id text, exchange_id text, strategy_id text, scan_interval_minutes integer, system_prompt_template text, primary_model_name text)`,
 		`CREATE TABLE exchanges (id text, exchange_type text, api_key text)`,
 		`CREATE TABLE ai_models (id text, name text, provider text, custom_model_name text, api_key text)`,
+		`CREATE TABLE strategies (id text, config text)`,
+		`INSERT INTO strategies VALUES ('s1','{"execution_guidance":false,"paper_entry_guard":true,"ai_config":{"execution_guidance":true,"paper_entry_guard":false}}')`,
 		`CREATE TABLE decision_records (id integer primary key autoincrement, trader_id text, cycle_number integer, timestamp datetime, system_prompt text, decision_json text, decisions text)`,
 		`INSERT INTO traders VALUES ('t1','m1','e1','s1',15,'default','')`,
 		`INSERT INTO exchanges VALUES ('e1','binance','SECRET')`,
@@ -122,7 +124,42 @@ func setupDB(t *testing.T) *sql.DB {
 	if err := Migrate(db); err != nil { // idempotent
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { db.Close() })
 	return db
+}
+
+func TestIngestInvalidStrategyConfig(t *testing.T) {
+	for _, config := range []string{`{`, `{"ai_config":{"execution_guidance":"invalid"}}`} {
+		t.Run(config, func(t *testing.T) {
+			db := setupDB(t)
+			if _, err := db.Exec(`INSERT INTO strategies VALUES ('s2',?)`, config); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(`INSERT INTO traders VALUES ('t2','m1','e1','s2',15,'default','')`); err != nil {
+				t.Fatal(err)
+			}
+			base := time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC)
+			for _, trader := range []string{"t2", "t1"} {
+				if _, err := db.Exec(`INSERT INTO decision_records (trader_id,timestamp,decisions)
+					VALUES (?,?,?)`, trader, base.Format(time.RFC3339), `[{"action":"wait","symbol":"BTCUSDT","success":true}]`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			svc := NewService(db, nil, base.Add(-time.Hour))
+			if n, err := svc.Ingest(context.Background()); err != nil || n != 2 {
+				t.Fatalf("ingested=%d err=%v", n, err)
+			}
+			for trader, want := range map[string]string{"t1": "execution_guidance=1,paper_entry_guard=0", "t2": "invalid"} {
+				var flags, model string
+				if err := db.QueryRow(`SELECT gate_flags,model FROM shadow_decisions WHERE trader_id=?`, trader).Scan(&flags, &model); err != nil {
+					t.Fatal(err)
+				}
+				if flags != want || model != "gemini:gemini-x" {
+					t.Fatalf("trader=%s flags=%q model=%q", trader, flags, model)
+				}
+			}
+		})
+	}
 }
 
 func TestIngestFillReportEndToEnd(t *testing.T) {
@@ -155,6 +192,10 @@ func TestIngestFillReportEndToEnd(t *testing.T) {
 	if n != 60 || skipped != 1 || done != 60 {
 		t.Fatalf("n=%d skipped=%d done=%d", n, skipped, done)
 	}
+	var unstamped int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM shadow_decisions WHERE gate_flags != 'execution_guidance=1,paper_entry_guard=0'`).Scan(&unstamped); err != nil || unstamped != 0 {
+		t.Fatalf("unstamped=%d err=%v", unstamped, err)
+	}
 	var model, ex, pv, tf, ph string
 	var r1h float64
 	db.QueryRow(`SELECT model, exchange, prompt_version, timeframe, prompt_hash, ret_1h FROM shadow_decisions WHERE symbol='ETHUSDT' LIMIT 1`).Scan(&model, &ex, &pv, &tf, &ph, &r1h)
@@ -165,10 +206,16 @@ func TestIngestFillReportEndToEnd(t *testing.T) {
 		t.Fatalf("ret_1h=%f", r1h)
 	}
 	// rerun is idempotent
+	if _, err := db.Exec(`UPDATE strategies SET config='{"ai_config":{"execution_guidance":false,"paper_entry_guard":true}}' WHERE id='s1'`); err != nil {
+		t.Fatal(err)
+	}
 	svc.RunOnce(ctx)
 	db.QueryRow(`SELECT COUNT(*) FROM shadow_decisions WHERE direction!='none'`).Scan(&n)
 	if n != 60 {
 		t.Fatalf("rerun n=%d", n)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM shadow_decisions WHERE gate_flags != 'execution_guidance=1,paper_entry_guard=0'`).Scan(&unstamped); err != nil || unstamped != 0 {
+		t.Fatalf("existing stamps rewritten=%d err=%v", unstamped, err)
 	}
 	rep, err := BuildReport(ctx, db, ReportQuery{Horizon: "1h", GroupBy: []string{"trader", "direction"}, Since: time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC)})
 	if err != nil {

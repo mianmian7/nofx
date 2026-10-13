@@ -3,12 +3,15 @@ package shadoweval
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"nofx/logger"
+	"nofx/store"
 )
 
 // Service ingests new decision records and fills forward returns.
@@ -84,30 +87,46 @@ func (s *Service) RunOnce(ctx context.Context) {
 	}
 }
 
-type traderMeta struct{ exchange, model, promptVersion, timeframe string }
+type traderMeta struct{ exchange, model, promptVersion, timeframe, gateFlags string }
 
 func (s *Service) traderMeta(ctx context.Context) (map[string]traderMeta, error) {
-	// Only non-secret columns are selected.
+	// Strategy config is used only to extract gates; it is never logged or stored.
 	rows, err := s.DB.QueryContext(ctx, `SELECT t.id, COALESCE(e.exchange_type,''), COALESCE(m.provider,''),
 		COALESCE(NULLIF(t.primary_model_name,''), NULLIF(m.custom_model_name,''), m.name, ''),
-		COALESCE(t.system_prompt_template,''), COALESCE(t.strategy_id,''), COALESCE(t.scan_interval_minutes,0)
-		FROM traders t LEFT JOIN exchanges e ON e.id=t.exchange_id LEFT JOIN ai_models m ON m.id=t.ai_model_id`)
+		COALESCE(t.system_prompt_template,''), COALESCE(t.strategy_id,''), COALESCE(t.scan_interval_minutes,0), COALESCE(s.config,'')
+		FROM traders t LEFT JOIN exchanges e ON e.id=t.exchange_id LEFT JOIN ai_models m ON m.id=t.ai_model_id
+		LEFT JOIN strategies s ON s.id=t.strategy_id`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := map[string]traderMeta{}
 	for rows.Next() {
-		var id, ex, prov, mname, tmpl, strat string
+		var id, ex, prov, mname, tmpl, strat, config string
 		var scan int
-		if err := rows.Scan(&id, &ex, &prov, &mname, &tmpl, &strat, &scan); err != nil {
+		if err := rows.Scan(&id, &ex, &prov, &mname, &tmpl, &strat, &scan, &config); err != nil {
 			return nil, err
 		}
 		model := prov
 		if mname != "" && mname != prov {
 			model = prov + ":" + mname
 		}
-		out[id] = traderMeta{exchange: ex, model: model, promptVersion: tmpl + "@" + strat, timeframe: strconv.Itoa(scan) + "m"}
+		var c store.StrategyConfig
+		if config != "" {
+			if err := json.Unmarshal([]byte(config), &c); err != nil {
+				out[id] = traderMeta{exchange: ex, model: model, promptVersion: tmpl + "@" + strat, timeframe: strconv.Itoa(scan) + "m", gateFlags: "invalid"}
+				continue
+			}
+		}
+		values := map[string]bool{"execution_guidance": c.ExecutionGuidance, "paper_entry_guard": c.PaperEntryGuard}
+		flags := append([]string(nil), store.GateFlags...)
+		sort.Strings(flags)
+		parts := make([]string, 0, len(flags))
+		for _, f := range flags {
+			parts = append(parts, f+"="+strconv.Itoa(boolInt(values[f])))
+		}
+		gates := strings.Join(parts, ",")
+		out[id] = traderMeta{exchange: ex, model: model, promptVersion: tmpl + "@" + strat, timeframe: strconv.Itoa(scan) + "m", gateFlags: gates}
 	}
 	return out, rows.Err()
 }
@@ -184,8 +203,8 @@ func (s *Service) Ingest(ctx context.Context) (int, error) {
 	stmt, err := tx.PrepareContext(ctx, `INSERT OR IGNORE INTO shadow_decisions
 		(decision_record_id, action_index, trader_id, exchange, model, prompt_version, prompt_hash, timeframe,
 		 symbol, action, direction, source, status, confidence, probability, regime, executed, decided_at,
-		 decision_price, price_status, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+		 decision_price, price_status, created_at, updated_at, gate_flags)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		return 0, err
 	}
@@ -206,7 +225,7 @@ func (s *Service) Ingest(ctx context.Context) (int, error) {
 			}
 			if _, err := stmt.ExecContext(ctx, r.id, p.Index, r.trader, m.exchange, m.model, m.promptVersion, hash, m.timeframe,
 				p.Symbol, p.Action, p.Direction, p.Source, p.Status, nullF(p.Confidence), nullF(p.Probability), p.Regime,
-				boolInt(p.Executed), r.ts.UnixMilli(), nullF(p.DecisionPrice), status, now, now); err != nil {
+				boolInt(p.Executed), r.ts.UnixMilli(), nullF(p.DecisionPrice), status, now, now, m.gateFlags); err != nil {
 				return 0, err
 			}
 		}

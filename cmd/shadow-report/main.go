@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -22,16 +23,27 @@ import (
 func main() {
 	dbPath := flag.String("db", "data/data.db", "SQLite database path (opened read-only)")
 	horizon := flag.String("horizon", "1h", "15m|1h|4h|24h")
-	group := flag.String("group", "trader", "comma list: trader,model,prompt_version,prompt_hash,symbol,direction,source,status,exchange,regime,executed,timeframe")
+	group := flag.String("group", "trader", "comma list: trader,model,prompt_version,prompt_hash,symbol,direction,source,status,exchange,regime,executed,timeframe,gate_flags")
 	since := flag.String("since", "2026-10-07", "start date (YYYY-MM-DD or RFC3339)")
 	executed := flag.String("executed", "", "filter: 0|1")
 	source := flag.String("source", "", "filter: ai|jev")
 	minN := flag.Int("min-n", 1, "omit groups smaller than this")
 	cal := flag.Bool("cal", false, "print calibration buckets")
 	asJSON := flag.Bool("json", false, "print JSON")
+	balance := flag.Bool("balance", false, "print daily direction balance instead of expectancy")
+	vetoLog := flag.String("veto-log", "", "with -balance, append bearish veto counts from this log (MM-DD; log has no year)")
+	tz := flag.String("tz", "Asia/Singapore", "timezone for balance days and -since dates")
 	flag.Parse()
 
-	t, err := time.Parse("2006-01-02", *since)
+	loc, err := time.LoadLocation(*tz)
+	if err != nil {
+		fail(err)
+	}
+	dateLoc := time.UTC
+	if *balance {
+		dateLoc = loc
+	}
+	t, err := time.ParseInLocation("2006-01-02", *since, dateLoc)
 	if err != nil {
 		if t, err = time.Parse(time.RFC3339, *since); err != nil {
 			fail(err)
@@ -42,6 +54,34 @@ func main() {
 		fail(err)
 	}
 	defer db.Close()
+	if *balance {
+		rows, err := shadoweval.BuildBalance(context.Background(), db, t, loc)
+		if err != nil {
+			fail(err)
+		}
+		shadoweval.WriteBalanceText(os.Stdout, rows)
+		if *vetoLog != "" {
+			f, err := os.Open(*vetoLog)
+			if err != nil {
+				fail(err)
+			}
+			counts, err := shadoweval.CountBearishVetoes(f, loc)
+			f.Close()
+			if err != nil {
+				fail(err)
+			}
+			days := make([]string, 0, len(counts))
+			for day := range counts {
+				days = append(days, day)
+			}
+			sort.Strings(days)
+			fmt.Println("day bearish_vetoes")
+			for _, day := range days {
+				fmt.Printf("%s %d\n", day, counts[day])
+			}
+		}
+		return
+	}
 	q := shadoweval.ReportQuery{Horizon: *horizon, Since: t, Executed: *executed, Source: *source, MinN: *minN}
 	for _, g := range strings.Split(*group, ",") {
 		if g = strings.TrimSpace(g); g != "" {

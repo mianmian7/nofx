@@ -33,6 +33,7 @@ const createTableSQL = `CREATE TABLE IF NOT EXISTS shadow_decisions (
 	prompt_version TEXT NOT NULL DEFAULT '',
 	prompt_hash TEXT NOT NULL DEFAULT '',
 	timeframe TEXT NOT NULL DEFAULT '',
+	gate_flags TEXT NOT NULL DEFAULT '',
 	symbol TEXT NOT NULL,
 	action TEXT NOT NULL,
 	direction TEXT NOT NULL,
@@ -57,8 +58,7 @@ const createTableSQL = `CREATE TABLE IF NOT EXISTS shadow_decisions (
 	UNIQUE(decision_record_id, action_index)
 )`
 
-// Migrate creates the shadow table and indexes if missing. It never alters
-// existing tables.
+// Migrate creates the shadow table and indexes and adds missing gate_flags.
 func Migrate(db *sql.DB) error {
 	stmts := []string{
 		createTableSQL,
@@ -71,5 +71,28 @@ func Migrate(db *sql.DB) error {
 			return fmt.Errorf("shadow_decisions migrate: %w", err)
 		}
 	}
-	return nil
+	rows, err := db.Query(`PRAGMA table_info(shadow_decisions)`)
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, typ string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		found = found || name == "gate_flags"
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	if !found {
+		_, err = db.Exec(`ALTER TABLE shadow_decisions ADD COLUMN gate_flags TEXT NOT NULL DEFAULT ''`)
+	}
+	return err
 }

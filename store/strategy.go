@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"nofx/logger"
+
 	"gorm.io/gorm"
 )
 
@@ -1093,6 +1095,13 @@ func (s *StrategyStore) initTables() error {
 	if err := s.db.AutoMigrate(&Strategy{}); err != nil {
 		return err
 	}
+	sqlDB, err := s.db.DB()
+	if err != nil {
+		return err
+	}
+	if err := MigrateStrategyFlagAudit(sqlDB, s.db.Dialector.Name() == "postgres"); err != nil {
+		return err
+	}
 	return s.migrateUnifiedLeverageConfig()
 }
 
@@ -1237,7 +1246,10 @@ func (s *StrategyStore) Create(strategy *Strategy) error {
 
 // Update update a strategy
 func (s *StrategyStore) Update(strategy *Strategy) error {
-	return s.db.Model(&Strategy{}).
+	var old Strategy
+	readErr := s.db.Where("id = ? AND user_id = ?", strategy.ID, strategy.UserID).First(&old).Error
+	now := time.Now().UTC()
+	if err := s.db.Model(&Strategy{}).
 		Where("id = ? AND user_id = ?", strategy.ID, strategy.UserID).
 		Updates(map[string]interface{}{
 			"name":           strategy.Name,
@@ -1245,8 +1257,34 @@ func (s *StrategyStore) Update(strategy *Strategy) error {
 			"config":         strategy.Config,
 			"is_public":      strategy.IsPublic,
 			"config_visible": strategy.ConfigVisible,
-			"updated_at":     time.Now().UTC(),
-		}).Error
+			"updated_at":     now,
+		}).Error; err != nil {
+		return err
+	}
+	// Audit statements run after the update, so their failure cannot roll it back.
+	if readErr != nil {
+		if readErr != gorm.ErrRecordNotFound {
+			logger.Warnf("strategy flag audit: reading previous config: %v", readErr)
+		}
+	} else {
+		before, oldErr := strategyFlags(old.Config)
+		after, newErr := strategyFlags(strategy.Config)
+		if oldErr != nil || newErr != nil {
+			logger.Warnf("strategy flag audit: unable to parse gate flags")
+		} else {
+			for _, f := range GateFlags {
+				if before[f] == after[f] {
+					continue
+				}
+				if err := s.db.Exec(`INSERT INTO strategy_config_changes
+					(strategy_id,field,old_value,new_value,changed_at,changed_by,reason) VALUES (?,?,?,?,?,?,?)`,
+					strategy.ID, f, fmt.Sprint(before[f]), fmt.Sprint(after[f]), now.UnixMilli(), "api", "strategy update").Error; err != nil {
+					logger.Warnf("strategy flag audit: %v", err)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // Delete delete a strategy

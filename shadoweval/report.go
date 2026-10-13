@@ -15,7 +15,7 @@ import (
 // ReportQuery selects which shadow rows to score and how to group them.
 type ReportQuery struct {
 	Horizon   string    // 15m | 1h | 4h | 24h
-	GroupBy   []string  // any of: trader, model, prompt_version, prompt_hash, symbol, direction, source, status, exchange, regime, executed
+	GroupBy   []string  // any of: trader, model, prompt_version, prompt_hash, symbol, direction, source, status, exchange, regime, executed, timeframe, gate_flags
 	Since     time.Time // inclusive
 	Until     time.Time // exclusive; zero = no bound
 	Executed  string    // "", "1", "0"
@@ -57,7 +57,7 @@ type Report struct {
 var groupCols = map[string]string{
 	"trader": "trader_id", "model": "model", "prompt_version": "prompt_version", "prompt_hash": "prompt_hash",
 	"symbol": "symbol", "direction": "direction", "source": "source", "status": "status", "exchange": "exchange",
-	"regime": "regime", "executed": "executed", "timeframe": "timeframe",
+	"regime": "regime", "executed": "executed", "timeframe": "timeframe", "gate_flags": "gate_flags",
 }
 
 // ValidGroup reports whether g is an allowed group-by field.
