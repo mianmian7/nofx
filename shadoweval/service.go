@@ -256,6 +256,11 @@ func (s *Service) Fill(ctx context.Context) (int, error) {
 		list = append(list, r)
 	}
 	rows.Close()
+	type upd struct {
+		q    string
+		args []any
+	}
+	var ups []upd
 	filled := 0
 	for _, r := range list {
 		if ctx.Err() != nil {
@@ -271,9 +276,9 @@ func (s *Service) Fill(ctx context.Context) (int, error) {
 			}
 			if !ok {
 				if now-entryMin > 2*3600*1000 {
-					s.DB.ExecContext(ctx, `UPDATE shadow_decisions SET price_status='unavailable', updated_at=? WHERE id=?`, now, r.id)
+					ups = append(ups, upd{`UPDATE shadow_decisions SET price_status='unavailable', updated_at=? WHERE id=?`, []any{now, r.id}})
 				} else {
-					s.DB.ExecContext(ctx, `UPDATE shadow_decisions SET next_due_at=?, updated_at=? WHERE id=?`, now+10*60000, now, r.id)
+					ups = append(ups, upd{`UPDATE shadow_decisions SET next_due_at=?, updated_at=? WHERE id=?`, []any{now + 10*60000, now, r.id}})
 				}
 				continue
 			}
@@ -318,11 +323,30 @@ func (s *Service) Fill(ctx context.Context) (int, error) {
 		if complete {
 			status = "done"
 		}
-		if _, err := s.DB.ExecContext(ctx, `UPDATE shadow_decisions SET entry_price=?, ret_15m=?, ret_1h=?, ret_4h=?, ret_24h=?, btc_ret_24h=?, price_status=?, next_due_at=?, updated_at=? WHERE id=?`,
-			entry, nv(r.rets[0]), nv(r.rets[1]), nv(r.rets[2]), nv(r.rets[3]), nv(r.btc), status, nextDue, now, r.id); err != nil {
-			return filled, err
-		}
+		ups = append(ups, upd{`UPDATE shadow_decisions SET entry_price=?, ret_15m=?, ret_1h=?, ret_4h=?, ret_24h=?, btc_ret_24h=?, price_status=?, next_due_at=?, updated_at=? WHERE id=?`,
+			[]any{entry, nv(r.rets[0]), nv(r.rets[1]), nv(r.rets[2]), nv(r.rets[3]), nv(r.btc), status, nextDue, now, r.id}})
 		filled++
+	}
+	// Prices are fetched before the write transaction so the trading database's
+	// write lock is held only for short local updates, in small chunks.
+	for start := 0; start < len(ups); start += 250 {
+		end := start + 250
+		if end > len(ups) {
+			end = len(ups)
+		}
+		tx, err := s.DB.BeginTx(ctx, nil)
+		if err != nil {
+			return 0, err
+		}
+		for _, u := range ups[start:end] {
+			if _, err := tx.ExecContext(ctx, u.q, u.args...); err != nil {
+				tx.Rollback()
+				return 0, err
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return 0, err
+		}
 	}
 	return filled, nil
 }
