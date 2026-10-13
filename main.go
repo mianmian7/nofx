@@ -9,6 +9,7 @@ import (
 	"nofx/logger"
 	"nofx/manager"
 	_ "nofx/mcp/provider"
+	"nofx/shadoweval"
 	"nofx/signals"
 	"nofx/store"
 	"nofx/telemetry"
@@ -16,6 +17,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
@@ -108,6 +110,8 @@ func main() {
 	localSignals.Start(context.Background())
 	defer localSignals.Close()
 
+	startShadowEval(st)
+
 	// Create TraderManager
 	traderManager := manager.NewTraderManager()
 
@@ -193,4 +197,31 @@ func initInstallationID(st *store.Store) {
 
 	// Set installation ID in experience module
 	telemetry.SetInstallationID(installationID)
+}
+
+// startShadowEval records every AI decision into shadow_decisions and scores
+// it against public klines. Observation only; disable with NOFX_SHADOW_EVAL=off.
+func startShadowEval(st *store.Store) {
+	if os.Getenv("NOFX_SHADOW_EVAL") == "off" || st.DBType() != store.DBTypeSQLite {
+		logger.Info("🔍 Shadow evaluation disabled")
+		return
+	}
+	sqlDB, err := st.GormDB().DB()
+	if err != nil {
+		logger.Warnf("⚠️ Shadow evaluation unavailable: %v", err)
+		return
+	}
+	if err := shadoweval.Migrate(sqlDB); err != nil {
+		logger.Warnf("⚠️ Shadow evaluation migration failed (trading unaffected): %v", err)
+		return
+	}
+	since := time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC)
+	if v := os.Getenv("NOFX_SHADOW_EVAL_SINCE"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			since = t
+		}
+	}
+	svc := shadoweval.NewService(sqlDB, shadoweval.NewBinanceKlines(os.Getenv("NOFX_SHADOW_KLINE_URL")), since)
+	svc.Start(context.Background())
+	logger.Infof("🔍 Shadow evaluation started (backfill since %s)", since.Format(time.RFC3339))
 }

@@ -263,6 +263,7 @@ func (s *Server) setupRoutes() {
 		protected := api.Group("/", s.authMiddleware())
 		{
 			s.route(protected, "GET", "/local-signals", "Local public-market analysis", s.handleLocalSignals)
+			s.route(protected, "GET", "/shadow-eval/report", "Read-only shadow evaluation of all AI decisions (expectancy, hit rate, bootstrap CI, calibration)", s.handleShadowEvalReport)
 			s.route(protected, "GET", "/local-signals/history", "Local analysis history for one exchange and symbol", s.handleLocalSignalHistory)
 
 			// Logout (add to blacklist)
